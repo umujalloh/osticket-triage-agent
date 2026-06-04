@@ -1,0 +1,17 @@
+# Secrets and environment
+.env
+*.key
+*.pem
+credentials.json
+secrets/
+
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# OS and editor
+.DS_Store
+*.swp
+.vscode/
