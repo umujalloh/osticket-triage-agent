@@ -232,7 +232,23 @@ Each category-severity-confidence combination maps to a pre-defined action. The 
  
 ---
  
-## 6. Action Layer and Phasing
+ ## 6. Failure Modes for the Claude Dependency
+
+Principle: fail safe. Phase 1 depends on Claude returning a trustworthy classification label. When Claude cannot return one, the agent routes the ticket to a human and logs the failure to Splunk. The agent never auto-closes a ticket or assumes low severity when it has no trustworthy label.
+
+Three failure cases:
+
+1. **Rate limited.** When request volume exceeds the API limit, Claude rejects the request until the agent drops back under the limit, so no label is returned. This is transient, so the agent retries the call a small number of times. If it still fails, the agent treats Claude as unavailable, routes the ticket to a human, and logs the failure to Splunk.
+
+2. **Server down.** Claude returns a server error or does not respond at all. This is also transient, so the agent retries the call a small number of times. If it still fails, the agent treats Claude as unavailable, routes the ticket to a human, and logs the failure to Splunk.
+
+3. **Bad output.** Claude responds, but the output does not match the required schema and still fails after retries. This is terminal: retrying has already failed, and a persistent schema failure can indicate a rejected injection attempt (see Attack 1). The agent discards the label, and sends the ticket to a human instead of retrying again.
+
+Logging note: each Splunk failure entry records which of the three failure types occurred, so failures are countable over time rather than logged as a single generic error.
+
+---
+
+## 7. Action Layer and Phasing
  
 Action table. The agent does not decide actions on its own and never takes them from Claude. Every action comes from a fixed table written in code. Claude's classification is the key, the action is the value. The agent looks up the category-severity-confidence combination and runs the matching action.
  
@@ -255,6 +271,8 @@ Phase 2: add Splunk enrichment. Still no writes.
  
 Phase 3: internal note writes and alerting (Slack posts, and PagerDuty pages for critical high-confidence incidents).
  
+ Until write-back lands in Phase 3, failure routing (Section 6) is console-only: the agent prints a needs-human line and logs to Splunk, and the ticket stays in osTicket's normal queue.
+ 
 Writes are the risky capability, so they come last, after classification and enrichment are working. Within Phase 3, alerts are kill-switched effectful writes in the same risk class as note writes, which is why they land together.
  
 Idempotency. The agent tracks processed ticket IDs and skips duplicates, so a retried webhook doesn't double-page or double-note.
@@ -267,7 +285,7 @@ Future hardening. Once the build is complete, a mismatch detection step can comp
  
 ---
  
-## 7. Trust Boundaries and Least Privilege
+## 8. Trust Boundaries and Least Privilege
  
 Trust boundary. The trust zone is the part of the system that runs in my own infrastructure: osTicket, the agent, and Splunk. Outside it are the end user, Claude, and the alert services (PagerDuty, Slack). Inside is trusted, outside is not.
  
@@ -285,13 +303,13 @@ Claude API key: daily token budget cap, rate limit, audit every call.
  
 ---
  
-## 8. Observability and Audit
+## 9. Observability and Audit
  
 Audit logging. Every classification, query, and action is logged to Splunk continuously, at every step.
  
 What is logged. Each entry captures the ticket ID, the agent's decision (category, severity, confidence), the action taken, and a timestamp. This is enough to reconstruct what the agent did to any ticket and why.
  
-This record is also what makes the future mismatch-detection hardening (Section 6) possible. That check compares a ticket's current state against what the agent decided, which only works if the decision was logged in the first place.
+This record is also what makes the future mismatch-detection hardening (Section 7) possible. That check compares a ticket's current state against what the agent decided, which only works if the decision was logged in the first place.
  
 Always on. Audit logging is exempt from the kill switch. When the kill switch disables effectful writes, audit writes keep running, because visibility matters most during the incidents that make you flip the switch.
  
