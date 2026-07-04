@@ -42,7 +42,7 @@ Splunk. The SIEM. It has two roles. It returns enrichment data when the agent ru
  
 PagerDuty and Slack. External alert destinations. Slack receives high and critical alerts so the team sees them in channel. PagerDuty pages on-call staff only for critical incidents at high confidence, so a page means wake someone up.
  
-Inside vs outside. osTicket, the agent, and Splunk run inside my own infrastructure. Claude, PagerDuty, and Slack are external services. This split defines the trust boundary covered in Section 7.
+Inside vs outside. osTicket, the agent, and Splunk run inside my own infrastructure. Claude, PagerDuty, and Slack are external services. This split defines the trust boundary covered in Section 8.
  
 Deployment. All components run in a local VMware homelab during development. osTicket and Splunk each run in their own VM, and the agent runs alongside them.
  
@@ -107,7 +107,7 @@ Delimiters around the body. The agent wraps the body in delimiters so it is clea
  
 Output schema validation. Claude must return valid JSON matching a strict schema: category, severity, confidence. Any response that does not fit the schema is rejected. So even if injected text changes Claude's output, it cannot produce a valid action.
  
-The backstop. Even if an attacker slips past the role separation and fools the classifier, the damage stops at the label. Claude only ever returns a classification. It never picks an action and never writes anything. The agent takes that label, looks up the matching action in a fixed table written in code, and acts only within what its scoped credentials permit. No label, however manipulated, can trigger an action I did not pre-approve. The worst case is the agent takes a wrong but allowed action, like writing a note when it shouldn't or failing to page when it should, not a dangerous new one. The action table and credential scoping are covered in Sections 6 and 7.
+The backstop. Even if an attacker slips past the role separation and fools the classifier, the damage stops at the label. Claude only ever returns a classification. It never picks an action and never writes anything. The agent takes that label, looks up the matching action in a fixed table written in code, and acts only within what its scoped credentials permit. No label, however manipulated, can trigger an action I did not pre-approve. The worst case is the agent takes a wrong but allowed action, like writing a note when it shouldn't or failing to page when it should, not a dangerous new one. The action table and credential scoping are covered in Sections 7 and 8.
  
 Residual risk. The role split stops an attacker from hijacking Claude, but it can't stop a ticket that is simply worded to mislead. Someone could write a real incident to sound harmless, or a harmless ticket to sound alarming, and Claude would classify the text honestly but wrongly. Those cases are covered as their own attacks (4 and 5), and low confidence sends any shaky classification to a human.
  
@@ -231,11 +231,11 @@ They are separate because each drives a different decision: category decides enr
  
 Confidence reflects the strength of signal in the ticket text, not the model's certainty. A clear ticket is high confidence, a vague one is low. Severity rounds up when the evidence is borderline, because under-rating a real incident does more damage than over-rating a harmless one.
  
-Each category-severity-confidence combination maps to a pre-defined action. The full action table is in Section 6, with one rule that overrides everything: any ticket classified low confidence routes to a human for review, regardless of category or severity. This keeps a real incident that happens to read as vague from being missed.
+Each category-severity-confidence combination maps to a pre-defined action. The full action table is in Section 7, with one rule that overrides everything: any ticket classified low confidence routes to a human for review, regardless of category or severity. This keeps a real incident that happens to read as vague from being missed.
  
 ---
  
- ## 6. Failure Modes for the Claude Dependency
+## 6. Failure Modes for the Claude Dependency
 
 Principle: fail safe. Phase 1 depends on Claude returning a trustworthy classification label. When Claude cannot return one, the agent routes the ticket to a human and logs the failure to Splunk. The agent never auto-closes a ticket or assumes low severity when it has no trustworthy label.
 
