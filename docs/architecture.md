@@ -61,28 +61,31 @@ If the ticket is security-relevant, the agent runs a pre-defined, read-only Splu
 After enrichment, the agent looks up the response in the pre-defined action table, writes an internal note back to osTicket, posts to Slack for high and critical severity, and pages PagerDuty only when the ticket is critical and high confidence. Any low-confidence ticket routes to a human regardless of category or severity.
  
 The agent writes an audit log to Splunk at every step of this process, not only at the end.
- 
+
 ```mermaid
 flowchart TD
     user["End user<br/>untrusted input"]
- 
+
     subgraph trust["Trust zone"]
         osticket["osTicket<br/>helpdesk ticketing"]
         agent["Triage Agent<br/>FastAPI orchestrator"]
         splunk["Splunk<br/>SIEM + audit log"]
     end
- 
-    claude["Claude API<br/>external LLM"]
+
+    claude["Claude API<br/>external, classify only"]
     alerts["PagerDuty / Slack<br/>alert destinations"]
- 
+
     user -->|submit| osticket
     osticket -->|webhook authenticated| agent
-    agent -->|classify| claude
+    agent -->|ticket text| claude
+    claude -->|classification only| agent
     splunk -->|enrichment| agent
     agent -->|audit events| splunk
     agent -.->|internal note, kill-switched| osticket
     agent -.->|alerts, kill-switched| alerts
 ```
+
+In the diagram, Claude only returns a classification to the agent. Every action, including enrichment, notes, and alerts, is initiated by the agent. Claude is never on the path to any external action.
  
 ---
  
