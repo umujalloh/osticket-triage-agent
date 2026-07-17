@@ -6,6 +6,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from classifier import classify_ticket
+
+load_dotenv()
+
 app = FastAPI()
 
 HMAC_SECRET = os.getenv("TRIAGE_HMAC_SECRET")
@@ -29,4 +33,11 @@ async def receive_ticket(request: Request):
 
     payload = await request.json()
     print("Received ticket webhook:", payload)
-    return {"status": "received"}
+
+    classification = classify_ticket(
+        subject=payload.get("subject", ""),
+        message=payload.get("message", "")
+    )
+    print("Classification:", classification)
+
+    return {"status": "received", "classification": classification.model_dump()}
