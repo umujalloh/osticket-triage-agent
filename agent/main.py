@@ -7,8 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from classifier import classify_ticket
-
-load_dotenv()
+from splunk_logger import log_classification
 
 app = FastAPI()
 
@@ -40,4 +39,9 @@ async def receive_ticket(request: Request):
     )
     print("Classification:", classification)
 
+    log_classification(
+        ticket_id=payload.get("ticket_id"),
+        subject=payload.get("subject", ""),
+        classification=classification
+    )
     return {"status": "received", "classification": classification.model_dump()}
