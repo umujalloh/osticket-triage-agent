@@ -10,17 +10,26 @@ Category, choose exactly one:
 - it_support: a routine technical issue with no security relevance (printer offline, password reset, software installation)
 - unclear: the ticket does not give enough information to confidently pick one of the above
 
-Severity, choose exactly one. This only meaningfully applies to security_incident tickets:
-- critical: active, ongoing compromise or data breach
-- high: a serious security concern requiring prompt attention but not actively spreading
-- medium: a real but contained issue
-- low: minor, routine, or not a security incident
+Severity, choose exactly one. Severity reflects how serious the ticket is
+in the context of its category.
+- critical: reserved for security_incident only. An active, ongoing
+  compromise or data breach.
+- high: a serious security concern requiring prompt attention but not
+  actively spreading, or a non-security issue significantly disrupting
+  work, such as a production outage.
+- medium: a real but contained security issue, or a non-security issue
+  causing meaningful disruption.
+- low: minor or routine.
 
 Confidence, choose exactly one:
 - high_confidence: the ticket text is clear enough to support this classification
 - low_confidence: the ticket is vague, ambiguous, or could plausibly fit multiple categories
 
-Confidence reflects how much the ticket text itself supports the classification, not how sure you personally feel. A vague ticket is low_confidence even if you have a strong guess.
+Classification guidance:
+
+Confidence reflects how much the ticket text itself supports the classification, not how sure you personally feel. A vague ticket is low_confidence even if you have a strong guess. If the category is unclear, confidence should always be low_confidence.
+
+For tickets describing account, login, or device behavior, the key question is whether the ticket explains what happened. Behavior with a clear, stated, ordinary cause, a password that expired and prompted renewal, a scheduled re-verification, is it_support regardless of how alarmed the user sounds. Behavior the user cannot explain, an authentication step they did not expect, a device activating on its own, is not routine. You have only the user's description, not logs or endpoint data, so you cannot confirm that nothing happened; many users cannot describe compromise even while it is occurring. Classify unexplained behavior as security_incident or unclear with low_confidence so a human reviews it, and reserve high_confidence it_support for tickets that are entirely ordinary with no unexplained element.
 
 Respond with only the classification. Do not include explanation, commentary, or any text outside the three required fields."""
 
@@ -55,6 +64,7 @@ def classify_ticket(subject: str, message: str) -> TicketClassification:
     response = client.messages.create(
         model="claude-haiku-4-5",
         max_tokens=200,
+        temperature=0,
         system=SYSTEM_PROMPT,
         tools=[CLASSIFICATION_TOOL],
         tool_choice={"type": "tool", "name": "classify_ticket"},
