@@ -218,18 +218,22 @@ Residual risk. The defenses leave three gaps. A replay sent within the freshness
 ---
  
 ## 5. Classification Model
- 
+
 Claude classifies each ticket along three dimensions:
- 
+
 Category: what kind of ticket it is. security_incident, security_question, it_support, or unclear.
- 
-Severity: how urgent it is. critical, high, medium, or low.
- 
-Confidence: how clear the ticket text is. high or low.
- 
+
+Severity: how serious the ticket is in the context of its category. critical, high, medium, or low.
+
+Confidence: how well the ticket text supports the classification. high_confidence or low_confidence.
+
 They are separate because each drives a different decision: category decides enrichment, severity decides paging, confidence decides whether a human reviews it. One combined label would lose the ability to route on each one independently.
- 
-Confidence reflects the strength of signal in the ticket text, not the model's certainty. A clear ticket is high confidence, a vague one is low. Severity rounds up when the evidence is borderline, because under-rating a real incident does more damage than over-rating a harmless one.
+
+Confidence reflects the strength of signal in the ticket text, not the model's certainty. A vague ticket is low_confidence even when the model has a strong guess.
+
+Severity is scoped by category. Critical is reserved for security_incident, since that is the only tier that pages a human, and widening it would mean the on-call gets woken for non-security events. The lower tiers stay available to every category so the helpdesk can prioritize: a production outage can be high, a printer out of paper is low. 
+
+For account, login, and device tickets, classification turns on whether the ticket explains what happened. A stated ordinary cause is routine regardless of how alarmed the user sounds. Behavior that cannot be clearly explained by the user goes to security_incident or unclear at low confidence, since absence of detail is not evidence that nothing happened.
  
 Each category-severity-confidence combination maps to a pre-defined action. The full action table is in Section 7, with one rule that overrides everything: any ticket classified low confidence routes to a human for review, regardless of category or severity. This keeps a real incident that happens to read as vague from being missed.
  
@@ -255,7 +259,7 @@ Logging note: each Splunk failure entry records which of the three failure types
  
 Action table. The agent does not decide actions on its own and never takes them from Claude. Every action comes from a fixed table written in code. Claude's classification is the key, the action is the value. The agent looks up the category-severity-confidence combination and runs the matching action.
  
-The full table is defined in code during the build, not here. A few example rows:
+The full table is in [docs/action-table.md](action-table.md). A few example rows:
  
 | Category | Severity | Confidence | Action |
 |----------|----------|------------|--------|
