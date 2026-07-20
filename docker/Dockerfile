@@ -23,5 +23,7 @@ RUN cp /var/www/html/include/ost-sampleconfig.php /var/www/html/include/ost-conf
 
 COPY osticket-plugin/ /var/www/html/include/plugins/triage-webhook/
 
+# Comment out the rm -rf line below for the first build so the osTicket
+# installer is reachable, then uncomment and rebuild once install is done.
 RUN rm -rf /var/www/html/setup \
     && chown -R www-data:www-data /var/www/html/include/plugins/triage-webhook 
