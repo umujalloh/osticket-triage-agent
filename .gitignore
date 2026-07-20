@@ -4,6 +4,7 @@
 *.pem
 credentials.json
 secrets/
+ost-config.php
 
 # Python
 __pycache__/
