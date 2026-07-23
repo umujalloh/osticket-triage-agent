@@ -6,8 +6,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from classifier import classify_ticket
-from splunk_logger import log_classification
+from classifier import classify_ticket, ClassificationError
+from splunk_logger import log_classification, log_classification_failure
 
 app = FastAPI()
 
@@ -33,10 +33,22 @@ async def receive_ticket(request: Request):
     payload = await request.json()
     print("Received ticket webhook:", payload)
 
-    classification = classify_ticket(
-        subject=payload.get("subject", ""),
-        message=payload.get("message", "")
-    )
+    try:
+        classification = classify_ticket(
+            subject=payload.get("subject", ""),
+            message=payload.get("message", "")
+        )
+    except ClassificationError as e:
+        log_classification_failure(
+            ticket_id=payload.get("ticket_id"),
+            failure_type=e.failure_type,
+            error=str(e)
+        )
+        return {
+            "status": "classification_failed",
+            "failure_type": e.failure_type
+        }
+
     print("Classification:", classification)
 
     log_classification(
@@ -44,4 +56,5 @@ async def receive_ticket(request: Request):
         subject=payload.get("subject", ""),
         classification=classification
     )
+
     return {"status": "received", "classification": classification.model_dump()}
