@@ -1,7 +1,7 @@
 [
   {
     "subject": "Can't log into portal",
-    "message": "my computer is acting weird. it is not letting me log into the portal, i dont know if i sm not typing in the correct password. and now i got a notification that i successfully logged in from a mac device in france, but i still could not get into the portal",
+    "message": "My computer is acting weird. It is not letting me log into the portal. I don't know if I am not typing in the correct password, and now I got a notification that I successfully logged in from a Mac device in France, but I still could not get into the portal.",
     "expected_category": "security_incident",
     "expected_severity": "high",
     "expected_confidence": "high_confidence"
