@@ -24,6 +24,18 @@ services:
       - db
     extra_hosts:
       - "host.docker.internal:host-gateway"
-
+  splunk:
+    image: splunk/splunk:latest
+    restart: always
+    environment:
+      SPLUNK_START_ARGS: --accept-license
+      SPLUNK_GENERAL_TERMS: --accept-sgt-current-at-splunk-com
+      SPLUNK_PASSWORD: ${SPLUNK_PASSWORD}
+    ports:
+      - "8010:8000"
+      - "8088:8088"
+    volumes:
+      - splunk_data:/opt/splunk/var
 volumes:
   db_data:
+  splunk_data:
