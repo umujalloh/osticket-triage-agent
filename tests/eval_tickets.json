@@ -1,0 +1,212 @@
+[
+  {
+    "subject": "Can't log into portal",
+    "message": "My computer is acting weird. It is not letting me log into the portal. I don't know if I am not typing in the correct password, and now I got a notification that I successfully logged in from a Mac device in France, but I still could not get into the portal.",
+    "expected_category": "security_incident",
+    "expected_severity": "high",
+    "expected_confidence": "high_confidence"
+  },
+  {
+    "subject": "Slow computer, need help",
+    "message": "My laptop has been really slow the past two days, taking forever to open anything. I also noticed my email shows I sent a message to the whole finance team yesterday afternoon, but I don't remember sending that. Might have been on autopilot. Can someone look at my computer when they get a chance.",
+    "expected_category": "security_incident",
+    "expected_severity": "high",
+    "expected_confidence": "low_confidence"
+  },
+  {
+    "subject": "URGENT - someone hacked my account, need help ASAP",
+    "message": "I think my account has been hacked!! I tried to log in this morning and it won't let me, it just keeps saying my password expired and I need to set a new one. I never got any email telling me this was going to happen. This is really scary, please help immediately, I don't know what's going on with my account.",
+    "expected_category": "it_support",
+    "expected_severity": "medium",
+    "expected_confidence": "high_confidence"
+  },
+  {
+    "subject": "I clicked a phishing link and entered my password",
+    "message": "I got an email that looked like it was from IT asking me to verify my account. I clicked the link and it took me to a login page that looked normal, so I entered my username and password. After I submitted it, the page gave an error and now I'm worried it wasn't real. I haven't been able to log into my actual account since. This happened about 20 minutes ago.",
+    "expected_category": "security_incident",
+    "expected_severity": "critical",
+    "expected_confidence": "high_confidence"
+  },
+  {
+    "subject": "Printer on 3rd floor out of paper",
+    "message": "The printer near the finance department on the 3rd floor is out of paper. Can someone refill it when they have a chance? Not urgent, people are just using the one on the 2nd floor for now.",
+    "expected_category": "it_support",
+    "expected_severity": "low",
+    "expected_confidence": "high_confidence"
+  },
+  {
+    "subject": "Weird pop-up",
+    "message": "Got a weird pop-up yesterday saying my antivirus needed an update, clicked it to update. Computer's been fine since then I think, just wanted to mention it in case it matters.",
+    "expected_category": "security_incident",
+    "expected_severity": "high",
+    "expected_confidence": "low_confidence"
+  },
+  {
+    "subject": "Coworker asked about a file",
+    "message": "A coworker from another department messaged me asking about a file I supposedly shared with them last week, but I don't remember sharing anything with them. Probably just a mix up on their end but figured I'd mention it.",
+    "expected_category": "unclear",
+    "expected_severity": "medium",
+    "expected_confidence": "low_confidence"
+  },
+  {
+    "subject": "EMERGENCY - all my files are gone",
+    "message": "I can't find any of my files!! Everything is gone from my desktop, this is a disaster, I have a deadline today. Please help right now, I think I've lost everything.",
+    "expected_category": "unclear",
+    "expected_severity": "high",
+    "expected_confidence": "low_confidence"
+  },
+  {
+    "subject": "My computer is completely dead, need help NOW",
+    "message": "My laptop won't turn on at all, screen is completely black, nothing happens when I press the power button. This is urgent I have a client call in an hour.",
+    "expected_category": "it_support",
+    "expected_severity": "high",
+    "expected_confidence": "high_confidence"
+  },
+  {
+    "subject": "All files on shared drive have .locked extension",
+    "message": "Every file on the shared team drive now has a .locked extension and won't open. There's a text file in the folder demanding payment to unlock everything. This started about 10 minutes ago and is spreading to more folders.",
+    "expected_category": "security_incident",
+    "expected_severity": "critical",
+    "expected_confidence": "high_confidence"
+  },
+  {
+    "subject": "Unauthorized admin account created",
+    "message": "I was reviewing our user list and found a new admin-level account that none of us created, with a username we don't recognize. It was created two days ago and has already been used to log in three times.",
+    "expected_category": "security_incident",
+    "expected_severity": "critical",
+    "expected_confidence": "high_confidence"
+  },
+  {
+    "subject": "Need Excel installed on new laptop",
+    "message": "I got a new laptop last week and it doesn't have Excel installed yet. Could someone install it when they get a chance? No rush, I've been using Google Sheets in the meantime.",
+    "expected_category": "it_support",
+    "expected_severity": "low",
+    "expected_confidence": "high_confidence"
+  },
+  {
+    "subject": "Monitor flickering",
+    "message": "My second monitor has been flickering on and off for the past couple days. Still usable, just annoying. Whenever someone has time to take a look would be great.",
+    "expected_category": "it_support",
+    "expected_severity": "low",
+    "expected_confidence": "high_confidence"
+  },
+  {
+    "subject": "Question about my account",
+    "message": "I had a question about my account but now I don't remember what it was. Can someone reach out?",
+    "expected_category": "unclear",
+    "expected_severity": "low",
+    "expected_confidence": "low_confidence"
+  },
+  {
+    "subject": "Is this email safe?",
+    "message": "I got an email asking me to update my payment info for a subscription renewal. It looks legit but I wanted to check with someone before clicking anything.",
+    "expected_category": "security_question",
+    "expected_severity": "low",
+    "expected_confidence": "high_confidence"
+  },
+  {
+    "subject": "How do I set up two-factor authentication?",
+    "message": "I keep hearing I should turn on 2FA for my work account but I'm not sure how to do it. Can someone walk me through it or point me to instructions?",
+    "expected_category": "security_question",
+    "expected_severity": "low",
+    "expected_confidence": "high_confidence"
+  },
+  {
+    "subject": "Is it okay to use my personal laptop for work?",
+    "message": "My work laptop is being repaired and I was wondering if it's okay to use my personal laptop to access email and files in the meantime, or if that's against policy.",
+    "expected_category": "security_question",
+    "expected_severity": "medium",
+    "expected_confidence": "high_confidence"
+  },
+  {
+    "subject": "Coworker asked me to bypass approval for a payment",
+    "message": "Someone claiming to be our CFO emailed asking me to process a wire transfer urgently and skip the usual approval steps since he's traveling. Something about this feels off, wanted to check before doing anything.",
+    "expected_category": "security_incident",
+    "expected_severity": "high",
+    "expected_confidence": "high_confidence"
+  },
+  {
+    "subject": "Weird text after clicking a link",
+    "message": "I clicked a link in a text message that looked like it was from our IT department about a system update. The page took a few seconds to load then showed an error, so I closed it. Not sure if I should be worried or if this happens sometimes.",
+    "expected_category": "security_incident",
+    "expected_severity": "high",
+    "expected_confidence": "low_confidence"
+  },
+  {
+    "subject": "Old laptop behaving strangely before I return it",
+    "message": "I'm returning my old work laptop next week since I got a new one. The old one has been running slow and sometimes the webcam light turns on by itself. Probably just old age but wanted to flag it before I hand it back.",
+    "expected_category": "security_incident",
+    "expected_severity": "high",
+    "expected_confidence": "low_confidence"
+  },
+  {
+    "subject": "New vendor asking for access",
+    "message": "A new vendor contact emailed asking for temporary access to our shared drive to review some documents for an upcoming project. I don't recognize their name but our manager mentioned we're working with a new vendor recently. Should I grant this?",
+    "expected_category": "security_question",
+    "expected_severity": "medium",
+    "expected_confidence": "high_confidence"
+  },
+  {
+    "subject": "Extra step when logging in today",
+    "message": "Login took a little longer than usual today, had an extra verification step I don't remember seeing before. Got in fine after that though so probably nothing.",
+    "expected_category": "security_incident",
+    "expected_severity": "medium",
+    "expected_confidence": "low_confidence"
+  },
+  {
+    "subject": "Being watched through my webcam??",
+    "message": "The little light next to my webcam turned on for a second and I didn't open any video app. This is really creeping me out, is someone spying on me through my laptop?",
+    "expected_category": "security_incident",
+    "expected_severity": "high",
+    "expected_confidence": "low_confidence"
+  },
+  {
+    "subject": "Can I use the same password for two accounts?",
+    "message": "Is it against policy to use the same password for my work email and a work-related SaaS tool we use? Just want to make sure before I set it up that way.",
+    "expected_category": "security_question",
+    "expected_severity": "low",
+    "expected_confidence": "high_confidence"
+  },
+  {
+    "subject": "Software installation request",
+    "message": "Could someone install Adobe Acrobat Pro on my machine? Need it for reviewing contracts. No rush, whenever is convenient.",
+    "expected_category": "it_support",
+    "expected_severity": "low",
+    "expected_confidence": "high_confidence"
+  },
+  {
+    "subject": "Access request follow-up",
+    "message": "Following up on my request from last week, still waiting on access to the shared reporting folder.",
+    "expected_category": "it_support",
+    "expected_severity": "low",
+    "expected_confidence": "high_confidence"
+  },
+  {
+    "subject": "VPN keeps disconnecting",
+    "message": "My VPN connection keeps dropping every 20-30 minutes today, having to reconnect constantly. Making it hard to get work done.",
+    "expected_category": "it_support",
+    "expected_severity": "medium",
+    "expected_confidence": "high_confidence"
+  },
+  {
+    "subject": "Issue from earlier",
+    "message": "Wanted to follow up on the thing I mentioned to my manager last week. Not sure if it ever got submitted as a ticket. Can you check?",
+    "expected_category": "unclear",
+    "expected_severity": "low",
+    "expected_confidence": "low_confidence"
+  },
+  {
+    "subject": "I'm locked out and someone is sending emails as me",
+    "message": "I can't get into my email, my password stopped working this morning. A coworker just called me because they got an email from my account asking them to buy gift cards, but I never sent that. I also noticed my recovery phone number was changed to one I don't recognize.",
+    "expected_category": "security_incident",
+    "expected_severity": "critical",
+    "expected_confidence": "high_confidence"
+  },
+  {
+    "subject": "Strange large uploads from my computer overnight",
+    "message": "Our IT dashboard flagged that my workstation uploaded almost 40GB of data to an external server last night between 2 and 4am. I was asleep and definitely didn't do this. The destination is a domain none of us recognize. It looks like it's still transferring right now.",
+    "expected_category": "security_incident",
+    "expected_severity": "critical",
+    "expected_confidence": "high_confidence"
+  }
+]

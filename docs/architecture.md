@@ -218,18 +218,22 @@ Residual risk. The defenses leave three gaps. A replay sent within the freshness
 ---
  
 ## 5. Classification Model
- 
+
 Claude classifies each ticket along three dimensions:
- 
+
 Category: what kind of ticket it is. security_incident, security_question, it_support, or unclear.
- 
-Severity: how urgent it is. critical, high, medium, or low.
- 
-Confidence: how clear the ticket text is. high or low.
- 
+
+Severity: how serious the ticket is in the context of its category. critical, high, medium, or low.
+
+Confidence: how well the ticket text supports the classification. high_confidence or low_confidence.
+
 They are separate because each drives a different decision: category decides enrichment, severity decides paging, confidence decides whether a human reviews it. One combined label would lose the ability to route on each one independently.
- 
-Confidence reflects the strength of signal in the ticket text, not the model's certainty. A clear ticket is high confidence, a vague one is low. Severity rounds up when the evidence is borderline, because under-rating a real incident does more damage than over-rating a harmless one.
+
+Confidence reflects the strength of signal in the ticket text, not the model's certainty. A vague ticket is low_confidence even when the model has a strong guess.
+
+Severity is scoped by category. Critical is reserved for security_incident, since that is the only tier that pages a human, and widening it would mean the on-call gets woken for non-security events. The lower tiers stay available to every category so the helpdesk can prioritize: a production outage can be high, a printer out of paper is low. 
+
+For account, login, and device tickets, classification turns on whether the ticket explains what happened. A stated ordinary cause is routine regardless of how alarmed the user sounds. Behavior that cannot be clearly explained by the user goes to security_incident or unclear at low confidence, since absence of detail is not evidence that nothing happened.
  
 Each category-severity-confidence combination maps to a pre-defined action. The full action table is in Section 7, with one rule that overrides everything: any ticket classified low confidence routes to a human for review, regardless of category or severity. This keeps a real incident that happens to read as vague from being missed.
  
@@ -237,17 +241,54 @@ Each category-severity-confidence combination maps to a pre-defined action. The 
  
 ## 6. Failure Modes for the Claude Dependency
 
-Principle: fail safe. Phase 1 depends on Claude returning a trustworthy classification label. When Claude cannot return one, the agent routes the ticket to a human and logs the failure to Splunk. The agent never auto-closes a ticket or assumes low severity when it has no trustworthy label.
+Principle: fail safe. Phase 1 depends on Claude returning a trustworthy
+classification label. When Claude cannot return one, the agent routes
+the ticket to a human and logs the failure to Splunk. The agent never
+auto-closes a ticket or assumes low severity when it has no real
+classification.
 
-Three failure cases:
+The six failure cases split into two groups: transient failures, where
+trying again has a real chance of succeeding, and terminal failures,
+where retrying would just produce the same result. Rate limiting and
+server errors are transient. Everything else is terminal.
 
-1. **Rate limited.** When request volume exceeds the API limit, Claude rejects the request until the agent drops back under the limit, so no label is returned. This is transient, so the agent retries the call a small number of times. If it still fails, the agent treats Claude as unavailable, routes the ticket to a human, and logs the failure to Splunk.
+Six failure cases:
 
-2. **Server down.** Claude returns a server error or does not respond at all. This is also transient, so the agent retries the call a small number of times. If it still fails, the agent treats Claude as unavailable, routes the ticket to a human, and logs the failure to Splunk.
+1. Rate limited. When request volume exceeds the API limit, Claude
+   rejects the request until the agent drops back under the limit, so
+   no label is returned. This is transient, so the agent retries the
+   call 3 times with backoffs. If it still fails, the agent treats
+   Claude as unavailable, routes the ticket to a human, and logs the
+   failure as `rate_limited` to Splunk.
+2. Server down. Claude is unreachable, returns a server error, or
+   times out. This is also transient, so the agent retries the call 3
+   times. If it still fails, the agent treats Claude as unavailable,
+   routes the ticket to a human, and logs the failure as `server_down`
+   to Splunk.
+3. Auth failure. The API key is invalid, expired, or lacks permission,
+   so no label is returned. This is terminal, since the key stays
+   broken until a human replaces it, so the agent does not retry. It
+   routes the ticket to a human and logs the failure as `auth_failure`
+   to Splunk.
+4. Bad request. The request itself is malformed or exceeds the size
+   limit, so no label is returned. Retrying an identical request
+   produces the identical failure, so the agent does not retry. It
+   routes the ticket to a human and logs the failure as `bad_request`
+   to Splunk.
+5. Bad output. Claude responds, but the output does not match the
+   required schema. The agent does not retry in this case because
+   retrying is likely to return the same failure, and a persistent
+   schema failure can indicate a rejected injection attempt (see
+   Attack 1). The agent discards the label, sends the ticket to a
+   human, and logs the failure as `bad_output` to Splunk.
+6. Unknown. Any failure not covered by the five cases above falls
+   here, so no label is returned. An unrecognized failure is not safe
+   to assume is retryable, so the agent does not retry. It routes the
+   ticket to a human and logs the failure as `unknown` to Splunk.
 
-3. **Bad output.** Claude responds, but the output does not match the required schema and still fails after retries. This is terminal: retrying has already failed, and a persistent schema failure can indicate a rejected injection attempt (see Attack 1). The agent discards the label, and sends the ticket to a human instead of retrying again.
-
-Logging note: each Splunk failure entry records which of the three failure types occurred, so failures are countable over time rather than logged as a single generic error.
+Logging note: each Splunk failure entry records which of the six
+failure types occurred, so failures are countable and comparable over
+time rather than logged as a single generic error.
 
 ---
 
@@ -255,7 +296,7 @@ Logging note: each Splunk failure entry records which of the three failure types
  
 Action table. The agent does not decide actions on its own and never takes them from Claude. Every action comes from a fixed table written in code. Claude's classification is the key, the action is the value. The agent looks up the category-severity-confidence combination and runs the matching action.
  
-The full table is defined in code during the build, not here. A few example rows:
+The full table is in [docs/action-table.md](action-table.md). A few example rows:
  
 | Category | Severity | Confidence | Action |
 |----------|----------|------------|--------|
