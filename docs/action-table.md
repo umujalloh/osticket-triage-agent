@@ -15,8 +15,8 @@ missed or silently mishandled.
 | Category | Severity | Confidence | Action |
 |---|---|---|---|
 | security_incident | critical | high | Page on-call, post to Slack, write enrichment note, set priority critical |
-| security_incident | high | high | Post to Slack, write enrichment note, set priority high, no page |
-| security_incident | medium | high | Post to Slack, write enrichment note, set priority medium, no page |
+| security_incident | high | high | Post to Slack, write note, set priority high, no page |
+| security_incident | medium | high | Post to Slack, write note, set priority medium, no page |
 | security_incident | low | high | Write note, set priority low, no alert |
 | security_incident | any | low | Route to human review |
 | security_question | any | high | Write note, tag/route to security queue, set priority from severity, no alert |
@@ -42,3 +42,8 @@ security-tagged queue configured in osTicket before Phase 3 ships.
 **Why `unclear` always routes to human.** The category itself is a
 signal that classification failed to produce a confident read. No
 severity or confidence value overrides that.
+
+**Enrichment scope.** Splunk enrichment triggers on security_incident +
+critical only. High, medium, and low severity security incidents are
+handled without enrichment. Reasoning in
+[architecture.md, Section 7](architecture.md#7-action-layer-and-phasing).

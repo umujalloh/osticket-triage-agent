@@ -22,7 +22,7 @@ The system targets small business and nonprofit security operations, where dedic
  
 Phase 1, receive and classify. Receive the webhook and classify. No writes.
  
-Phase 2, enrich. Add Splunk enrichment for security-relevant tickets. Still no writes.
+Phase 2, enrich. Add Splunk enrichment for security_incident + critical tickets only. Still no writes.
  
 Phase 3, act. Write the internal note, post to Slack for high and critical severity, and page PagerDuty only when a ticket is critical and high confidence. Audit logging runs from Phase 1 onward.
  
@@ -56,7 +56,7 @@ When the agent receives the ticket, it does two things first. It authenticates t
  
 Claude reads the ticket text and returns a classification: category, severity, and confidence. How that classification works is covered in Section 5.
  
-If the ticket is security-relevant, the agent runs a pre-defined, read-only Splunk query, chosen based on the classification, to enrich the ticket with context.
+If the ticket is a security_incident at critical severity, the agent runs a pre-defined, read-only Splunk query, chosen based on the classification, to enrich the ticket with context.
  
 After enrichment, the agent looks up the response in the pre-defined action table, writes an internal note back to osTicket, posts to Slack for high and critical severity, and pages PagerDuty only when the ticket is critical and high confidence. Any low-confidence ticket routes to a human regardless of category or severity.
  
@@ -300,12 +300,12 @@ The full table is in [docs/action-table.md](action-table.md). A few example rows
  
 | Category | Severity | Confidence | Action |
 |----------|----------|------------|--------|
-| security_incident | critical | high | Write enrichment note, page on-call, post to Slack, set priority |
-| security_incident | high | high | Write enrichment note, post to Slack, set priority, no page |
+| security_incident | critical | high | Page on-call, post to Slack, write enrichment note, set priority critical |
+| security_incident | high | high | Post to Slack, write note, set priority high, no page |
 | it_support | low | high | Write note, no alert |
 | any | any | low | Route to human review |
  
-The page is reserved for critical at high confidence. High severity at high confidence posts to Slack but does not page, so a routine-but-urgent ticket reaches the team channel without waking on-call. Anything at low confidence falls through to human review before any alert fires.
+The page is reserved for critical at high confidence, and so is Splunk enrichment. Both are gated to the case that wakes a human, rather than running for every security-relevant ticket. High severity at high confidence posts to Slack and writes a note but does not page or enrich, so an urgent ticket that isn't severe enough to page still reaches the team channel without waking on-call or expanding the query surface. Anything at low confidence falls through to human review before any alert fires.
  
 Phasing. The build is in three phases, each proven before the next.
  
