@@ -40,7 +40,11 @@ For tickets describing account, login, or device behavior, the key question is w
 
 Respond with only the classification. Do not include explanation, commentary, or any text outside the three required fields."""
 
-client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+if not ANTHROPIC_API_KEY:
+    raise RuntimeError("ANTHROPIC_API_KEY is not set")
+
+client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
 CLASSIFICATION_TOOL = {
     "name": "classify_ticket",

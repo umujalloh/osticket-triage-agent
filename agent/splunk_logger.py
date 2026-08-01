@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 
 SPLUNK_HEC_URL = os.getenv("SPLUNK_HEC_URL")
 SPLUNK_HEC_TOKEN = os.getenv("SPLUNK_HEC_TOKEN")
+if not SPLUNK_HEC_URL or not SPLUNK_HEC_TOKEN:
+    raise RuntimeError("SPLUNK_HEC_URL and SPLUNK_HEC_TOKEN must both be set")
 
 def log_classification(ticket_id, subject, classification):
     event = {

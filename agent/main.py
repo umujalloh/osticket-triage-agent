@@ -12,6 +12,8 @@ from splunk_logger import log_classification, log_classification_failure
 app = FastAPI()
 
 HMAC_SECRET = os.getenv("TRIAGE_HMAC_SECRET")
+if not HMAC_SECRET:
+    raise RuntimeError("TRIAGE_HMAC_SECRET is not set")
 
 def verify_signature(raw_body: bytes, signature_header: str) -> bool:
     if not signature_header or not signature_header.startswith("sha256="):
