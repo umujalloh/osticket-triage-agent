@@ -207,9 +207,9 @@ Vector. Webhook retries from osTicket on slow or failed responses, and an attack
  
 Defense.
  
-Idempotency. The agent tracks processed ticket IDs and skips any it has already handled, so one ticket is acted on exactly once no matter how many times the request arrives.
+Idempotency. The agent keeps an in-memory set of processed ticket IDs and skips any it has already handled, so one ticket is acted on exactly once no matter how many times the request arrives.
  
-Timestamped signature with a freshness check. The signature includes a timestamp, and the agent rejects requests whose timestamp is too old. This kills replays of captured requests, since a replayed request is by definition stale.
+Timestamped payload with a freshness check. The signed payload includes a `created_at` timestamp, so tampering with it invalidates the signature. The agent rejects any request whose timestamp is more than 5 minutes old (with a 60 second allowance for clock skew). This kills replays of captured requests, since a replayed request is by definition stale.
  
 Secret rotation. The HMAC signing secret is rotated periodically, which invalidates any requests captured under the old secret. This bounds how long a captured request stays replayable, on top of the per-request timestamp check.
  

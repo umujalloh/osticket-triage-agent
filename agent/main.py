@@ -1,7 +1,9 @@
 import hmac
 import hashlib
 import os
+from datetime import datetime, timezone
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
+from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -23,6 +25,23 @@ def verify_signature(raw_body: bytes, signature_header: str) -> bool:
         HMAC_SECRET.encode(), raw_body, hashlib.sha256
     ).hexdigest()
     return hmac.compare_digest(received_signature, expected_signature)
+
+REPLAY_WINDOW_SECONDS = 300
+CLOCK_SKEW_TOLERANCE_SECONDS = 60
+
+def is_fresh(created_at) -> bool:
+    if not created_at:
+        return False
+    try:
+        ts = datetime.fromisoformat(created_at)
+    except (TypeError, ValueError):
+        return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - ts).total_seconds()
+    return -CLOCK_SKEW_TOLERANCE_SECONDS <= age <= REPLAY_WINDOW_SECONDS
+
+seen_ticket_ids = set()
 
 def process_ticket(payload: dict):
     ticket_id = payload.get("ticket_id")
@@ -59,6 +78,16 @@ async def receive_ticket(request: Request, background_tasks: BackgroundTasks):
         raise HTTPException(status_code=401, detail="Invalid signature")
 
     payload = await request.json()
+
+    if not is_fresh(payload.get("created_at")):
+        raise HTTPException(status_code=401, detail="Request timestamp is stale or invalid")
+
+    ticket_id = payload.get("ticket_id")
+    if ticket_id is not None:
+        if ticket_id in seen_ticket_ids:
+            return JSONResponse(status_code=200, content={"status": "duplicate", "ticket_id": ticket_id})
+        seen_ticket_ids.add(ticket_id)
+
     background_tasks.add_task(process_ticket, payload)
 
     return {"status": "accepted"}
