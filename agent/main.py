@@ -1,7 +1,7 @@
 import hmac
 import hashlib
 import os
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -24,16 +24,8 @@ def verify_signature(raw_body: bytes, signature_header: str) -> bool:
     ).hexdigest()
     return hmac.compare_digest(received_signature, expected_signature)
 
-@app.post("/webhook/ticket")
-async def receive_ticket(request: Request):
-    raw_body = await request.body()
-    signature_header = request.headers.get("X-Triage-Signature")
-
-    if not verify_signature(raw_body, signature_header):
-        raise HTTPException(status_code=401, detail="Invalid signature")
-
-    payload = await request.json()
-    print("Received ticket webhook:", payload)
+def process_ticket(payload: dict):
+    ticket_id = payload.get("ticket_id")
 
     try:
         classification = classify_ticket(
@@ -42,21 +34,31 @@ async def receive_ticket(request: Request):
         )
     except ClassificationError as e:
         log_classification_failure(
-            ticket_id=payload.get("ticket_id"),
+            ticket_id=ticket_id,
             failure_type=e.failure_type,
             error=str(e)
         )
-        return {
-            "status": "classification_failed",
-            "failure_type": e.failure_type
-        }
-
-    print("Classification:", classification)
+        print(f"Ticket {ticket_id}: classification failed ({e.failure_type})")
+        return
 
     log_classification(
-        ticket_id=payload.get("ticket_id"),
+        ticket_id=ticket_id,
         subject=payload.get("subject", ""),
         classification=classification
     )
+    print(f"Ticket {ticket_id}: classified "
+          f"{classification.category.value}/{classification.severity.value}/"
+          f"{classification.confidence.value}")
 
-    return {"status": "received", "classification": classification.model_dump()}
+@app.post("/webhook/ticket", status_code=202)
+async def receive_ticket(request: Request, background_tasks: BackgroundTasks):
+    raw_body = await request.body()
+    signature_header = request.headers.get("X-Triage-Signature")
+
+    if not verify_signature(raw_body, signature_header):
+        raise HTTPException(status_code=401, detail="Invalid signature")
+
+    payload = await request.json()
+    background_tasks.add_task(process_ticket, payload)
+
+    return {"status": "accepted"}

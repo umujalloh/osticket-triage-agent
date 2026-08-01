@@ -77,6 +77,8 @@ class TriagePlugin extends Plugin {
             curl_setopt($ch, CURLOPT_CUSTOMREQUEST, "POST");
             curl_setopt($ch, CURLOPT_POSTFIELDS, $data_string);
             curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+            curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 3);
+            curl_setopt($ch, CURLOPT_TIMEOUT, 5);
             curl_setopt($ch, CURLOPT_HTTPHEADER, array(
                 'Content-Type: application/json',
                 'Content-Length: ' . strlen($data_string),
@@ -87,7 +89,7 @@ class TriagePlugin extends Plugin {
                 throw new \Exception($url . ' - ' . curl_error($ch));
             } else {
                 $statusCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-                if ($statusCode != '200') {
+                if ($statusCode != '202') {
                     throw new \Exception('Error sending to: ' . $url . ' Http code: ' . $statusCode);
                 }
             }
