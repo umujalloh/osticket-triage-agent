@@ -52,15 +52,17 @@ def process_ticket(payload: dict):
             message=payload.get("message", "")
         )
     except ClassificationError as e:
-        log_classification_failure(
+        audit_ok = log_classification_failure(
             ticket_id=ticket_id,
             failure_type=e.failure_type,
             error=str(e)
         )
         print(f"Ticket {ticket_id}: classification failed ({e.failure_type})")
+        if not audit_ok:
+            print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
         return
 
-    log_classification(
+    audit_ok = log_classification(
         ticket_id=ticket_id,
         subject=payload.get("subject", ""),
         classification=classification
@@ -68,6 +70,8 @@ def process_ticket(payload: dict):
     print(f"Ticket {ticket_id}: classified "
           f"{classification.category.value}/{classification.severity.value}/"
           f"{classification.confidence.value}")
+    if not audit_ok:
+        print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
 
 @app.post("/webhook/ticket", status_code=202)
 async def receive_ticket(request: Request, background_tasks: BackgroundTasks):

@@ -355,6 +355,8 @@ What is logged. Each entry captures the ticket ID, the agent's decision (categor
  
 This record is also what makes the future mismatch-detection hardening (Section 7) possible. That check compares a ticket's current state against what the agent decided, which only works if the decision was logged in the first place.
  
+Audit write failure. If a write to Splunk fails, the agent does not treat the decision as recorded. It flags the ticket for human review the same way a Claude failure does in Section 6, since a decision with no audit trail cannot be trusted to have happened correctly.
+ 
 Always on. Audit logging is exempt from the kill switch. When the kill switch disables effectful writes, audit writes keep running, because visibility matters most during the incidents that make you flip the switch.
  
 Separate system. The audit log lives in Splunk, on a separate credential from osTicket. A compromised osTicket key can tamper with tickets but cannot reach the Splunk audit record, so the agent's original decisions survive in a place the tampered system can't touch.

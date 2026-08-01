@@ -164,9 +164,9 @@ token value once, at creation, save it now, this value goes into `agent/.env`
 in Section 4.
 
 Splunk must be running when the agent processes a ticket. If it is not, the
-audit write fails and the agent logs the failure but still returns the
-classification, so a missing audit entry will not surface as an error in the
-agent's output.
+audit write fails and the agent prints a "needs human review" line for that
+ticket, since a decision with no audit trail can't be trusted to have been
+recorded correctly.
 
 The agent connects with certificate verification disabled, since a default
 Splunk install uses a self-signed certificate. See

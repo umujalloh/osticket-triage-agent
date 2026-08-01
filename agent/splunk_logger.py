@@ -28,8 +28,10 @@ def log_classification(ticket_id, subject, classification):
             SPLUNK_HEC_URL, headers=headers, json=event, verify=False, timeout=5
         )
         response.raise_for_status()
+        return True
     except requests.exceptions.RequestException as e:
         print(f"Splunk logging failed: {e}")
+        return False
 
 def log_classification_failure(ticket_id, failure_type, error):
     event = {
@@ -49,5 +51,7 @@ def log_classification_failure(ticket_id, failure_type, error):
             SPLUNK_HEC_URL, headers=headers, json=event, verify=False, timeout=5
         )
         response.raise_for_status()
+        return True
     except requests.exceptions.RequestException as e:
         print(f"Splunk logging failed: {e}")
+        return False
