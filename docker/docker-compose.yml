@@ -36,6 +36,7 @@ services:
       - "8088:8088"
     volumes:
       - splunk_data:/opt/splunk/var
+      - ./splunk-apps/botsv3_data_set:/opt/splunk/etc/apps/botsv3_data_set
 volumes:
   db_data:
   splunk_data:
