@@ -339,7 +339,7 @@ Outbound, only the ticket body and the classification request go to Claude. Cred
  
 Least privilege. Each of the agent's three credentials is scoped to the minimum it needs, so a compromised key is bounded to what that key was allowed to do.
  
-Splunk service account: read-only on named indexes. No write, no admin, no deploy.
+Splunk service account: read-only, scoped to only the index(es) enrichment queries need. No write, no admin, no deploy.
  
 osTicket API key: comment and priority update only. No delete, no ticket creation, no user management.
  
