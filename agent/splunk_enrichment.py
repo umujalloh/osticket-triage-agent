@@ -1,0 +1,135 @@
+import ipaddress
+import json
+import os
+import re
+import time
+import requests
+
+from schemas import HOSTNAME_PATTERN, USERNAME_PATTERN
+
+SPLUNK_SEARCH_URL = os.getenv("SPLUNK_SEARCH_URL")
+SPLUNK_AGENT_USER = os.getenv("SPLUNK_AGENT_USER", "triage_agent")
+SPLUNK_AGENT_PASSWORD = os.getenv("SPLUNK_AGENT_PASSWORD")
+if not SPLUNK_SEARCH_URL or not SPLUNK_AGENT_PASSWORD:
+    raise RuntimeError("SPLUNK_SEARCH_URL and SPLUNK_AGENT_PASSWORD must both be set")
+
+# Defaults to a real-world sensible recent lookback. Overridden in this
+# lab's agent/.env since BOTSv3 is a frozen historical dataset (2018-2019)
+# that a relative "last N days" window could never reach from today.
+SPLUNK_ENRICHMENT_EARLIEST = os.getenv("SPLUNK_ENRICHMENT_EARLIEST", "-7d")
+
+EMAIL_PATTERN = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
+
+class EnrichmentError(Exception):
+    def __init__(self, failure_type: str, message: str):
+        self.failure_type = failure_type
+        super().__init__(message)
+
+def _is_valid_ip(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+def build_enrichment_query(hostname=None, username=None, source_ip=None,
+                            submitter_email=None, submitter_ip=None):
+    """Builds a fixed, read-only SPL query from validated entity values.
+
+    Every value is re-validated here against the same patterns used at
+    classification time, independent of whether the caller already
+    validated it, before it can reach the query string. Returns None if
+    there is nothing safe to search on rather than falling back to a
+    generic query.
+    """
+    clauses = []
+
+    if hostname and HOSTNAME_PATTERN.match(hostname):
+        clauses.append(f'host="{hostname}"')
+
+    if username and USERNAME_PATTERN.match(username):
+        clauses.append(f'"{username}"')
+
+    if source_ip and _is_valid_ip(source_ip):
+        clauses.append(f'"{source_ip}"')
+
+    if submitter_email and EMAIL_PATTERN.match(submitter_email):
+        clauses.append(f'"{submitter_email}"')
+
+    if submitter_ip and _is_valid_ip(submitter_ip):
+        clauses.append(f'"{submitter_ip}"')
+
+    if not clauses:
+        return None
+
+    condition = " OR ".join(clauses)
+    return (f'search index=botsv3 ({condition}) earliest={SPLUNK_ENRICHMENT_EARLIEST} '
+            f'| table _time, host, sourcetype, _raw | head 20')
+
+def _run_enrichment_query(query: str, timeout: int = 15):
+    """Not meant to be called directly - use enrich_ticket, which only
+    ever passes a query built by build_enrichment_query. This function
+    does not validate its input.
+    """
+    last_error = None
+    for attempt in range(3):
+        try:
+            response = requests.post(
+                SPLUNK_SEARCH_URL,
+                auth=(SPLUNK_AGENT_USER, SPLUNK_AGENT_PASSWORD),
+                data={"search": query, "output_mode": "json"},
+                verify=False,
+                timeout=timeout,
+            )
+        except requests.exceptions.Timeout as e:
+            last_error = ("server_down", f"Splunk query timed out: {e}")
+            time.sleep([5, 15, 30][attempt])
+            continue
+        except requests.exceptions.ConnectionError as e:
+            last_error = ("server_down", f"Could not connect to Splunk: {e}")
+            time.sleep([5, 15, 30][attempt])
+            continue
+        except requests.exceptions.RequestException as e:
+            raise EnrichmentError("unknown", f"{type(e).__name__}: {e}")
+
+        if response.status_code == 401:
+            raise EnrichmentError("auth_failure", "Splunk rejected the triage_agent credentials")
+        if response.status_code in (429, 503):
+            last_error = ("rate_limited", f"Splunk search quota exceeded (HTTP {response.status_code})")
+            time.sleep([20, 40, 60][attempt])
+            continue
+        if response.status_code == 400:
+            raise EnrichmentError("bad_request", f"Splunk rejected the query: {response.text}")
+        if response.status_code != 200:
+            raise EnrichmentError("unknown", f"Unexpected Splunk response: HTTP {response.status_code}")
+
+        events = []
+        try:
+            for line in response.text.strip().splitlines():
+                if not line:
+                    continue
+                record = json.loads(line)
+                if "result" in record:
+                    events.append(record["result"])
+        except (ValueError, KeyError) as e:
+            raise EnrichmentError("bad_output", f"Could not parse Splunk response: {e}")
+
+        return events
+
+    failure_type, message = last_error
+    raise EnrichmentError(failure_type, message)
+
+def enrich_ticket(hostname=None, username=None, source_ip=None,
+                   submitter_email=None, submitter_ip=None):
+    """Runs a read-only enrichment query if there is a valid entity to
+    search on.
+
+    Returns None if there is nothing to search, or a list of matching
+    events (possibly empty) on success. Raises EnrichmentError on
+    failure; never returns placeholder data.
+    """
+    query = build_enrichment_query(hostname, username, source_ip,
+                                    submitter_email, submitter_ip)
+    if query is None:
+        return None
+    return _run_enrichment_query(query)
