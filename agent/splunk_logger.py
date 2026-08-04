@@ -7,51 +7,60 @@ SPLUNK_HEC_TOKEN = os.getenv("SPLUNK_HEC_TOKEN")
 if not SPLUNK_HEC_URL or not SPLUNK_HEC_TOKEN:
     raise RuntimeError("SPLUNK_HEC_URL and SPLUNK_HEC_TOKEN must both be set")
 
-def log_classification(ticket_id, subject, classification):
-    event = {
+def _send_audit_event(event_content):
+    payload = {
         "time": datetime.now(timezone.utc).timestamp(),
         "sourcetype": "osticket:triage:audit",
         "index": "osticket_triage",
-        "event": {
-            "ticket_id": ticket_id,
-            "subject": subject,
-            "category": classification.category.value,
-            "severity": classification.severity.value,
-            "confidence": classification.confidence.value,
-        }
+        "event": event_content,
     }
-
     headers = {"Authorization": f"Splunk {SPLUNK_HEC_TOKEN}"}
-
     try:
         response = requests.post(
-            SPLUNK_HEC_URL, headers=headers, json=event, verify=False, timeout=5
+            SPLUNK_HEC_URL, headers=headers, json=payload, verify=False, timeout=5
         )
         response.raise_for_status()
         return True
     except requests.exceptions.RequestException as e:
         print(f"Splunk logging failed: {e}")
         return False
+
+def log_classification(ticket_id, subject, classification):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "subject": subject,
+        "category": classification.category.value,
+        "severity": classification.severity.value,
+        "confidence": classification.confidence.value,
+    })
 
 def log_classification_failure(ticket_id, failure_type, error):
-    event = {
-        "time": datetime.now(timezone.utc).timestamp(),
-        "sourcetype": "osticket:triage:audit",
-        "index": "osticket_triage",
-        "event": {
-            "ticket_id": ticket_id,
-            "status": "classification_failed",
-            "failure_type": failure_type,
-            "error": error,
-        }
-    }
-    headers = {"Authorization": f"Splunk {SPLUNK_HEC_TOKEN}"}
-    try:
-        response = requests.post(
-            SPLUNK_HEC_URL, headers=headers, json=event, verify=False, timeout=5
-        )
-        response.raise_for_status()
-        return True
-    except requests.exceptions.RequestException as e:
-        print(f"Splunk logging failed: {e}")
-        return False
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "classification_failed",
+        "failure_type": failure_type,
+        "error": error,
+    })
+
+def log_enrichment(ticket_id, events):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "enrichment_complete",
+        "event_count": len(events),
+        "events": events,
+    })
+
+def log_enrichment_skipped(ticket_id, reason):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "enrichment_skipped",
+        "reason": reason,
+    })
+
+def log_enrichment_failure(ticket_id, failure_type, error):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "enrichment_failed",
+        "failure_type": failure_type,
+        "error": error,
+    })

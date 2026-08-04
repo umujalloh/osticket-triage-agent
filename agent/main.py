@@ -9,7 +9,12 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from classifier import classify_ticket, ClassificationError
-from splunk_logger import log_classification, log_classification_failure
+from schemas import Category, Severity, Confidence
+from splunk_enrichment import enrich_ticket, EnrichmentError
+from splunk_logger import (
+    log_classification, log_classification_failure,
+    log_enrichment, log_enrichment_failure, log_enrichment_skipped,
+)
 
 app = FastAPI()
 
@@ -70,6 +75,46 @@ def process_ticket(payload: dict):
     print(f"Ticket {ticket_id}: classified "
           f"{classification.category.value}/{classification.severity.value}/"
           f"{classification.confidence.value}")
+    if not audit_ok:
+        print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
+        return
+
+    should_enrich = (
+        classification.category == Category.security_incident
+        and classification.severity == Severity.critical
+        and classification.confidence == Confidence.high_confidence
+    )
+    if not should_enrich:
+        return
+
+    try:
+        events = enrich_ticket(
+            hostname=classification.hostname,
+            username=classification.username,
+            source_ip=classification.source_ip,
+            submitter_email=payload.get("requester"),
+            submitter_ip=payload.get("submitter_ip"),
+        )
+    except EnrichmentError as e:
+        audit_ok = log_enrichment_failure(
+            ticket_id=ticket_id,
+            failure_type=e.failure_type,
+            error=str(e)
+        )
+        print(f"Ticket {ticket_id}: enrichment failed ({e.failure_type})")
+        if not audit_ok:
+            print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
+        return
+
+    if events is None:
+        audit_ok = log_enrichment_skipped(ticket_id=ticket_id, reason="no_entity")
+        print(f"Ticket {ticket_id}: no entity to enrich on, skipped")
+        if not audit_ok:
+            print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
+        return
+
+    audit_ok = log_enrichment(ticket_id=ticket_id, events=events)
+    print(f"Ticket {ticket_id}: enrichment found {len(events)} related event(s)")
     if not audit_ok:
         print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
 
