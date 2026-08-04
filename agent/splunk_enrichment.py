@@ -109,7 +109,7 @@ def _run_enrichment_query(query: str, timeout: int = 15):
                 if not line:
                     continue
                 record = json.loads(line)
-                if "result" in record:
+                if record.get("preview") is False and "result" in record:
                     events.append(record["result"])
         except (ValueError, KeyError) as e:
             raise EnrichmentError("bad_output", f"Could not parse Splunk response: {e}")
