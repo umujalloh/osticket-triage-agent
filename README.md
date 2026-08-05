@@ -146,7 +146,18 @@ on port 8000 on the host.
 Splunk runs as part of the same Docker Compose stack and already started in
 Section 1. Add `SPLUNK_PASSWORD` to `docker/.env` (8 or more characters,
 mixing letters and numbers, Splunk rejects overly simple passwords even at
-8 characters) before running `docker compose up -d --build`.
+8 characters).
+
+The agent verifies its TLS connection to Splunk against a certificate
+generated for this deployment, not Splunk's shipped default (the same
+certificate and private key ship in every default Splunk install, so
+trusting it wouldn't prove anything). Run `docker/generate-splunk-cert.sh`
+now, before starting Splunk - docker-compose.yml points Splunk at this
+certificate from its first boot, so it needs to exist beforehand. The
+output is gitignored and not committed. See
+[`splunk_logger.py`](agent/splunk_logger.py).
+
+Then run `docker compose up -d --build`.
 
 Splunk's web UI is at `http://localhost:8010`, mapped from the container's
 internal port 8000 since port 8000 is already used by the agent. Log in with
@@ -167,10 +178,6 @@ Splunk must be running when the agent processes a ticket. If it is not, the
 audit write fails and the agent prints a "needs human review" line for that
 ticket, since a decision with no audit trail can't be trusted to have been
 recorded correctly.
-
-The agent connects with certificate verification disabled, since a default
-Splunk install uses a self-signed certificate. See
-[`splunk_logger.py`](agent/splunk_logger.py).
 
 ### 4. Agent environment
 

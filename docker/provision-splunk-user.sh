@@ -24,10 +24,11 @@ SPLUNK_AGENT_PASSWORD=$(grep -m1 '^SPLUNK_AGENT_PASSWORD=' "$ENV_FILE" | cut -d=
 
 SPLUNK_REST_HOST="${SPLUNK_REST_HOST:-localhost}"
 SPLUNK_REST_PORT="${SPLUNK_REST_PORT:-8089}"
+CACERT="$SCRIPT_DIR/splunk-provisioning/custom_tls/default/certs/cacert.pem"
 
 echo "Creating Splunk user 'triage_agent' with role 'triage_enrichment'..."
 
-response=$(curl -sk -w '\n%{http_code}' \
+response=$(curl -s --cacert "$CACERT" -w '\n%{http_code}' \
   -u "admin:${SPLUNK_PASSWORD}" \
   "https://${SPLUNK_REST_HOST}:${SPLUNK_REST_PORT}/services/authentication/users" \
   -d name=triage_agent \

@@ -19,3 +19,6 @@ venv/
 
 # Splunk datasets
 docker/splunk-apps/
+
+# Generated TLS certs
+docker/splunk-provisioning/custom_tls/default/certs/
