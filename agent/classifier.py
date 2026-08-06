@@ -48,6 +48,21 @@ if not ANTHROPIC_API_KEY:
 
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
+MODEL = os.getenv("TRIAGE_MODEL", "claude-haiku-4-5")
+
+
+def _model_params() -> dict:
+    """Per-model call parameters.
+
+    The Claude 5 series rejects sampling parameters and enables thinking by
+    default. Thinking is disabled here so classification stays a single
+    judgment against the rubric, and so thinking tokens cannot consume the
+    max_tokens budget before a classification is produced.
+    """
+    if MODEL.startswith(("claude-sonnet-5", "claude-opus-5")):
+        return {"thinking": {"type": "disabled"}}
+    return {"temperature": 0}
+
 CLASSIFICATION_TOOL = {
     "name": "classify_ticket",
     "description": "Classify a helpdesk ticket by category, severity, and confidence, optionally noting any hostname, username, or source IP explicitly named in the ticket text.",
@@ -90,9 +105,9 @@ def classify_ticket(subject: str, message: str) -> TicketClassification:
     for attempt in range(3):
         try:
             response = client.messages.create(
-                model="claude-haiku-4-5",
+                model=MODEL,
                 max_tokens=200,
-                temperature=0,
+                **_model_params(),
                 system=SYSTEM_PROMPT,
                 tools=[CLASSIFICATION_TOOL],
                 tool_choice={"type": "tool", "name": "classify_ticket"},
