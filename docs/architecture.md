@@ -351,11 +351,13 @@ Claude API key: daily token budget cap, rate limit, audit every call.
  
 ## 9. Observability and Audit
  
-Audit logging. Every classification, query, and action is logged to Splunk continuously, at every step.
+Audit logging. Every request the agent accepts or rejects, every classification, and every enrichment query is logged to Splunk continuously, at every step.
  
-What is logged. Each entry captures the ticket ID, the agent's decision (category, severity, confidence), the action taken, and a timestamp. This is enough to reconstruct what the agent did to any ticket and why.
+What is logged. For a ticket the agent processed, each entry captures the ticket ID, the agent's decision (category, severity, confidence), the action taken, and a timestamp. This is enough to reconstruct what the agent did to any ticket and why.
  
 This record is also what makes the future mismatch-detection hardening (Section 7) possible. That check compares a ticket's current state against what the agent decided, which only works if the decision was logged in the first place.
+ 
+Rejected requests. A request that fails the signature check, arrives outside the freshness window, or repeats an accepted ticket ID is logged with its reason and the requesting IP, so probing and replay leave a trace rather than a silent 401. Nothing from the body is recorded when the signature check is what failed, since at that point it is unverified. These writes are queued rather than made inline, so a slow write cannot delay the response and forged requests cannot be used to stall the rejection path.
  
 Audit write failure. If a write to Splunk fails, the agent does not treat the decision as recorded. It flags the ticket for human review the same way a Claude failure does in Section 6, since a decision with no audit trail cannot be trusted to have happened correctly.
  

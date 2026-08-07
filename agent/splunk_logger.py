@@ -32,6 +32,16 @@ def _send_audit_event(event_content):
         print(f"Splunk logging failed: {e}")
         return False
 
+# ticket_id is passed only where the HMAC signature already verified. On a
+# signature failure the body is unverified, so nothing from it is recorded.
+def log_request_rejected(reason, source_ip, ticket_id=None):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "request_rejected",
+        "reason": reason,
+        "source_ip": source_ip,
+    })
+
 def log_classification(ticket_id, subject, classification):
     return _send_audit_event({
         "ticket_id": ticket_id,

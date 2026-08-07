@@ -2,7 +2,7 @@ import hmac
 import hashlib
 import os
 from datetime import datetime, timezone
-from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
+from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 
@@ -12,6 +12,7 @@ from classifier import classify_ticket, ClassificationError
 from schemas import Category, Severity, Confidence
 from splunk_enrichment import enrich_ticket, EnrichmentError
 from splunk_logger import (
+    log_request_rejected,
     log_classification, log_classification_failure,
     log_enrichment, log_enrichment_failure, log_enrichment_skipped,
 )
@@ -122,18 +123,32 @@ def process_ticket(payload: dict):
 async def receive_ticket(request: Request, background_tasks: BackgroundTasks):
     raw_body = await request.body()
     signature_header = request.headers.get("X-Triage-Signature")
+    source_ip = request.client.host if request.client else None
 
     if not verify_signature(raw_body, signature_header):
-        raise HTTPException(status_code=401, detail="Invalid signature")
+        background_tasks.add_task(
+            log_request_rejected, reason="invalid_signature", source_ip=source_ip
+        )
+        return JSONResponse(status_code=401, content={"detail": "Invalid signature"})
 
     payload = await request.json()
 
     if not is_fresh(payload.get("created_at")):
-        raise HTTPException(status_code=401, detail="Request timestamp is stale or invalid")
+        background_tasks.add_task(
+            log_request_rejected, reason="stale_timestamp", source_ip=source_ip,
+            ticket_id=payload.get("ticket_id")
+        )
+        return JSONResponse(
+            status_code=401, content={"detail": "Request timestamp is stale or invalid"}
+        )
 
     ticket_id = payload.get("ticket_id")
     if ticket_id is not None:
         if ticket_id in seen_ticket_ids:
+            background_tasks.add_task(
+                log_request_rejected, reason="duplicate", source_ip=source_ip,
+                ticket_id=ticket_id
+            )
             return JSONResponse(status_code=200, content={"status": "duplicate", "ticket_id": ticket_id})
         seen_ticket_ids.add(ticket_id)
 
