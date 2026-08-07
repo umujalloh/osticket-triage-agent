@@ -225,13 +225,15 @@ Category: what kind of ticket it is. security_incident, security_question, it_su
 
 Severity: how serious the ticket is in the context of its category. critical, high, medium, or low.
 
-Confidence: how well the ticket text supports the classification. high_confidence or low_confidence.
+Confidence: whether the ticket accounts for what happened. high_confidence or low_confidence.
 
-They are separate because each drives a different decision: category decides enrichment, severity decides paging, confidence decides whether a human reviews it. One combined label would lose the ability to route on each one independently.
+They are separate because the action table reads all three together rather than one combined label. Category decides whether a ticket is a security matter, severity decides how loudly to alert, and confidence decides whether the agent should act on the classification at all without a human. Enrichment and paging each require a specific combination of all three, not any single dimension. Confidence is the only one that acts on its own, since low confidence routes to a human regardless of category or severity.
 
-Confidence reflects the strength of signal in the ticket text, not the model's certainty. A vague ticket is low_confidence even when the model has a strong guess.
+Confidence describes the ticket, not the model's certainty. A vague ticket is low_confidence even when the model has a strong guess, and so is a ticket that names an event but leaves it unexplained. Strong evidence for a category is not on its own enough: a ticket can point clearly at security_incident and still be low_confidence when the user cannot account for what happened. Defining it as strength of signal instead lets a well-narrated but unexplained incident come back high_confidence and bypass human review, which is the one thing this field exists to prevent.
 
-Severity is scoped by category. Critical is reserved for security_incident, since that is the only tier that pages a human, and widening it would mean the on-call gets woken for non-security events. The lower tiers stay available to every category so the helpdesk can prioritize: a production outage can be high, a printer out of paper is low. 
+Severity is scoped by category. Critical is reserved for security_incident, since that is the only tier that pages a human, and widening it would mean the on-call gets woken for non-security events. The lower tiers stay available to every category so the helpdesk can prioritize: a production outage can be high, a printer out of paper is low.
+
+What severity measures differs by category. For a security incident it is the state of the threat: whether unauthorized access is still held, or destructive action has already been carried out. For every other category it is disruption and urgency. Each gets its own definition rather than sharing one ladder, because a scale built around attacker access says nothing useful about a printer, and leaving those categories without a rule of their own makes their severity arbitrary. 
 
 For account, login, and device tickets, classification turns on whether the ticket explains what happened. A stated ordinary cause is routine regardless of how alarmed the user sounds. Behavior that cannot be clearly explained by the user goes to security_incident or unclear at low confidence, since absence of detail is not evidence that nothing happened.
  
