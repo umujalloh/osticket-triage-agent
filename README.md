@@ -46,11 +46,11 @@ from the webhook rather than from anything typed into the ticket. Any hostname,
 username, or IP the classifier extracted from the ticket text is validated and
 recorded in the audit log, but never reaches a query, since a ticket author
 choosing what those fields say would otherwise be choosing what the agent
-searches for. Every value is validated again
-inside the enrichment module before it can reach a query, on the assumption that
-the caller may not have validated it. Queries are built from fixed templates,
-run read-only, and authenticate as a Splunk user scoped to a single index. The
-result, or the reason there wasn't one, goes to the audit log either way.
+searches for. Every value is validated against a strict pattern inside the
+enrichment module before it can reach a query, independent of whether the caller
+already validated it. Queries are built from fixed templates, run read-only, and
+authenticate as a Splunk user scoped to a single index. The result, or the
+reason there wasn't one, goes to the audit log either way.
 
 If Claude fails to return a classification, rate limited, unreachable, a bad
 credential, or an invalid response, the agent flags the ticket for human review

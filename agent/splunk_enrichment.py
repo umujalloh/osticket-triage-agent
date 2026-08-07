@@ -47,11 +47,10 @@ def build_enrichment_query(submitter_email=None, submitter_ip=None):
     extracted and validated at classification time and recorded in the audit
     log, they just never reach a query.
 
-    Every value is re-validated here against the same patterns used at
-    classification time, independent of whether the caller already
-    validated it, before it can reach the query string. Returns None if
-    there is nothing safe to search on rather than falling back to a
-    generic query.
+    Every value is validated against a strict pattern before it can reach the
+    query string, independent of whether the caller already validated it.
+    Returns None if there is nothing safe to search on rather than falling
+    back to a generic query.
     """
     clauses = []
 
