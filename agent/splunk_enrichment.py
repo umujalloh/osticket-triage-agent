@@ -5,8 +5,6 @@ import re
 import time
 import requests
 
-from schemas import HOSTNAME_PATTERN, USERNAME_PATTERN
-
 SPLUNK_SEARCH_URL = os.getenv("SPLUNK_SEARCH_URL")
 SPLUNK_AGENT_USER = os.getenv("SPLUNK_AGENT_USER", "triage_agent")
 SPLUNK_AGENT_PASSWORD = os.getenv("SPLUNK_AGENT_PASSWORD")
@@ -39,9 +37,15 @@ def _is_valid_ip(value: str) -> bool:
     except ValueError:
         return False
 
-def build_enrichment_query(hostname=None, username=None, source_ip=None,
-                            submitter_email=None, submitter_ip=None):
-    """Builds a fixed, read-only SPL query from validated entity values.
+def build_enrichment_query(submitter_email=None, submitter_ip=None):
+    """Builds a fixed, read-only SPL query from submitter-controlled
+    identifiers only.
+
+    Hostname, username, and source_ip are deliberately not accepted. They come
+    from ticket text, which the submitter writes, so accepting them would let a
+    ticket author choose what the agent searches Splunk for. They are still
+    extracted and validated at classification time and recorded in the audit
+    log, they just never reach a query.
 
     Every value is re-validated here against the same patterns used at
     classification time, independent of whether the caller already
@@ -50,15 +54,6 @@ def build_enrichment_query(hostname=None, username=None, source_ip=None,
     generic query.
     """
     clauses = []
-
-    if hostname and HOSTNAME_PATTERN.match(hostname):
-        clauses.append(f'host="{hostname}"')
-
-    if username and USERNAME_PATTERN.match(username):
-        clauses.append(f'"{username}"')
-
-    if source_ip and _is_valid_ip(source_ip):
-        clauses.append(f'"{source_ip}"')
 
     if submitter_email and EMAIL_PATTERN.match(submitter_email):
         clauses.append(f'"{submitter_email}"')
@@ -126,17 +121,15 @@ def _run_enrichment_query(query: str, timeout: int = 15):
     failure_type, message = last_error
     raise EnrichmentError(failure_type, message)
 
-def enrich_ticket(hostname=None, username=None, source_ip=None,
-                   submitter_email=None, submitter_ip=None):
-    """Runs a read-only enrichment query if there is a valid entity to
-    search on.
+def enrich_ticket(submitter_email=None, submitter_ip=None):
+    """Runs a read-only enrichment query if there is a valid, submitter-
+    controlled identifier to search on.
 
     Returns None if there is nothing to search, or a list of matching
     events (possibly empty) on success. Raises EnrichmentError on
     failure; never returns placeholder data.
     """
-    query = build_enrichment_query(hostname, username, source_ip,
-                                    submitter_email, submitter_ip)
+    query = build_enrichment_query(submitter_email, submitter_ip)
     if query is None:
         return None
     return _run_enrichment_query(query)

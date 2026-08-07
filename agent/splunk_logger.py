@@ -62,6 +62,11 @@ def log_classification(ticket_id, subject, classification):
         "category": classification.category.value,
         "severity": classification.severity.value,
         "confidence": classification.confidence.value,
+        # Informational only. Extracted from ticket text and validated, but
+        # never used to build a query. See build_enrichment_query for why.
+        "extracted_hostname": classification.hostname,
+        "extracted_username": classification.username,
+        "extracted_source_ip": classification.source_ip,
     })
 
 def log_classification_failure(ticket_id, failure_type, error):

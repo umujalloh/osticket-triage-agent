@@ -90,9 +90,6 @@ def process_ticket(payload: dict):
 
     try:
         events = enrich_ticket(
-            hostname=classification.hostname,
-            username=classification.username,
-            source_ip=classification.source_ip,
             submitter_email=payload.get("requester"),
             submitter_ip=payload.get("submitter_ip"),
         )

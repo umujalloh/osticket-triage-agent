@@ -66,7 +66,7 @@ span 2018-08-20 to 2019-09-19 and every entity in it is invented, so no real
 ticket will match it. Enrichment returns results only for demo tickets written
 to reference known BOTSv3 hosts and accounts.
 
-The pipeline itself is real: validated entities, a least-privilege role scoped
+The pipeline itself is real: validated submitter identifiers, a least-privilege role scoped
 to a single index, and read-only searches over TLS against a live Splunk
 instance. What is not real is any correspondence between a ticket and the log
 data, so this demonstrates the enrichment path rather than live incident
