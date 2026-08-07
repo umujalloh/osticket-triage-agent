@@ -45,6 +45,7 @@ def log_request_rejected(reason, source_ip, ticket_id=None):
 def log_classification(ticket_id, subject, classification):
     return _send_audit_event({
         "ticket_id": ticket_id,
+        "status": "classification_complete",
         "subject": subject,
         "category": classification.category.value,
         "severity": classification.severity.value,
