@@ -1,4 +1,5 @@
 import os
+import time
 import requests
 from datetime import datetime, timezone
 
@@ -22,15 +23,26 @@ def _send_audit_event(event_content):
         "event": event_content,
     }
     headers = {"Authorization": f"Splunk {SPLUNK_HEC_TOKEN}"}
-    try:
-        response = requests.post(
-            SPLUNK_HEC_URL, headers=headers, json=payload, verify=SPLUNK_CACERT_PATH, timeout=5
-        )
-        response.raise_for_status()
-        return True
-    except requests.exceptions.RequestException as e:
-        print(f"Splunk logging failed: {e}")
-        return False
+    last_error = None
+    for attempt in range(3):
+        try:
+            response = requests.post(
+                SPLUNK_HEC_URL, headers=headers, json=payload, verify=SPLUNK_CACERT_PATH, timeout=5
+            )
+            # A 4xx means Splunk understood the request and refused it: bad
+            # token, unknown index, malformed event. Retrying cannot change
+            # that, so it fails immediately rather than burning three attempts.
+            if 400 <= response.status_code < 500:
+                print(f"Splunk rejected the audit event: {response.status_code} {response.text[:200]}")
+                return False
+            response.raise_for_status()
+            return True
+        except requests.exceptions.RequestException as e:
+            last_error = e
+            if attempt < 2:
+                time.sleep([1, 3][attempt])
+    print(f"Splunk logging failed after 3 attempts: {last_error}")
+    return False
 
 # ticket_id is passed only where the HMAC signature already verified. On a
 # signature failure the body is unverified, so nothing from it is recorded.
