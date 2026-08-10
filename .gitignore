@@ -6,6 +6,9 @@ credentials.json
 secrets/
 ost-config.php
 
+# Local working files
+local/
+
 # Python
 __pycache__/
 *.pyc
