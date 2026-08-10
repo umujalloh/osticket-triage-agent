@@ -347,7 +347,7 @@ Splunk service account: read-only, scoped to only the index(es) enrichment queri
  
 osTicket API key: comment and priority update only. No delete, no ticket creation, no user management.
  
-Claude API key: daily token budget cap, rate limit, audit every call.
+Claude API key: not scoped in code. Spend is capped by a limit set in the Anthropic Console, outside the agent. The agent backs off when the API rejects a call, but never limits how often it calls.
  
 ---
  
