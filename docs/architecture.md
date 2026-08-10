@@ -213,7 +213,7 @@ Timestamped payload with a freshness check. The signed payload includes a `creat
  
 Secret rotation. The HMAC signing secret is rotated periodically, which invalidates any requests captured under the old secret. This bounds how long a captured request stays replayable, on top of the per-request timestamp check.
  
-Residual risk. The defenses leave three gaps. A replay sent within the freshness window passes the timestamp check, so the window's length is a direct tradeoff between blocking replays and tolerating legitimate retries. Idempotency depends on the agent remembering every processed ticket ID, and that record cannot grow forever, so once an old ID ages out of memory, a replay of that ticket could be processed as new. And idempotency only triggers after a request is accepted, so a captured request that never reached the agent originally is not a duplicate at all, the attacker can deliver it in time and have it processed as a first-and-only legitimate request.
+Residual risk. The defenses leave three gaps. A replay sent within the freshness window passes the timestamp check, so the window's length is a direct tradeoff between blocking replays and tolerating legitimate retries. Idempotency depends on the agent remembering every processed ticket ID, and that record is cleared on restart, so a replay of a forgotten ticket could be processed as new if it arrives inside the freshness window. And idempotency only triggers after a request is accepted, so a captured request that never reached the agent originally is not a duplicate at all, the attacker can deliver it in time and have it processed as a first-and-only legitimate request.
  
 ---
  
@@ -337,6 +337,8 @@ Trust boundary. The trust zone is the part of the system that runs in my own inf
  
 The important crossing is at the webhook. The network path from osTicket to the agent is trusted, since both run in my infrastructure, but the data crossing it is not. The ticket body was written by an unknown user, so it enters as untrusted input even though it arrives over a trusted channel. This is why the agent treats every ticket body as data to be validated, never as instructions.
  
+Exposure. The osTicket and Splunk containers publish their ports on 127.0.0.1, so the web UIs, the HEC endpoint, and the management port are reachable only from the machine running them. The agent is the exception: it listens on all interfaces, because the osTicket container reaches it through the host gateway rather than over loopback, so binding it to 127.0.0.1 would break the webhook. That leaves the webhook as the one port on this stack exposed beyond the host, which is why it is also the one port with signature verification in front of it.
+ 
 Outbound, only the ticket body and the classification request go to Claude. Credentials and raw Splunk data never leave the trust zone. I limit what crosses to an external service to the minimum that service needs to do its job.
  
 Least privilege. Each of the agent's three credentials is scoped to the minimum it needs, so a compromised key is bounded to what that key was allowed to do.
@@ -357,7 +359,7 @@ What is logged. For a ticket the agent processed, each entry captures the ticket
  
 This record is also what makes the future mismatch-detection hardening (Section 7) possible. That check compares a ticket's current state against what the agent decided, which only works if the decision was logged in the first place.
  
-Rejected requests. A request that fails the signature check, arrives outside the freshness window, or repeats an accepted ticket ID is logged with its reason and the requesting IP, so probing and replay leave a trace rather than a silent 401. Nothing from the body is recorded when the signature check is what failed, since at that point it is unverified. These writes are queued rather than made inline, so a slow write cannot delay the response and forged requests cannot be used to stall the rejection path.
+Rejected requests. A request that fails the signature check, carries a body that is not a JSON object, arrives outside the freshness window, names no usable ticket ID, or repeats an accepted ticket ID is logged with its reason and the requesting IP, so probing and replay leave a trace rather than a silent rejection. Nothing from the body is recorded when the signature check is what failed, since at that point it is unverified. These writes are queued rather than made inline, so a slow write cannot delay the response and forged requests cannot be used to stall the rejection path.
  
 Audit write failure. If a write to Splunk fails, the agent does not treat the decision as recorded. It flags the ticket for human review the same way a Claude failure does in Section 6, since a decision with no audit trail cannot be trusted to have happened correctly.
  
