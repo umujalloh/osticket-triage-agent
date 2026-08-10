@@ -12,8 +12,8 @@ Splunk audit log. No writes back to osTicket yet: internal notes, alerting, and
 paging are Phase 3.
 
 See [docs/architecture.md](docs/architecture.md) for the design and threat
-model, [docs/TESTING.md](docs/TESTING.md) for how the classifier is evaluated
-and what it currently scores, and
+model, [docs/TESTING.md](docs/TESTING.md) for how the agent is tested and what
+it currently scores, and
 [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) for what it cannot do.
 
 ## Why this exists

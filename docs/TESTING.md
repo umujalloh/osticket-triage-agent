@@ -1,6 +1,7 @@
 # Testing
 
-How the classifier is evaluated and what has been measured. Figures here state
+How the agent is tested and what has been measured, both the classifier on its
+own and the full path from osTicket through to Splunk. Figures here state
 the date, the number of runs, and the files they were measured against. A
 figure without that method cannot be reproduced and should not be trusted.
 
@@ -84,6 +85,36 @@ any ticket in the set, so those paths are unexercised:
 - `security_incident` at `low` severity with `high_confidence`
 - `security_question` at `low` confidence
 - `it_support` at `low` confidence
+
+## End-to-end verification
+
+The eval harness above tests the classifier directly. It scores classifier
+output against ticket text and never touches the plugin, the webhook, or the
+Splunk clients, so a fault anywhere on that path scores clean. This section
+covers a single live run through the full path, not a repeated measurement like
+the eval numbers above.
+
+**Method.** A ticket was submitted through osTicket's own ticket form, not a
+direct call to the agent's webhook endpoint, so the run exercises
+`class.TriagePlugin.php`, its HMAC signing, and the PHP-to-Python payload.
+
+**Result.** Measured 2026-08-09, ticket 9, submitted through the real osTicket
+form with requester `bgist@froth.ly` and ticket text naming `BGIST-L`. Confirmed
+in Splunk under `ticket_id: 9`:
+
+| Event | Field | Value |
+|---|---|---|
+| classification_complete | category | security_incident |
+| classification_complete | severity | critical |
+| classification_complete | confidence | high_confidence |
+| classification_complete | extracted_hostname | BGIST-L |
+| enrichment_complete | event_count | 20 |
+
+The extracted hostname is recorded on the classification event but does not
+appear in the enrichment query. Entities come from ticket text the submitter
+writes, so letting one in would hand the search target to whoever filed the
+ticket. All 20 stored events contain `bgist@froth.ly` and none contain
+`BGIST-L`, which on its own matches 10,327 events in the index.
 
 ## Comparison against the previous rubric
 
