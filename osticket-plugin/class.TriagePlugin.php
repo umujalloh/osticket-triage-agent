@@ -47,7 +47,7 @@ class TriagePlugin extends Plugin {
             'ticket_number' => $ticket->getNumber(),
             'subject'       => $ticket->getSubject(),
             'message'       => $plaintext,
-            'requester'     => $ticket->getEmail(),
+            'requester'     => (string) $ticket->getEmail(),
             'submitter_ip'  => $ticket->getIP(),
             'created_at'    => date('c'),
         );
