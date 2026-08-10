@@ -6,6 +6,9 @@ credentials.json
 secrets/
 ost-config.php
 
+# Local working files
+local/
+
 # Python
 __pycache__/
 *.pyc
@@ -16,3 +19,9 @@ venv/
 .DS_Store
 *.swp
 .vscode/
+
+# Splunk datasets
+docker/splunk-apps/
+
+# Generated TLS certs
+docker/splunk-provisioning/custom_tls/default/certs/

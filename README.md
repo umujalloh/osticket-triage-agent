@@ -6,12 +6,15 @@ right place. Real security incidents stop getting buried in helpdesk noise.
 
 ## Status
 
-Phase 1 complete: tickets are received over an authenticated webhook,
-classified, and written to a Splunk audit log. No writes back to osTicket yet.
-Enrichment is Phase 2, notes and alerting are Phase 3.
+Phases 1 and 2 complete. Tickets are received over an authenticated webhook,
+classified, enriched with Splunk context when the gate matches, and written to a
+Splunk audit log. No writes back to osTicket yet: internal notes, alerting, and
+paging are Phase 3.
 
-See [docs/architecture.md](docs/architecture.md) for the full design and
-[docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) for evaluation findings.
+See [docs/architecture.md](docs/architecture.md) for the design and threat
+model, [docs/TESTING.md](docs/TESTING.md) for how the agent is tested and what
+it currently scores, and
+[docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) for what it cannot do.
 
 ## Why this exists
 
@@ -21,7 +24,7 @@ printer tickets. This agent triages every ticket as it arrives, flags the
 security-relevant ones, and enriches them with context from the SIEM before a
 human ever looks.
 
-## How Phase 1 works
+## How it works
 
 A user submits a ticket in osTicket. The
 [plugin](osticket-plugin/class.TriagePlugin.php) fires on ticket creation, signs
@@ -36,10 +39,27 @@ constrained by a tool schema and validated against the Pydantic model in
 [`schemas.py`](agent/schemas.py). [`splunk_logger.py`](agent/splunk_logger.py)
 writes the result to Splunk over HEC.
 
+When a ticket lands on `security_incident` at `critical` severity with high
+confidence, [`splunk_enrichment.py`](agent/splunk_enrichment.py) searches Splunk
+for related events. It searches only on the submitter's email and IP, both taken
+from the webhook rather than from anything typed into the ticket. Any hostname,
+username, or IP the classifier extracted from the ticket text is validated and
+recorded in the audit log, but never reaches a query, since a ticket author
+choosing what those fields say would otherwise be choosing what the agent
+searches for. Every value is validated against a strict pattern inside the
+enrichment module before it can reach a query, independent of whether the caller
+already validated it. Queries are built from fixed templates, run read-only, and
+authenticate as a Splunk user scoped to a single index. The result, or the
+reason there wasn't one, goes to the audit log either way.
+
 If Claude fails to return a classification, rate limited, unreachable, a bad
-credential, or an invalid response, the agent routes the ticket to a human and
-logs the specific failure type to Splunk instead of guessing at a
-classification. The full breakdown is in
+credential, or an invalid response, the agent flags the ticket for human review
+and logs the specific failure type to Splunk instead of guessing at a
+classification. Until Phase 3 lands write-back, flagging means a line in the
+agent's output and an audit event in Splunk; the ticket itself stays in
+osTicket's normal queue. The same applies when the audit write fails, since a
+decision with no audit trail cannot be trusted to have been recorded. The full
+breakdown is in
 [docs/architecture.md](docs/architecture.md#6-failure-modes-for-the-claude-dependency).
 
 Claude only ever produces a label. Every action the agent takes comes from a
@@ -58,9 +78,9 @@ out of paper, classified and audited:
 ## Repository layout
 
 ```
-agent/              FastAPI service: webhook receiver, classifier, audit logger
-docker/             Dockerfile and compose file for the osTicket and Splunk environment
-docs/               Architecture, action table, known limitations
+agent/              FastAPI service: webhook receiver, classifier, enrichment, audit logger
+docker/             Dockerfile, compose file, and Splunk provisioning for the environment
+docs/               Architecture, action table, testing, known limitations
 osticket-plugin/    osTicket plugin that fires the webhook
 tests/              Evaluation ticket set
 ```
@@ -96,7 +116,21 @@ the one that removes `setup/` and chowns the plugin directory:
 #     && chown -R www-data:www-data /var/www/html/include/plugins/triage-webhook
 ```
 
-Then build and start:
+Then build the image and create the config file:
+
+```bash
+docker compose build osticket
+docker compose run --rm --no-deps --entrypoint cat osticket \
+  /var/www/html/include/ost-sampleconfig.php > ost-config.php
+chmod 0666 ost-config.php
+```
+
+[docker/docker-compose.yml](docker/docker-compose.yml) mounts `ost-config.php`
+into the container so the install survives a rebuild. Docker creates that path
+as a directory if the file does not exist yet, which leaves the installer with
+nowhere to write, so it has to be copied out of the image first.
+
+Start the stack:
 
 ```bash
 docker compose up -d --build
@@ -113,7 +147,12 @@ docker compose up -d --build
 ```
 
 `ost-config.php` holds the database credentials and osTicket's secret salt, so
-it is not committed. Each install generates its own.
+it is not committed. Each install generates its own. Only the installer needs it
+writable, so tighten it back down now that the install is finished:
+
+```bash
+chmod 0644 ost-config.php
+```
 
 ### 2. Plugin configuration
 
@@ -144,9 +183,26 @@ on port 8000 on the host.
 ### 3. Splunk
 
 Splunk runs as part of the same Docker Compose stack and already started in
-Section 1. Add `SPLUNK_PASSWORD` to `docker/.env` (8 or more characters,
+Section 1. Set `SPLUNK_PASSWORD` in `docker/.env` (8 or more characters,
 mixing letters and numbers, Splunk rejects overly simple passwords even at
-8 characters) before running `docker compose up -d --build`.
+8 characters).
+
+The agent verifies its TLS connection to Splunk against a certificate
+generated for this deployment, not Splunk's shipped default (the same
+certificate and private key ship in every default Splunk install, so
+trusting it wouldn't prove anything). Run `docker/generate-splunk-cert.sh`
+now, before starting Splunk - docker-compose.yml points Splunk at this
+certificate from its first boot, so it needs to exist beforehand. The
+output is gitignored and not committed. See
+[`splunk_logger.py`](agent/splunk_logger.py).
+
+Enrichment searches the BOTSv3 dataset, which is not committed. Download the
+BOTSv3 data set app and unpack it to `docker/splunk-apps/botsv3_data_set`, which
+[docker-compose.yml](docker/docker-compose.yml) mounts into the container as a
+Splunk app. Skipping this leaves the rest of the pipeline working; enrichment
+simply returns no results.
+
+Then run `docker compose up -d --build`.
 
 Splunk's web UI is at `http://localhost:8010`, mapped from the container's
 internal port 8000 since port 8000 is already used by the agent. Log in with
@@ -163,14 +219,17 @@ agent sends events with sourcetype `osticket:triage:audit`. Splunk shows the
 token value once, at creation, save it now, this value goes into `agent/.env`
 in Section 4.
 
+Enrichment queries run as a separate read-only user, not as admin. Set
+`SPLUNK_AGENT_PASSWORD` in `docker/.env`, then run
+`docker/provision-splunk-user.sh`. It creates a `triage_agent` user in a
+least-privilege role scoped to the `botsv3` index, with no admin, write, or
+real-time search capability. The script is safe to re-run and skips a user that
+already exists. This value goes into `agent/.env` in Section 4 as well.
+
 Splunk must be running when the agent processes a ticket. If it is not, the
 audit write fails and the agent prints a "needs human review" line for that
 ticket, since a decision with no audit trail can't be trusted to have been
 recorded correctly.
-
-The agent connects with certificate verification disabled, since a default
-Splunk install uses a self-signed certificate. See
-[`splunk_logger.py`](agent/splunk_logger.py).
 
 ### 4. Agent environment
 
@@ -181,14 +240,26 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Create `agent/.env`:
+Create `agent/.env`. [`agent/.env.example`](agent/.env.example) lists every
+variable the agent reads, with the optional ones and their defaults:
 
 ```
 ANTHROPIC_API_KEY=your-key
 TRIAGE_HMAC_SECRET=the-secret-you-generated-in-section-2
 SPLUNK_HEC_URL=https://localhost:8088/services/collector/event
 SPLUNK_HEC_TOKEN=the-token-you-created-in-section-3
+SPLUNK_SEARCH_URL=https://localhost:8089
+SPLUNK_AGENT_PASSWORD=the-password-you-set-in-section-3
 ```
+
+The first four are asserted at import time. A missing one refuses to boot rather
+than starting in a degraded state. The two search variables are read by the
+enrichment module.
+
+`SPLUNK_ENRICHMENT_EARLIEST` defaults to `-7d`, which is the sensible window
+against live telemetry. BOTSv3 is frozen in 2018 and 2019, so a relative window
+can never reach it. Set `SPLUNK_ENRICHMENT_EARLIEST=0` to search all time
+against the demo dataset.
 
 ### 5. Run the agent
 
@@ -203,7 +274,7 @@ agent's output and in Splunk under `index=osticket_triage`.
 
 ## Evaluation
 
-The classifier is evaluated against 30 hand-written tickets with expected
+The classifier is evaluated against 36 hand-written tickets with expected
 labels in [tests/eval_tickets.json](tests/eval_tickets.json):
 
 ```bash
@@ -214,7 +285,10 @@ python3 run_eval.py
 
 [`run_eval.py`](agent/run_eval.py) sends each ticket's subject and message to
 the classifier and compares the result against the expected label. Expected
-labels are never sent to the model.
+labels are never sent to the model. Classification and entity extraction are
+scored separately so a regression in one cannot be hidden by the other.
 
-Accuracy range and known failure modes are in
+Current results, the method behind them, and a second pass criterion that
+measures only the failures which would leave a real incident unalerted are in
+[docs/TESTING.md](docs/TESTING.md). What the evaluation cannot tell you is in
 [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md).

@@ -105,9 +105,9 @@ System and user role separation. My instructions live in the system role, the hi
  
 Delimiters around the body. The agent wraps the body in delimiters so it is clearly marked as untrusted data to be classified, not as part of my instructions.
  
-Output schema validation. Claude must return valid JSON matching a strict schema: category, severity, confidence. Any response that does not fit the schema is rejected. So even if injected text changes Claude's output, it cannot produce a valid action.
+Output schema validation. Claude must return valid JSON matching a strict schema: category, severity, confidence, and optionally a hostname, username, or source IP if the ticket text names one. Any response that does not fit the schema is rejected. So even if injected text changes Claude's output, it cannot produce a valid action. Entity fields carry a different risk than the closed enum values, since they are free text rather than a choice from a fixed set, so each one gets independent format validation and a value that fails is dropped without blocking the rest of the classification. They are also excluded from enrichment queries entirely. Their content comes from ticket text, which the submitter writes, so allowing them into a query would let a ticket author choose what the agent searches for. They are recorded in the audit log for a human to act on, and enrichment searches only on identifiers osTicket's own auth populated.
  
-The backstop. Even if an attacker slips past the role separation and fools the classifier, the damage stops at the label. Claude only ever returns a classification. It never picks an action and never writes anything. The agent takes that label, looks up the matching action in a fixed table written in code, and acts only within what its scoped credentials permit. No label, however manipulated, can trigger an action I did not pre-approve. The worst case is the agent takes a wrong but allowed action, like writing a note when it shouldn't or failing to page when it should, not a dangerous new one. The action table and credential scoping are covered in Sections 7 and 8.
+The backstop. Even if an attacker slips past the role separation and fools the classifier, the damage stops at the label. Claude only ever returns a classification, plus, optionally, a validated entity name. It never picks an action, never writes anything, and never generates the Splunk query itself, a fixed, deterministic template builds the query from identifiers the webhook supplied, the same way the action table builds an action from the classification. Nothing Claude returns reaches a query at all. The agent takes that label, looks up the matching action in a fixed table written in code, and acts only within what its scoped credentials permit. No label, however manipulated, can trigger an action I did not pre-approve. The worst case is the agent takes a wrong but allowed action, like writing a note when it shouldn't or failing to page when it should, not a dangerous new one. The action table and credential scoping are covered in Sections 7 and 8.
  
 Residual risk. The role split stops an attacker from hijacking Claude, but it can't stop a ticket that is simply worded to mislead. Someone could write a real incident to sound harmless, or a harmless ticket to sound alarming, and Claude would classify the text honestly but wrongly. Those cases are covered as their own attacks (4 and 5), and low confidence sends any shaky classification to a human.
  
@@ -133,7 +133,7 @@ Vector. The enrichment path. A crafted ticket tries to make the agent pull sensi
  
 Defense.
  
-Queries run from fixed templates, never composed by Claude, so an attacker cannot trick Claude into running a malicious query. Each template has one blank, the entity to look up. The agent validates that value against a strict pattern before substituting it, so a crafted value cannot break out of the template and alter the query. The templates read only non-credential, non-sensitive fields.
+Queries run from fixed templates, never composed by Claude, so an attacker cannot trick Claude into running a malicious query. Each blank in a template is filled from an identifier osTicket's auth supplied, the submitter's email or IP, never from ticket text. The agent validates that value against a strict pattern before substituting it, so a crafted value cannot break out of the template and alter the query. Because the submitter cannot choose the value, they also cannot choose what the query looks up. The templates read only non-credential, non-sensitive fields.
  
 Notes are structured summaries, not raw query dumps. The agent builds the summary in code from specific named fields. Claude does not write the summary, which keeps the model completely out of the write path.
  
@@ -213,7 +213,7 @@ Timestamped payload with a freshness check. The signed payload includes a `creat
  
 Secret rotation. The HMAC signing secret is rotated periodically, which invalidates any requests captured under the old secret. This bounds how long a captured request stays replayable, on top of the per-request timestamp check.
  
-Residual risk. The defenses leave three gaps. A replay sent within the freshness window passes the timestamp check, so the window's length is a direct tradeoff between blocking replays and tolerating legitimate retries. Idempotency depends on the agent remembering every processed ticket ID, and that record cannot grow forever, so once an old ID ages out of memory, a replay of that ticket could be processed as new. And idempotency only triggers after a request is accepted, so a captured request that never reached the agent originally is not a duplicate at all, the attacker can deliver it in time and have it processed as a first-and-only legitimate request.
+Residual risk. The defenses leave three gaps. A replay sent within the freshness window passes the timestamp check, so the window's length is a direct tradeoff between blocking replays and tolerating legitimate retries. Idempotency depends on the agent remembering every processed ticket ID, and that record is cleared on restart, so a replay of a forgotten ticket could be processed as new if it arrives inside the freshness window. And idempotency only triggers after a request is accepted, so a captured request that never reached the agent originally is not a duplicate at all, the attacker can deliver it in time and have it processed as a first-and-only legitimate request.
  
 ---
  
@@ -225,13 +225,15 @@ Category: what kind of ticket it is. security_incident, security_question, it_su
 
 Severity: how serious the ticket is in the context of its category. critical, high, medium, or low.
 
-Confidence: how well the ticket text supports the classification. high_confidence or low_confidence.
+Confidence: whether the ticket accounts for what happened. high_confidence or low_confidence.
 
-They are separate because each drives a different decision: category decides enrichment, severity decides paging, confidence decides whether a human reviews it. One combined label would lose the ability to route on each one independently.
+They are separate because the action table reads all three together rather than one combined label. Category decides whether a ticket is a security matter, severity decides how loudly to alert, and confidence decides whether the agent should act on the classification at all without a human. Enrichment and paging each require a specific combination of all three, not any single dimension. Confidence is the only one that acts on its own, since low confidence routes to a human regardless of category or severity.
 
-Confidence reflects the strength of signal in the ticket text, not the model's certainty. A vague ticket is low_confidence even when the model has a strong guess.
+Confidence describes the ticket, not the model's certainty. A vague ticket is low_confidence even when the model has a strong guess, and so is a ticket that names an event but leaves it unexplained. Strong evidence for a category is not on its own enough: a ticket can point clearly at security_incident and still be low_confidence when the user cannot account for what happened. Defining it as strength of signal instead lets a well-narrated but unexplained incident come back high_confidence and bypass human review, which is the one thing this field exists to prevent.
 
-Severity is scoped by category. Critical is reserved for security_incident, since that is the only tier that pages a human, and widening it would mean the on-call gets woken for non-security events. The lower tiers stay available to every category so the helpdesk can prioritize: a production outage can be high, a printer out of paper is low. 
+Severity is scoped by category. Critical is reserved for security_incident, since that is the only tier that pages a human, and widening it would mean the on-call gets woken for non-security events. The lower tiers stay available to every category so the helpdesk can prioritize: a production outage can be high, a printer out of paper is low.
+
+What severity measures differs by category. For a security incident it is the state of the threat: whether unauthorized access is still held, or destructive action has already been carried out. For every other category it is disruption and urgency. Each gets its own definition rather than sharing one ladder, because a scale built around attacker access says nothing useful about a printer, and leaving those categories without a rule of their own makes their severity arbitrary. 
 
 For account, login, and device tickets, classification turns on whether the ticket explains what happened. A stated ordinary cause is routine regardless of how alarmed the user sounds. Behavior that cannot be clearly explained by the user goes to security_incident or unclear at low confidence, since absence of detail is not evidence that nothing happened.
  
@@ -335,11 +337,13 @@ Trust boundary. The trust zone is the part of the system that runs in my own inf
  
 The important crossing is at the webhook. The network path from osTicket to the agent is trusted, since both run in my infrastructure, but the data crossing it is not. The ticket body was written by an unknown user, so it enters as untrusted input even though it arrives over a trusted channel. This is why the agent treats every ticket body as data to be validated, never as instructions.
  
+Exposure. The osTicket and Splunk containers publish their ports on 127.0.0.1, so the web UIs, the HEC endpoint, and the management port are reachable only from the machine running them. The agent is the exception: it listens on all interfaces, because the osTicket container reaches it through the host gateway rather than over loopback, so binding it to 127.0.0.1 would break the webhook. That leaves the webhook as the one port on this stack exposed beyond the host, which is why it is also the one port with signature verification in front of it.
+ 
 Outbound, only the ticket body and the classification request go to Claude. Credentials and raw Splunk data never leave the trust zone. I limit what crosses to an external service to the minimum that service needs to do its job.
  
 Least privilege. Each of the agent's three credentials is scoped to the minimum it needs, so a compromised key is bounded to what that key was allowed to do.
  
-Splunk service account: read-only on named indexes. No write, no admin, no deploy.
+Splunk service account: read-only, scoped to only the index(es) enrichment queries need. No write, no admin, no deploy.
  
 osTicket API key: comment and priority update only. No delete, no ticket creation, no user management.
  
@@ -349,11 +353,13 @@ Claude API key: daily token budget cap, rate limit, audit every call.
  
 ## 9. Observability and Audit
  
-Audit logging. Every classification, query, and action is logged to Splunk continuously, at every step.
+Audit logging. Every request the agent accepts or rejects, every classification, and every enrichment query is logged to Splunk continuously, at every step.
  
-What is logged. Each entry captures the ticket ID, the agent's decision (category, severity, confidence), the action taken, and a timestamp. This is enough to reconstruct what the agent did to any ticket and why.
+What is logged. For a ticket the agent processed, each entry captures the ticket ID, the agent's decision (category, severity, confidence), the action taken, and a timestamp. This is enough to reconstruct what the agent did to any ticket and why.
  
 This record is also what makes the future mismatch-detection hardening (Section 7) possible. That check compares a ticket's current state against what the agent decided, which only works if the decision was logged in the first place.
+ 
+Rejected requests. A request that fails the signature check, carries a body that is not a JSON object, arrives outside the freshness window, names no usable ticket ID, or repeats an accepted ticket ID is logged with its reason and the requesting IP, so probing and replay leave a trace rather than a silent rejection. Nothing from the body is recorded when the signature check is what failed, since at that point it is unverified. These writes are queued rather than made inline, so a slow write cannot delay the response and forged requests cannot be used to stall the rejection path.
  
 Audit write failure. If a write to Splunk fails, the agent does not treat the decision as recorded. It flags the ticket for human review the same way a Claude failure does in Section 6, since a decision with no audit trail cannot be trusted to have happened correctly.
  

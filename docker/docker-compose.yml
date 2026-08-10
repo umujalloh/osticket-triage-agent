@@ -19,7 +19,9 @@ services:
      dockerfile: docker/Dockerfile
     restart: always
     ports:
-      - "8080:80"
+      - "127.0.0.1:8080:80"
+    volumes:
+      - ./ost-config.php:/var/www/html/include/ost-config.php
     depends_on:
       - db
     extra_hosts:
@@ -32,10 +34,14 @@ services:
       SPLUNK_GENERAL_TERMS: --accept-sgt-current-at-splunk-com
       SPLUNK_PASSWORD: ${SPLUNK_PASSWORD}
     ports:
-      - "8010:8000"
-      - "8088:8088"
+      - "127.0.0.1:8010:8000"
+      - "127.0.0.1:8088:8088"
+      - "127.0.0.1:8089:8089"
     volumes:
       - splunk_data:/opt/splunk/var
+      - ./splunk-apps/botsv3_data_set:/opt/splunk/etc/apps/botsv3_data_set
+      - ./splunk-provisioning/triage_agent_role:/opt/splunk/etc/apps/triage_agent_role
+      - ./splunk-provisioning/custom_tls:/opt/splunk/etc/apps/custom_tls
 volumes:
   db_data:
   splunk_data:
