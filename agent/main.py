@@ -67,6 +67,16 @@ def process_ticket(payload: dict):
         if not audit_ok:
             print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
         return
+    except Exception as e:
+        audit_ok = log_classification_failure(
+            ticket_id=ticket_id,
+            failure_type="unknown",
+            error=f"{type(e).__name__}: {e}"
+        )
+        print(f"Ticket {ticket_id}: classification failed (unknown)")
+        if not audit_ok:
+            print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
+        return
 
     audit_ok = log_classification(
         ticket_id=ticket_id,
@@ -103,6 +113,16 @@ def process_ticket(payload: dict):
         if not audit_ok:
             print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
         return
+    except Exception as e:
+        audit_ok = log_enrichment_failure(
+            ticket_id=ticket_id,
+            failure_type="unknown",
+            error=f"{type(e).__name__}: {e}"
+        )
+        print(f"Ticket {ticket_id}: enrichment failed (unknown)")
+        if not audit_ok:
+            print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
+        return
 
     if events is None:
         audit_ok = log_enrichment_skipped(ticket_id=ticket_id, reason="no_entity")
@@ -128,7 +148,15 @@ async def receive_ticket(request: Request, background_tasks: BackgroundTasks):
         )
         return JSONResponse(status_code=401, content={"detail": "Invalid signature"})
 
-    payload = await request.json()
+    try:
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise ValueError("body is not a JSON object")
+    except ValueError:
+        background_tasks.add_task(
+            log_request_rejected, reason="malformed_body", source_ip=source_ip
+        )
+        return JSONResponse(status_code=400, content={"detail": "Body is not valid JSON"})
 
     if not is_fresh(payload.get("created_at")):
         background_tasks.add_task(
@@ -140,14 +168,29 @@ async def receive_ticket(request: Request, background_tasks: BackgroundTasks):
         )
 
     ticket_id = payload.get("ticket_id")
-    if ticket_id is not None:
-        if ticket_id in seen_ticket_ids:
-            background_tasks.add_task(
-                log_request_rejected, reason="duplicate", source_ip=source_ip,
-                ticket_id=ticket_id
-            )
-            return JSONResponse(status_code=200, content={"status": "duplicate", "ticket_id": ticket_id})
-        seen_ticket_ids.add(ticket_id)
+    if ticket_id is None:
+        background_tasks.add_task(
+            log_request_rejected, reason="missing_ticket_id", source_ip=source_ip
+        )
+        return JSONResponse(status_code=400, content={"detail": "ticket_id is required"})
+
+    # bool is a subclass of int and True == 1, so an unfiltered bool would
+    # collide with ticket 1 in the seen set.
+    if isinstance(ticket_id, bool) or not isinstance(ticket_id, (int, str)):
+        background_tasks.add_task(
+            log_request_rejected, reason="invalid_ticket_id", source_ip=source_ip
+        )
+        return JSONResponse(
+            status_code=400, content={"detail": "ticket_id must be a number or string"}
+        )
+
+    if ticket_id in seen_ticket_ids:
+        background_tasks.add_task(
+            log_request_rejected, reason="duplicate", source_ip=source_ip,
+            ticket_id=ticket_id
+        )
+        return JSONResponse(status_code=200, content={"status": "duplicate", "ticket_id": ticket_id})
+    seen_ticket_ids.add(ticket_id)
 
     background_tasks.add_task(process_ticket, payload)
 
