@@ -116,7 +116,21 @@ the one that removes `setup/` and chowns the plugin directory:
 #     && chown -R www-data:www-data /var/www/html/include/plugins/triage-webhook
 ```
 
-Then build and start:
+Then build the image and create the config file:
+
+```bash
+docker compose build osticket
+docker compose run --rm --no-deps --entrypoint cat osticket \
+  /var/www/html/include/ost-sampleconfig.php > ost-config.php
+chmod 0666 ost-config.php
+```
+
+[docker/docker-compose.yml](docker/docker-compose.yml) mounts `ost-config.php`
+into the container so the install survives a rebuild. Docker creates that path
+as a directory if the file does not exist yet, which leaves the installer with
+nowhere to write, so it has to be copied out of the image first.
+
+Start the stack:
 
 ```bash
 docker compose up -d --build
@@ -133,7 +147,12 @@ docker compose up -d --build
 ```
 
 `ost-config.php` holds the database credentials and osTicket's secret salt, so
-it is not committed. Each install generates its own.
+it is not committed. Each install generates its own. Only the installer needs it
+writable, so tighten it back down now that the install is finished:
+
+```bash
+chmod 0644 ost-config.php
+```
 
 ### 2. Plugin configuration
 
