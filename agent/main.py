@@ -102,6 +102,7 @@ def process_ticket(payload: dict):
         events = enrich_ticket(
             submitter_email=payload.get("requester"),
             submitter_ip=payload.get("submitter_ip"),
+            requester_verified=payload.get("requester_verified"),
         )
     except EnrichmentError as e:
         audit_ok = log_enrichment_failure(

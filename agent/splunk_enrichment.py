@@ -37,7 +37,8 @@ def _is_valid_ip(value: str) -> bool:
     except ValueError:
         return False
 
-def build_enrichment_query(submitter_email=None, submitter_ip=None):
+def build_enrichment_query(submitter_email=None, submitter_ip=None,
+                           requester_verified=False):
     """Builds a fixed, read-only SPL query from submitter-controlled
     identifiers only.
 
@@ -47,6 +48,16 @@ def build_enrichment_query(submitter_email=None, submitter_ip=None):
     extracted and validated at classification time and recorded in the audit
     log, they just never reach a query.
 
+    The requester email is only searched when osTicket reports the ticket was
+    filed from an authenticated session belonging to that address's confirmed
+    account. On an open ticket form the field is whatever the submitter typed,
+    so an unverified address is a search target the submitter chose: filing a
+    convincing critical incident as someone else runs the query against that
+    person instead. Validation stops a crafted value from altering the query,
+    never from choosing what it looks up. An unverified address is therefore
+    left out of the query entirely. It stays on the ticket in osTicket, it just
+    never becomes a search target.
+
     Every value is validated against a strict pattern before it can reach the
     query string, independent of whether the caller already validated it.
     Returns None if there is nothing safe to search on rather than falling
@@ -54,7 +65,10 @@ def build_enrichment_query(submitter_email=None, submitter_ip=None):
     """
     clauses = []
 
-    if submitter_email and EMAIL_PATTERN.match(submitter_email):
+    # Fail closed. Anything other than a literal True, including a missing or
+    # non-boolean field in the webhook payload, leaves the email out.
+    if (requester_verified is True and submitter_email
+            and EMAIL_PATTERN.match(submitter_email)):
         clauses.append(f'"{submitter_email}"')
 
     if submitter_ip and _is_valid_ip(submitter_ip):
@@ -120,15 +134,20 @@ def _run_enrichment_query(query: str, timeout: int = 15):
     failure_type, message = last_error
     raise EnrichmentError(failure_type, message)
 
-def enrich_ticket(submitter_email=None, submitter_ip=None):
+def enrich_ticket(submitter_email=None, submitter_ip=None,
+                  requester_verified=False):
     """Runs a read-only enrichment query if there is a valid, submitter-
     controlled identifier to search on.
+
+    requester_verified comes from osTicket and gates whether the email is
+    searchable at all. See build_enrichment_query for why.
 
     Returns None if there is nothing to search, or a list of matching
     events (possibly empty) on success. Raises EnrichmentError on
     failure; never returns placeholder data.
     """
-    query = build_enrichment_query(submitter_email, submitter_ip)
+    query = build_enrichment_query(submitter_email, submitter_ip,
+                                   requester_verified)
     if query is None:
         return None
     return _run_enrichment_query(query)
