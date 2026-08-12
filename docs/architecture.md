@@ -357,7 +357,7 @@ Least privilege. Each of the agent's three credentials is scoped to the minimum 
  
 Splunk service account: read-only, scoped to only the index(es) enrichment queries need. No write, no admin, no deploy.
  
-osTicket API key: comment and priority update only. No delete, no ticket creation, no user management.
+osTicket write-back: the agent holds no osTicket API key. osTicket's own API exposes ticket creation and a cron trigger, neither of which touches an existing ticket, so notes go through an endpoint the triage plugin registers on osTicket's api signal. That endpoint implements exactly one operation, writing an internal note to a named ticket, so its scope is set by what it implements rather than by a permission list. It authenticates with its own HMAC secret, separate from the inbound one, so a leak of the secret that submits tickets does not also grant writing into them.
  
 Claude API key: not scoped in code. Spend is capped by a limit set in the Anthropic Console, outside the agent. The agent backs off when the API rejects a call, but never limits how often it calls.
  

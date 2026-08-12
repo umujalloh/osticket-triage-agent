@@ -153,6 +153,31 @@ No stored event on ticket 11 contains `_raw`. The fields present are `_time`,
 `email`, `loginStatus`, `signinErrorCode`, and `appDisplayName`, totalling 3,540
 bytes across 20 events.
 
+## Write-back endpoint verification
+
+Measured 2026-08-12 against the running stack.
+
+| Request | Result |
+|---|---|
+| Unsigned | 401 |
+| Wrong signature | 401 |
+| Correct shape, wrong secret | 401 |
+| Timestamp 10 minutes old | 401 |
+| Signed, note field missing | 400 |
+| Signed, ticket 99999 | 404 |
+| Signed, valid, ticket 11 | 200 |
+
+The successful write was confirmed in the database rather than from the response
+code: an internal thread entry on ticket 11, type N, poster `Triage Agent`.
+Ticket 11 carries two of them, entries 14 and 15, because the run was repeated
+when the script below was added. Type N is an internal note, which is what makes
+the Attack 3 claim that notes are invisible to the submitter true rather than
+aspirational.
+
+Reproduce with `python verify_writeback.py <ticket_id>` from `agent/`. The last
+case writes a real note, and the endpoint has no delete operation, so name a
+ticket you don't mind marking.
+
 ## Comparison against the previous rubric
 
 The severity and confidence rubric was rewritten on 2026-08-06. Both versions
