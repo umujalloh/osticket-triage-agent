@@ -367,7 +367,7 @@ Claude API key: not scoped in code. Spend is capped by a limit set in the Anthro
  
 Audit logging. Every request the agent accepts or rejects, every classification, and every enrichment query is logged to Splunk continuously, at every step.
  
-What is logged. For a ticket the agent processed, each entry captures the ticket ID, the agent's decision (category, severity, confidence), the action taken, and a timestamp. This is enough to reconstruct what the agent did to any ticket and why.
+What is logged. For a ticket the agent processed, each entry captures the ticket ID, the agent's decision (category, severity, confidence), the action taken, and a timestamp. The classification entry also records whether osTicket authenticated the submitter as the requester address, since that is what decides whether the email was eligible to be searched. This is enough to reconstruct what the agent did to any ticket and why.
  
 This record is also what makes the future mismatch-detection hardening (Section 7) possible. That check compares a ticket's current state against what the agent decided, which only works if the decision was logged in the first place.
  

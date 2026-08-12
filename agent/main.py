@@ -78,14 +78,20 @@ def process_ticket(payload: dict):
             print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
         return
 
+    # Normalised once here so the audit log records exactly what the enrichment
+    # gate will act on, rather than the raw payload value.
+    requester_verified = payload.get("requester_verified") is True
+
     audit_ok = log_classification(
         ticket_id=ticket_id,
         subject=payload.get("subject", ""),
-        classification=classification
+        classification=classification,
+        requester_verified=requester_verified
     )
     print(f"Ticket {ticket_id}: classified "
           f"{classification.category.value}/{classification.severity.value}/"
-          f"{classification.confidence.value}")
+          f"{classification.confidence.value}, "
+          f"requester_verified={requester_verified}")
     if not audit_ok:
         print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
         return
@@ -103,7 +109,7 @@ def process_ticket(payload: dict):
         events = enrich_ticket(
             submitter_email=payload.get("requester"),
             submitter_ip=payload.get("submitter_ip"),
-            requester_verified=payload.get("requester_verified"),
+            requester_verified=requester_verified,
         )
     except EnrichmentError as e:
         audit_ok = log_enrichment_failure(
