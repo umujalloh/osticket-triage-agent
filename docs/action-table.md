@@ -8,7 +8,9 @@ the action itself.
 **Override rule, applies before any row below:** any ticket classified
 `low` confidence routes to human review, regardless of category or
 severity. This prevents a real incident that reads as vague from being
-missed or silently mishandled.
+missed or silently mishandled. The override suppresses alerts and
+writes, not enrichment, so a low-confidence critical still reaches the
+reviewer with Splunk context attached.
 
 ## Table
 
@@ -18,7 +20,8 @@ missed or silently mishandled.
 | security_incident | high | high | Post to Slack, write note, set priority high, no page |
 | security_incident | medium | high | Post to Slack, write note, set priority medium, no page |
 | security_incident | low | high | Write note, set priority low, no alert |
-| security_incident | any | low | Route to human review |
+| security_incident | critical | low | Route to human review, enrichment attached |
+| security_incident | high, medium, low | low | Route to human review |
 | security_question | any | high | Write note, tag/route to security queue, set priority from severity, no alert |
 | security_question | any | low | Route to human review |
 | it_support | any | high | Write note, set priority from severity, no alert |
@@ -44,6 +47,8 @@ signal that classification failed to produce a confident read. No
 severity or confidence value overrides that.
 
 **Enrichment scope.** Splunk enrichment triggers on security_incident +
-critical only. High, medium, and low severity security incidents are
-handled without enrichment. Reasoning in
+critical, at either confidence. High, medium, and low severity security
+incidents are handled without enrichment. Confidence gates the page, not
+the query, because the tickets that read as uncertain are the ones a
+reviewer most needs context for. Reasoning in
 [architecture.md, Section 7](architecture.md#7-action-layer-and-phasing).

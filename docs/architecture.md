@@ -56,7 +56,7 @@ When the agent receives the ticket, it does two things first. It authenticates t
  
 Claude reads the ticket text and returns a classification: category, severity, and confidence. How that classification works is covered in Section 5.
  
-If the ticket is a security_incident at critical severity, the agent runs a pre-defined, read-only Splunk query, chosen based on the classification, to enrich the ticket with context.
+If the ticket is a security_incident at critical severity, the agent runs a pre-defined, read-only Splunk query to enrich the ticket with context. Confidence does not gate this. The query is a single fixed template filled from the submitter's identifiers, not one of several chosen from the classification.
  
 After enrichment, the agent looks up the response in the pre-defined action table, writes an internal note back to osTicket, posts to Slack for high and critical severity, and pages PagerDuty only when the ticket is critical and high confidence. Any low-confidence ticket routes to a human regardless of category or severity.
  
@@ -307,7 +307,11 @@ The full table is in [docs/action-table.md](action-table.md). A few example rows
 | it_support | low | high | Write note, no alert |
 | any | any | low | Route to human review |
  
-The page is reserved for critical at high confidence, and so is Splunk enrichment. Both are gated to the case that wakes a human, rather than running for every security-relevant ticket. High severity at high confidence posts to Slack and writes a note but does not page or enrich, so an urgent ticket that isn't severe enough to page still reaches the team channel without waking on-call or expanding the query surface. Anything at low confidence falls through to human review before any alert fires.
+The page is reserved for critical at high confidence. Splunk enrichment is not: it runs on every security_incident at critical severity, whatever the confidence. They are gated differently on purpose. A page interrupts a person, so it takes the double condition. Enrichment is read-only and bounded by the agent's Splunk role, which allows three concurrent searches against one index, so running it on an uncertain ticket costs search capacity and nothing else.
+
+Gating it on confidence too would have withheld enrichment from the tickets that need it most, because the rubric forces unexplained behavior to low_confidence. A critical incident nobody can account for is exactly where a reviewer needs a starting point.
+
+High severity at high confidence posts to Slack and writes a note but does not page or enrich, so an urgent ticket that isn't severe enough to page still reaches the team channel without waking on-call. Anything at low confidence falls through to human review before any alert fires, now with enrichment attached when it was critical.
  
 Phasing. The build is in three phases, each proven before the next.
  

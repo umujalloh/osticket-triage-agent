@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from classifier import classify_ticket, ClassificationError
-from schemas import Category, Severity, Confidence
+from schemas import Category, Severity
 from splunk_enrichment import enrich_ticket, EnrichmentError
 from splunk_logger import (
     log_request_rejected,
@@ -90,10 +90,11 @@ def process_ticket(payload: dict):
         print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
         return
 
+    # Deliberately not gated on confidence. A low-confidence critical routes to
+    # a human, and that is the ticket where a starting point matters most.
     should_enrich = (
         classification.category == Category.security_incident
         and classification.severity == Severity.critical
-        and classification.confidence == Confidence.high_confidence
     )
     if not should_enrich:
         return
