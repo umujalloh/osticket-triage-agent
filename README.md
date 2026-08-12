@@ -82,6 +82,12 @@ out of paper, classified and audited:
 
 ![Splunk audit events](docs/images/splunk-audit.png)
 
+The same ticket filed twice with the same requester address, once as a guest and
+once signed in as that address. The submitter typed the address both times, so
+only the authenticated one is eligible to be searched:
+
+![Authentication gate](docs/images/auth-gate.png)
+
 ## Repository layout
 
 ```
