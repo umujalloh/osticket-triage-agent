@@ -335,7 +335,7 @@ Writes are the risky capability, so they come last, after classification and enr
  
 Idempotency. Accepted ticket IDs are recorded in a SQLite store beside the agent, so a retried webhook doesn't double-page or double-note and a restart doesn't forget what was handled. The store also records which of the four effectful actions completed for each ticket, so a ticket interrupted partway through can be finished later without repeating what already succeeded.
  
-Kill switch. One environment variable (ENABLE_WRITES) disables all effectful writes. Audit logging continues regardless, so even with writes off, every classification and decision is still recorded.
+Kill switch. One environment variable, ENABLE_WRITES, governs every effectful write. It has no default and must be exactly true or false, so a deployment cannot start writing to real tickets by accident or silently do nothing while looking healthy. The agent reports which mode it booted in. Audit logging continues regardless, so even with writes off, every classification and decision is still recorded.
  
 Latency tradeoff. Low-confidence tickets route to a human instead of paging automatically. This is safer but slower because a genuinely urgent but ambiguously worded incident waits for a human rather than paging immediately. It is a deliberate choice, since acting on an uncertain classification is the worse risk.
  

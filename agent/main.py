@@ -11,6 +11,7 @@ load_dotenv()
 from classifier import classify_ticket, ClassificationError
 from idempotency import claim_ticket
 from schemas import Category, Severity
+from writes import writes_enabled
 from splunk_enrichment import enrich_ticket, EnrichmentError
 from splunk_logger import (
     log_request_rejected,
@@ -19,6 +20,8 @@ from splunk_logger import (
 )
 
 app = FastAPI()
+
+print(f"Effectful writes are {'ENABLED' if writes_enabled() else 'DISABLED'}")
 
 HMAC_SECRET = os.getenv("TRIAGE_HMAC_SECRET")
 if not HMAC_SECRET:
@@ -191,8 +194,6 @@ async def receive_ticket(request: Request, background_tasks: BackgroundTasks):
             status_code=400, content={"detail": "ticket_id must be a number or string"}
         )
 
-    # Claims the ticket and reports whether this request won it. The store is
-    # on disk, so a restart no longer forgets what it has already processed.
     if not claim_ticket(ticket_id):
         background_tasks.add_task(
             log_request_rejected, reason="duplicate", source_ip=source_ip,

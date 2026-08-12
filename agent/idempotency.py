@@ -7,9 +7,7 @@ DB_PATH = os.getenv(
     os.path.join(os.path.dirname(__file__), "triage_state.db"),
 )
 
-# Every effectful action Phase 3 can take. Each is a column, so a ticket that
-# fails partway through can be finished later without repeating what already
-# succeeded. Adding one here adds it to the schema.
+# One column per effectful action. Adding a name here adds it to the schema.
 ACTIONS = ("note_written", "priority_set", "slack_posted", "paged")
 
 _SCHEMA = f"""
@@ -38,9 +36,8 @@ def init_db():
     with _connect() as conn:
         conn.executescript(_SCHEMA)
 
-# Fail closed at import, matching the secret assertions elsewhere. A store that
-# cannot be opened means duplicate protection is not in force, and Phase 3
-# writes are not safe without it.
+# A store that cannot be opened means duplicate protection is not in force,
+# and writes are not safe without it.
 try:
     init_db()
 except sqlite3.Error as e:
