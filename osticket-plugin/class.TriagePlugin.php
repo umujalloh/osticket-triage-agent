@@ -58,21 +58,14 @@ class TriagePlugin extends Plugin {
     }
 
     /**
-     * True only when this ticket was filed from an authenticated client
-     * session whose logged-in user is the ticket owner, and that owner's
-     * account is confirmed.
+     * True only when the ticket was filed from an authenticated client session
+     * whose user is the ticket owner, and that account is confirmed.
      *
-     * Checking the account by itself is not enough. osTicket resolves an
-     * address typed into the open guest form to whatever user record already
-     * owns it, so a ticket filed as ceo@company.com becomes owned by the real
-     * CEO's user and would inherit that account's confirmed status. The
-     * session check is the part that proves the submitter is the person named,
-     * rather than proving the address exists.
+     * The account check alone is not enough: osTicket attaches a guest
+     * submission to whatever user already owns the typed address, so an
+     * impersonated ticket would inherit that user's confirmed status.
      *
-     * Fails closed. Guest submissions carry no session, and staff-created,
-     * API, and email-piped tickets carry no client session either, so none of
-     * them are treated as verified. A throw here would break ticket creation,
-     * so nothing escapes.
+     * Fails closed, and swallows throws so it cannot break ticket creation.
      */
     private function requesterIsVerified(Ticket $ticket): bool {
         global $thisclient;
