@@ -9,7 +9,7 @@ figure without that method cannot be reproduced and should not be trusted.
 
 ```bash
 cd agent
-python run_eval.py
+./venv/bin/python run_eval.py
 ```
 
 Needs `ANTHROPIC_API_KEY` in `agent/.env`. One run is 36 API calls.
@@ -174,9 +174,42 @@ when the script below was added. Type N is an internal note, which is what makes
 the Attack 3 claim that notes are invisible to the submitter true rather than
 aspirational.
 
-Reproduce with `python verify_writeback.py <ticket_id>` from `agent/`. The last
-case writes a real note, and the endpoint has no delete operation, so name a
-ticket you don't mind marking.
+Reproduce with `./venv/bin/python verify_writeback.py <ticket_id>` from
+`agent/`. The last case writes a real note, and the endpoint has no delete
+operation, so name a ticket you don't mind marking.
+
+## Idempotency store verification
+
+Measured 2026-08-12, thirteen checks, all passing. Run against a temporary
+database so the live store is never written to. That separation matters: a test
+that inserted ticket IDs into the real store would later refuse the genuine
+ticket carrying the same number.
+
+| Property | How it was checked | Result |
+|---|---|---|
+| A ticket can be claimed | first `claim_ticket(42)` | `True` |
+| It cannot be claimed twice | second `claim_ticket(42)` | `False` |
+| Claiming one does not block others | `claim_ticket(43)` | `True` |
+| One ticket, either spelling | `claim_ticket("42")` after `42` | `False` |
+| A fresh ticket has done nothing | `completed_actions(43)` | all four `False` |
+| A marked action is recorded | mark then read `note_written` | `True` |
+| Actions are independent | mark `note_written`, read `paged` | `False` |
+| Marking twice is harmless | mark `note_written` again | still `True` |
+| An unknown ticket does not raise | `completed_actions(9999)` | all four `False` |
+| A misspelled action is refused | `mark_done(43, "not_a_real_action")` | `ValueError` |
+| A claim survives a restart | reload module, `claim_ticket(42)` | `False` |
+| Action state survives a restart | reload module, read `note_written` | `True` |
+| The store still accepts new tickets | reload module, `claim_ticket(44)` | `True` |
+
+The last row exists to stop the two above it passing for the wrong reason. A
+store that refused everything after a restart would satisfy both, and only fail
+this one.
+
+Reproduce with `./venv/bin/python verify_idempotency.py` from `agent/`.
+
+Whether a retried webhook actually avoids writing a second note is not verified
+here, because nothing calls the store's action tracking yet. That belongs with
+the end-to-end run once the write path is wired.
 
 ## Comparison against the previous rubric
 
