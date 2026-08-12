@@ -123,7 +123,9 @@ class TriagePlugin extends Plugin {
                 throw new \Exception($url . ' - ' . curl_error($ch));
             } else {
                 $statusCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-                if ($statusCode != '202') {
+                // The agent answers 202 when it accepts a ticket and 200 when
+                // it recognises one it has already seen. Both are successes.
+                if ($statusCode < 200 || $statusCode >= 300) {
                     throw new \Exception('Error sending to: ' . $url . ' Http code: ' . $statusCode);
                 }
             }
