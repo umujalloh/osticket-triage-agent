@@ -27,7 +27,10 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
   splunk:
-    image: splunk/splunk:latest
+    # Splunk 10.4.1, pinned by digest so a rebuild cannot pull a newer release
+    # this stack has not been tested against. Change this line on purpose when
+    # you want a different version.
+    image: splunk/splunk@sha256:af4f671c9c931bfd80954e7f1baaff8540d1378ae26b098666cf05256bb24311
     restart: always
     environment:
       SPLUNK_START_ARGS: --accept-license
