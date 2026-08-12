@@ -25,6 +25,16 @@ SPLUNK_CACERT_PATH = os.path.join(
 
 EMAIL_PATTERN = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 
+# _raw is excluded because a raw event carries whatever its source logged,
+# credentials included, and every event returned here lands in the audit index.
+# The vendor-specific names are the ones BOTSv3 populates without CIM add-ons.
+# See docs/KNOWN_LIMITATIONS.md.
+ENRICHMENT_FIELDS = (
+    "_time, host, sourcetype, src_ip, dest_ip, user, action, "
+    "userPrincipalName, ipAddress, loginStatus, signinErrorCode, "
+    "appDisplayName, email"
+)
+
 class EnrichmentError(Exception):
     def __init__(self, failure_type: str, message: str):
         self.failure_type = failure_type
@@ -48,15 +58,10 @@ def build_enrichment_query(submitter_email=None, submitter_ip=None,
     extracted and validated at classification time and recorded in the audit
     log, they just never reach a query.
 
-    The requester email is only searched when osTicket reports the ticket was
-    filed from an authenticated session belonging to that address's confirmed
-    account. On an open ticket form the field is whatever the submitter typed,
-    so an unverified address is a search target the submitter chose: filing a
-    convincing critical incident as someone else runs the query against that
-    person instead. Validation stops a crafted value from altering the query,
-    never from choosing what it looks up. An unverified address is therefore
-    left out of the query entirely. It stays on the ticket in osTicket, it just
-    never becomes a search target.
+    The requester email is searched only when the ticket was filed from an
+    authenticated session for that address. On an open form the field is
+    whatever the submitter typed, so an unverified address is a search target
+    the submitter chose. See architecture.md, Attack 3.
 
     Every value is validated against a strict pattern before it can reach the
     query string, independent of whether the caller already validated it.
@@ -79,7 +84,7 @@ def build_enrichment_query(submitter_email=None, submitter_ip=None,
 
     condition = " OR ".join(clauses)
     return (f'search index=botsv3 ({condition}) earliest={SPLUNK_ENRICHMENT_EARLIEST} '
-            f'| table _time, host, sourcetype, _raw | head 20')
+            f'| table {ENRICHMENT_FIELDS} | head 20')
 
 def _run_enrichment_query(query: str, timeout: int = 15):
     """Not meant to be called directly - use enrich_ticket, which only
