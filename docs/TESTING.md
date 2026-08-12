@@ -116,6 +116,11 @@ writes, so letting one in would hand the search target to whoever filed the
 ticket. All 20 stored events contain `bgist@froth.ly` and none contain
 `BGIST-L`, which on its own matches 10,327 events in the index.
 
+This run predates two changes and no longer describes current behavior. It was a
+guest submission, which the authenticated-session gate now excludes from the
+email clause, and it stored whole raw events, which the named field list now
+replaces. Reproducing it takes a confirmed account and returns the named fields.
+
 ## Comparison against the previous rubric
 
 The severity and confidence rubric was rewritten on 2026-08-06. Both versions

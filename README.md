@@ -39,18 +39,25 @@ constrained by a tool schema and validated against the Pydantic model in
 [`schemas.py`](agent/schemas.py). [`splunk_logger.py`](agent/splunk_logger.py)
 writes the result to Splunk over HEC.
 
-When a ticket lands on `security_incident` at `critical` severity with high
-confidence, [`splunk_enrichment.py`](agent/splunk_enrichment.py) searches Splunk
-for related events. It searches only on the submitter's email and IP, both taken
-from the webhook rather than from anything typed into the ticket. Any hostname,
-username, or IP the classifier extracted from the ticket text is validated and
-recorded in the audit log, but never reaches a query, since a ticket author
-choosing what those fields say would otherwise be choosing what the agent
-searches for. Every value is validated against a strict pattern inside the
-enrichment module before it can reach a query, independent of whether the caller
-already validated it. Queries are built from fixed templates, run read-only, and
-authenticate as a Splunk user scoped to a single index. The result, or the
-reason there wasn't one, goes to the audit log either way.
+When a ticket lands on `security_incident` at `critical` severity,
+[`splunk_enrichment.py`](agent/splunk_enrichment.py) searches Splunk for related
+events. Confidence does not gate this, because the tickets that read as
+uncertain are the ones a reviewer most needs context for.
+
+It searches on the submitter's IP, which the server observes, and on the
+requester email only when osTicket reports the ticket was filed from an
+authenticated session for that address. On an open ticket form the email is
+whatever the submitter typed, so an unverified one is a search target the
+submitter picked and never reaches a query. Any hostname, username, or IP the
+classifier extracted from the ticket text is treated the same way: validated and
+recorded in the audit log, never searched for. Every value is validated against a
+strict pattern inside the enrichment module before it can reach a query,
+independent of whether the caller already validated it.
+
+Queries are built from fixed templates, run read-only, authenticate as a Splunk
+user scoped to a single index, and return a named field list rather than raw
+events, so credentials sitting in raw log text never enter the audit index. The
+result, or the reason there wasn't one, goes to the audit log either way.
 
 If Claude fails to return a classification, rate limited, unreachable, a bad
 credential, or an invalid response, the agent flags the ticket for human review
