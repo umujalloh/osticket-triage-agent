@@ -83,10 +83,13 @@ out of paper, classified and audited:
 ![Splunk audit events](docs/images/splunk-audit.png)
 
 The same ticket filed twice with the same requester address, once as a guest and
-once signed in as that address. The submitter typed the address both times, so
-only the authenticated one is eligible to be searched:
+once signed in as that address. The classification is identical both times. The
+only difference is whether the agent was allowed to search that address, and
+what that difference produced:
 
-![Authentication gate](docs/images/auth-gate.png)
+![Authentication gate, agent output](docs/images/auth-gate-console.png)
+
+![Authentication gate, audit record](docs/images/auth-gate.png)
 
 ## Repository layout
 
