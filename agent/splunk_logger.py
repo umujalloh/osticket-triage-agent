@@ -54,7 +54,7 @@ def log_request_rejected(reason, source_ip, ticket_id=None):
         "source_ip": source_ip,
     })
 
-def log_classification(ticket_id, subject, classification):
+def log_classification(ticket_id, subject, classification, requester_verified):
     return _send_audit_event({
         "ticket_id": ticket_id,
         "status": "classification_complete",
@@ -62,6 +62,9 @@ def log_classification(ticket_id, subject, classification):
         "category": classification.category.value,
         "severity": classification.severity.value,
         "confidence": classification.confidence.value,
+        # Whether osTicket authenticated the submitter as the requester address.
+        # False means the email was never eligible as a search target.
+        "requester_verified": requester_verified,
         # Informational only. Extracted from ticket text and validated, but
         # never used to build a query. See build_enrichment_query for why.
         "extracted_hostname": classification.hostname,

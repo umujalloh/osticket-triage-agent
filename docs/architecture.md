@@ -56,7 +56,7 @@ When the agent receives the ticket, it does two things first. It authenticates t
  
 Claude reads the ticket text and returns a classification: category, severity, and confidence. How that classification works is covered in Section 5.
  
-If the ticket is a security_incident at critical severity, the agent runs a pre-defined, read-only Splunk query, chosen based on the classification, to enrich the ticket with context.
+If the ticket is a security_incident at critical severity, the agent runs a pre-defined, read-only Splunk query to enrich the ticket with context. Confidence does not gate this. The query is a single fixed template filled from the submitter's identifiers, not one of several chosen from the classification.
  
 After enrichment, the agent looks up the response in the pre-defined action table, writes an internal note back to osTicket, posts to Slack for high and critical severity, and pages PagerDuty only when the ticket is critical and high confidence. Any low-confidence ticket routes to a human regardless of category or severity.
  
@@ -133,13 +133,21 @@ Vector. The enrichment path. A crafted ticket tries to make the agent pull sensi
  
 Defense.
  
-Queries run from fixed templates, never composed by Claude, so an attacker cannot trick Claude into running a malicious query. Each blank in a template is filled from an identifier osTicket's auth supplied, the submitter's email or IP, never from ticket text. The agent validates that value against a strict pattern before substituting it, so a crafted value cannot break out of the template and alter the query. Because the submitter cannot choose the value, they also cannot choose what the query looks up. The templates read only non-credential, non-sensitive fields.
+Queries run from fixed templates, never composed by Claude, so an attacker cannot trick Claude into running a malicious query. Each blank is filled from the submitter's email or IP, never from ticket text. The agent validates that value against a strict pattern before substituting it, so a crafted value cannot break out of the template and alter the query.
+
+Validation is not enough on its own, because it stops a crafted value from altering the query without stopping a valid one from choosing what the query looks up. On an open ticket form the requester email is whatever the submitter typed, so filing a convincing critical incident as someone else would run the query against that person. The email is therefore searched only when osTicket reports the ticket was filed from an authenticated session whose logged-in user is the ticket owner and whose account is confirmed. Checking the account alone would not close this, because osTicket attaches a guest submission to whatever user already owns the typed address, so an impersonated ticket would inherit that user's confirmed status. An unverified address is left out of the query entirely. The submitter IP is always searchable, since the server observes it rather than accepting it as input.
+
+Queries return a fixed field list, not raw events. `_raw` is excluded because a raw event carries whatever its source logged, which is where credentials appear: tokens in URLs, passwords on command lines, session IDs in request paths. The current list is in `ENRICHMENT_FIELDS` in `agent/splunk_enrichment.py` and holds timestamps, host, sourcetype, network addresses, account names, and sign-in outcomes. Bounding it here bounds what a Phase 3 note can contain.
  
 Notes are structured summaries, not raw query dumps. The agent builds the summary in code from specific named fields. Claude does not write the summary, which keeps the model completely out of the write path.
  
 Notes are internal. The person who filed the ticket cannot see them at all.
  
-Residual risk. Summary safety depends on the templates and field scoping being correct, which must be verified, not assumed. A template written too broadly, or a field that holds sensitive data in some records, could place something in a note that shouldn't be there. Internal notes are also visible to all helpdesk staff, so even correctly scoped data could be seen by staff working a different ticket, which is an internal exposure risk under privacy rules.
+Residual risk. Field scoping bounds the field names, not their contents. The allowlist was checked against BOTSv3, where those fields hold addresses, account names, and sign-in outcomes. On another dataset the same names could carry something else, so the list has to be re-verified against real log sources rather than assumed to travel.
+
+The session gate inherits osTicket's session handling. If that is misconfigured or bypassed, the agent believes what osTicket tells it, since the agent has no independent way to authenticate the submitter. The same applies to the IP: osTicket reads it from the connection, but honours a forwarded header from any address in its trusted proxy list, so a wildcard entry there would hand the submitter control of the one identifier they are not supposed to choose.
+
+An authenticated user can still cause a search on their own address, which is the one search target the gate permits by design. Internal notes remain visible to all helpdesk staff, so correctly scoped data can still be read by staff working a different ticket, an internal exposure risk under privacy rules.
  
 ---
  
@@ -307,7 +315,11 @@ The full table is in [docs/action-table.md](action-table.md). A few example rows
 | it_support | low | high | Write note, no alert |
 | any | any | low | Route to human review |
  
-The page is reserved for critical at high confidence, and so is Splunk enrichment. Both are gated to the case that wakes a human, rather than running for every security-relevant ticket. High severity at high confidence posts to Slack and writes a note but does not page or enrich, so an urgent ticket that isn't severe enough to page still reaches the team channel without waking on-call or expanding the query surface. Anything at low confidence falls through to human review before any alert fires.
+The page is reserved for critical at high confidence. Splunk enrichment is not: it runs on every security_incident at critical severity, whatever the confidence. They are gated differently on purpose. A page interrupts a person, so it takes the double condition. Enrichment is read-only and bounded by the agent's Splunk role, which allows three concurrent searches against one index, so running it on an uncertain ticket costs search capacity and nothing else.
+
+Gating it on confidence too would have withheld enrichment from the tickets that need it most, because the rubric forces unexplained behavior to low_confidence. A critical incident nobody can account for is exactly where a reviewer needs a starting point.
+
+High severity at high confidence posts to Slack and writes a note but does not page or enrich, so an urgent ticket that isn't severe enough to page still reaches the team channel without waking on-call. Anything at low confidence falls through to human review before any alert fires, now with enrichment attached when it was critical.
  
 Phasing. The build is in three phases, each proven before the next.
  
@@ -347,7 +359,7 @@ Splunk service account: read-only, scoped to only the index(es) enrichment queri
  
 osTicket API key: comment and priority update only. No delete, no ticket creation, no user management.
  
-Claude API key: daily token budget cap, rate limit, audit every call.
+Claude API key: not scoped in code. Spend is capped by a limit set in the Anthropic Console, outside the agent. The agent backs off when the API rejects a call, but never limits how often it calls.
  
 ---
  
@@ -355,7 +367,7 @@ Claude API key: daily token budget cap, rate limit, audit every call.
  
 Audit logging. Every request the agent accepts or rejects, every classification, and every enrichment query is logged to Splunk continuously, at every step.
  
-What is logged. For a ticket the agent processed, each entry captures the ticket ID, the agent's decision (category, severity, confidence), the action taken, and a timestamp. This is enough to reconstruct what the agent did to any ticket and why.
+What is logged. For a ticket the agent processed, each entry captures the ticket ID, the agent's decision (category, severity, confidence), the action taken, and a timestamp. The classification entry also records whether osTicket authenticated the submitter as the requester address, since that is what decides whether the email was eligible to be searched. This is enough to reconstruct what the agent did to any ticket and why.
  
 This record is also what makes the future mismatch-detection hardening (Section 7) possible. That check compares a ticket's current state against what the agent decided, which only works if the decision was logged in the first place.
  

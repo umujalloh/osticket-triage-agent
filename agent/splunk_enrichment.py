@@ -25,6 +25,16 @@ SPLUNK_CACERT_PATH = os.path.join(
 
 EMAIL_PATTERN = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 
+# _raw is excluded because a raw event carries whatever its source logged,
+# credentials included, and every event returned here lands in the audit index.
+# The vendor-specific names are the ones BOTSv3 populates without CIM add-ons.
+# See docs/KNOWN_LIMITATIONS.md.
+ENRICHMENT_FIELDS = (
+    "_time, host, sourcetype, src_ip, dest_ip, user, action, "
+    "userPrincipalName, ipAddress, loginStatus, signinErrorCode, "
+    "appDisplayName, email"
+)
+
 class EnrichmentError(Exception):
     def __init__(self, failure_type: str, message: str):
         self.failure_type = failure_type
@@ -37,7 +47,8 @@ def _is_valid_ip(value: str) -> bool:
     except ValueError:
         return False
 
-def build_enrichment_query(submitter_email=None, submitter_ip=None):
+def build_enrichment_query(submitter_email=None, submitter_ip=None,
+                           requester_verified=False):
     """Builds a fixed, read-only SPL query from submitter-controlled
     identifiers only.
 
@@ -47,6 +58,11 @@ def build_enrichment_query(submitter_email=None, submitter_ip=None):
     extracted and validated at classification time and recorded in the audit
     log, they just never reach a query.
 
+    The requester email is searched only when the ticket was filed from an
+    authenticated session for that address. On an open form the field is
+    whatever the submitter typed, so an unverified address is a search target
+    the submitter chose. See architecture.md, Attack 3.
+
     Every value is validated against a strict pattern before it can reach the
     query string, independent of whether the caller already validated it.
     Returns None if there is nothing safe to search on rather than falling
@@ -54,7 +70,10 @@ def build_enrichment_query(submitter_email=None, submitter_ip=None):
     """
     clauses = []
 
-    if submitter_email and EMAIL_PATTERN.match(submitter_email):
+    # Fail closed. Anything other than a literal True, including a missing or
+    # non-boolean field in the webhook payload, leaves the email out.
+    if (requester_verified is True and submitter_email
+            and EMAIL_PATTERN.match(submitter_email)):
         clauses.append(f'"{submitter_email}"')
 
     if submitter_ip and _is_valid_ip(submitter_ip):
@@ -65,7 +84,7 @@ def build_enrichment_query(submitter_email=None, submitter_ip=None):
 
     condition = " OR ".join(clauses)
     return (f'search index=botsv3 ({condition}) earliest={SPLUNK_ENRICHMENT_EARLIEST} '
-            f'| table _time, host, sourcetype, _raw | head 20')
+            f'| table {ENRICHMENT_FIELDS} | head 20')
 
 def _run_enrichment_query(query: str, timeout: int = 15):
     """Not meant to be called directly - use enrich_ticket, which only
@@ -120,15 +139,20 @@ def _run_enrichment_query(query: str, timeout: int = 15):
     failure_type, message = last_error
     raise EnrichmentError(failure_type, message)
 
-def enrich_ticket(submitter_email=None, submitter_ip=None):
+def enrich_ticket(submitter_email=None, submitter_ip=None,
+                  requester_verified=False):
     """Runs a read-only enrichment query if there is a valid, submitter-
     controlled identifier to search on.
+
+    requester_verified comes from osTicket and gates whether the email is
+    searchable at all. See build_enrichment_query for why.
 
     Returns None if there is nothing to search, or a list of matching
     events (possibly empty) on success. Raises EnrichmentError on
     failure; never returns placeholder data.
     """
-    query = build_enrichment_query(submitter_email, submitter_ip)
+    query = build_enrichment_query(submitter_email, submitter_ip,
+                                   requester_verified)
     if query is None:
         return None
     return _run_enrichment_query(query)

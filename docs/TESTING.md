@@ -116,6 +116,43 @@ writes, so letting one in would hand the search target to whoever filed the
 ticket. All 20 stored events contain `bgist@froth.ly` and none contain
 `BGIST-L`, which on its own matches 10,327 events in the index.
 
+This run predates two changes and no longer describes current behavior. It was a
+guest submission, which the authenticated-session gate now excludes from the
+email clause, and it stored whole raw events, which the named field list now
+replaces. Reproducing it takes a confirmed account and returns the named fields.
+
+## Authentication gate verification
+
+**Method.** Measured 2026-08-11. Two tickets filed through the real osTicket
+form with the same requester address and identical text. The only variable is
+whether the submitter held an authenticated client session.
+
+**Result.**
+
+| | Ticket 10 | Ticket 11 |
+|---|---|---|
+| Submitted as | guest, private window | signed in as `bgist@froth.ly` |
+| Requester address | `bgist@froth.ly` | `bgist@froth.ly` |
+| Attached to user record | 3, Bill Gist | 3, Bill Gist |
+| Recorded submitter IP | `172.21.0.1` | `172.21.0.1` |
+| Classification | security_incident / critical / high_confidence | identical |
+| `requester_verified` | `false` | `true` |
+| Events returned | 0 | 20 |
+
+Both tickets attached to the same user record, because osTicket binds an address
+typed into the guest form to whatever user already owns it. That is what makes
+ticket 10 an impersonation rather than an unknown sender.
+
+Bill Gist holds a confirmed account and ticket 10 is attached to it, so a gate
+that read the ticket owner's account status would have returned true and
+searched his address for an anonymous submitter. Only the session check
+separates these two runs.
+
+No stored event on ticket 11 contains `_raw`. The fields present are `_time`,
+`host`, `sourcetype`, `src_ip`, `dest_ip`, `ipAddress`, `userPrincipalName`,
+`email`, `loginStatus`, `signinErrorCode`, and `appDisplayName`, totalling 3,540
+bytes across 20 events.
+
 ## Comparison against the previous rubric
 
 The severity and confidence rubric was rewritten on 2026-08-06. Both versions

@@ -5,6 +5,7 @@ require_once(INCLUDE_DIR . 'class.ticket.php');
 require_once(INCLUDE_DIR . 'class.osticket.php');
 require_once(INCLUDE_DIR . 'class.config.php');
 require_once(INCLUDE_DIR . 'class.format.php');
+require_once(INCLUDE_DIR . 'class.user.php');
 require_once('config.php');
 
 class TriagePlugin extends Plugin {
@@ -43,16 +44,48 @@ class TriagePlugin extends Plugin {
         $plaintext = Format::html2text($message->getBody()->getClean());
 
         $payload = array(
-            'ticket_id'     => $ticket->getId(),
-            'ticket_number' => $ticket->getNumber(),
-            'subject'       => $ticket->getSubject(),
-            'message'       => $plaintext,
-            'requester'     => (string) $ticket->getEmail(),
-            'submitter_ip'  => $ticket->getIP(),
-            'created_at'    => date('c'),
+            'ticket_id'          => $ticket->getId(),
+            'ticket_number'      => $ticket->getNumber(),
+            'subject'            => $ticket->getSubject(),
+            'message'            => $plaintext,
+            'requester'          => (string) $ticket->getEmail(),
+            'requester_verified' => $this->requesterIsVerified($ticket),
+            'submitter_ip'       => $ticket->getIP(),
+            'created_at'         => date('c'),
         );
 
         $this->sendToAgent($payload);
+    }
+
+    /**
+     * True only when the ticket was filed from an authenticated client session
+     * whose user is the ticket owner, and that account is confirmed.
+     *
+     * The account check alone is not enough: osTicket attaches a guest
+     * submission to whatever user already owns the typed address, so an
+     * impersonated ticket would inherit that user's confirmed status.
+     *
+     * Fails closed, and swallows throws so it cannot break ticket creation.
+     */
+    private function requesterIsVerified(Ticket $ticket): bool {
+        global $thisclient;
+
+        try {
+            if (!$thisclient || !$thisclient->getId() || !$thisclient->isValid())
+                return false;
+
+            if ((int) $thisclient->getId() !== (int) $ticket->getOwnerId())
+                return false;
+
+            $account = $thisclient->getAccount();
+            if (!$account instanceof UserAccount)
+                return false;
+
+            return (bool) $account->isConfirmed();
+        } catch (\Throwable $e) {
+            error_log('Triage plugin could not verify requester session: ' . $e->getMessage());
+            return false;
+        }
     }
 
     /**
@@ -90,7 +123,9 @@ class TriagePlugin extends Plugin {
                 throw new \Exception($url . ' - ' . curl_error($ch));
             } else {
                 $statusCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-                if ($statusCode != '202') {
+                // The agent answers 202 when it accepts a ticket and 200 when
+                // it recognises one it has already seen. Both are successes.
+                if ($statusCode < 200 || $statusCode >= 300) {
                     throw new \Exception('Error sending to: ' . $url . ' Http code: ' . $statusCode);
                 }
             }
