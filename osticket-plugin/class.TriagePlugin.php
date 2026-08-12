@@ -26,6 +26,26 @@ class TriagePlugin extends Plugin {
     function bootstrap() {
         self::$pluginInstance = self::getPluginInstance(null);
         Signal::connect('ticket.created', array($this, 'onTicketCreated'));
+        Signal::connect('api', array($this, 'onApiSignal'));
+    }
+
+    /**
+     * osTicket hands plugins the API dispatcher before it resolves the URL,
+     * which is the supported way to add an endpoint. Registered as a closure
+     * rather than a class name so the controller receives this plugin and its
+     * instance, and so the dispatcher's own no-argument instantiation and
+     * access() convention do not apply.
+     */
+    function onApiSignal($dispatcher) {
+        $plugin = $this;
+        $instance = self::$pluginInstance;
+        $dispatcher->append(
+            url_post('^/triage/note$', function () use ($plugin, $instance) {
+                require_once(__DIR__ . '/class.TriageWriteController.php');
+                $controller = new TriageWriteController($plugin, $instance);
+                return $controller->postNote();
+            })
+        );
     }
 
     /**
