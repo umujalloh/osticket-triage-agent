@@ -215,13 +215,13 @@ Vector. Webhook retries from osTicket on slow or failed responses, and an attack
  
 Defense.
  
-Idempotency. The agent keeps an in-memory set of processed ticket IDs and skips any it has already handled, so one ticket is acted on exactly once no matter how many times the request arrives.
+Idempotency. The agent records every accepted ticket ID in a store on disk and skips any it has already handled, so one ticket is acted on exactly once no matter how many times the request arrives, and a restart does not forget what it already did.
  
 Timestamped payload with a freshness check. The signed payload includes a `created_at` timestamp, so tampering with it invalidates the signature. The agent rejects any request whose timestamp is more than 5 minutes old (with a 60 second allowance for clock skew). This kills replays of captured requests, since a replayed request is by definition stale.
  
 Secret rotation. The HMAC signing secret is rotated periodically, which invalidates any requests captured under the old secret. This bounds how long a captured request stays replayable, on top of the per-request timestamp check.
  
-Residual risk. The defenses leave three gaps. A replay sent within the freshness window passes the timestamp check, so the window's length is a direct tradeoff between blocking replays and tolerating legitimate retries. Idempotency depends on the agent remembering every processed ticket ID, and that record is cleared on restart, so a replay of a forgotten ticket could be processed as new if it arrives inside the freshness window. And idempotency only triggers after a request is accepted, so a captured request that never reached the agent originally is not a duplicate at all, the attacker can deliver it in time and have it processed as a first-and-only legitimate request.
+Residual risk. The defenses leave three gaps. A replay sent within the freshness window passes the timestamp check, so the window's length is a direct tradeoff between blocking replays and tolerating legitimate retries. Idempotency only triggers after a request is accepted, so a captured request that never reached the agent originally is not a duplicate at all, the attacker can deliver it in time and have it processed as a first-and-only legitimate request. And the record holds only as long as the store file does, so deleting it lets a previously handled ticket be replayed as new inside the freshness window. The file belongs with the deployment, not with caches.
  
 ---
  
@@ -333,7 +333,7 @@ Phase 3: internal note writes and alerting (Slack posts, and PagerDuty pages for
  
 Writes are the risky capability, so they come last, after classification and enrichment are working. Within Phase 3, alerts are kill-switched effectful writes in the same risk class as note writes, which is why they land together.
  
-Idempotency. The agent tracks processed ticket IDs and skips duplicates, so a retried webhook doesn't double-page or double-note.
+Idempotency. Accepted ticket IDs are recorded in a SQLite store beside the agent, so a retried webhook doesn't double-page or double-note and a restart doesn't forget what was handled. The store also records which of the four effectful actions completed for each ticket, so a ticket interrupted partway through can be finished later without repeating what already succeeded.
  
 Kill switch. One environment variable (ENABLE_WRITES) disables all effectful writes. Audit logging continues regardless, so even with writes off, every classification and decision is still recorded.
  

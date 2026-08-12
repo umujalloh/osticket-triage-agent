@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from classifier import classify_ticket, ClassificationError
+from idempotency import claim_ticket
 from schemas import Category, Severity
 from splunk_enrichment import enrich_ticket, EnrichmentError
 from splunk_logger import (
@@ -46,8 +47,6 @@ def is_fresh(created_at) -> bool:
         ts = ts.replace(tzinfo=timezone.utc)
     age = (datetime.now(timezone.utc) - ts).total_seconds()
     return -CLOCK_SKEW_TOLERANCE_SECONDS <= age <= REPLAY_WINDOW_SECONDS
-
-seen_ticket_ids = set()
 
 def process_ticket(payload: dict):
     ticket_id = payload.get("ticket_id")
@@ -182,8 +181,8 @@ async def receive_ticket(request: Request, background_tasks: BackgroundTasks):
         )
         return JSONResponse(status_code=400, content={"detail": "ticket_id is required"})
 
-    # bool is a subclass of int and True == 1, so an unfiltered bool would
-    # collide with ticket 1 in the seen set.
+    # A bool is not a ticket identifier, and isinstance(True, int) is True, so
+    # it has to be rejected explicitly rather than by the type check below.
     if isinstance(ticket_id, bool) or not isinstance(ticket_id, (int, str)):
         background_tasks.add_task(
             log_request_rejected, reason="invalid_ticket_id", source_ip=source_ip
@@ -192,13 +191,14 @@ async def receive_ticket(request: Request, background_tasks: BackgroundTasks):
             status_code=400, content={"detail": "ticket_id must be a number or string"}
         )
 
-    if ticket_id in seen_ticket_ids:
+    # Claims the ticket and reports whether this request won it. The store is
+    # on disk, so a restart no longer forgets what it has already processed.
+    if not claim_ticket(ticket_id):
         background_tasks.add_task(
             log_request_rejected, reason="duplicate", source_ip=source_ip,
             ticket_id=ticket_id
         )
         return JSONResponse(status_code=200, content={"status": "duplicate", "ticket_id": ticket_id})
-    seen_ticket_ids.add(ticket_id)
 
     background_tasks.add_task(process_ticket, payload)
 
