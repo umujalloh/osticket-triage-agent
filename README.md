@@ -91,6 +91,10 @@ what that difference produced:
 
 ![Authentication gate, audit record](docs/images/auth-gate.png)
 
+Method and full results for that pair, including why an account-status check
+would not have been enough, are in
+[docs/TESTING.md](docs/TESTING.md#authentication-gate-verification).
+
 ## Repository layout
 
 ```
