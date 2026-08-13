@@ -8,15 +8,20 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from action_table import actions_for
 from classifier import classify_ticket, ClassificationError
-from idempotency import claim_ticket
-from schemas import Category, Severity
+from idempotency import claim_ticket, completed_actions, mark_done
+from note_builder import build_note
+from osticket_client import write_note, OsTicketWriteError, SKIPPED
+from schemas import Category
 from writes import writes_enabled
-from splunk_enrichment import enrich_ticket, EnrichmentError
+from splunk_enrichment import build_enrichment_query, enrich_ticket, EnrichmentError
 from splunk_logger import (
     log_request_rejected,
     log_classification, log_classification_failure,
     log_enrichment, log_enrichment_failure, log_enrichment_skipped,
+    log_note_written, log_note_skipped, log_note_failure,
+    log_human_review,
 )
 
 app = FastAPI()
@@ -98,14 +103,21 @@ def process_ticket(payload: dict):
         print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
         return
 
-    # Deliberately not gated on confidence. A low-confidence critical routes to
-    # a human, and that is the ticket where a starting point matters most.
-    should_enrich = (
-        classification.category == Category.security_incident
-        and classification.severity == Severity.critical
+    actions = actions_for(
+        classification.category, classification.severity, classification.confidence
     )
-    if not should_enrich:
+
+    events = None
+    query = None
+    if not actions.enrich:
+        _take_actions(ticket_id, classification, actions, events, query)
         return
+
+    query = build_enrichment_query(
+        submitter_email=payload.get("requester"),
+        submitter_ip=payload.get("submitter_ip"),
+        requester_verified=requester_verified,
+    )
 
     try:
         events = enrich_ticket(
@@ -143,6 +155,60 @@ def process_ticket(payload: dict):
 
     audit_ok = log_enrichment(ticket_id=ticket_id, events=events)
     print(f"Ticket {ticket_id}: enrichment found {len(events)} related event(s)")
+    if not audit_ok:
+        print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
+        return
+
+    _take_actions(ticket_id, classification, actions, events, query)
+
+def _take_actions(ticket_id, classification, actions, events, query):
+    """Runs the actions the table selected, after enrichment has settled."""
+    if actions.human_review:
+        reason = ("unclear_category"
+                  if classification.category == Category.unclear
+                  else "low_confidence")
+        audit_ok = log_human_review(ticket_id=ticket_id, reason=reason)
+        print(f"Ticket {ticket_id}: needs human review ({reason})")
+        if not audit_ok:
+            print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
+
+    if actions.write_note:
+        _write_ticket_note(ticket_id, classification, events, query)
+
+def _write_ticket_note(ticket_id, classification, events, query):
+    # The store, not the ticket, decides whether this already happened. A
+    # retried webhook that got past the claim must not add a second note.
+    if completed_actions(ticket_id)["note_written"]:
+        print(f"Ticket {ticket_id}: note already written, skipping")
+        return
+
+    body = build_note(classification, events or [], query)
+
+    try:
+        outcome = write_note(ticket_id=int(ticket_id), note=body)
+    except OsTicketWriteError as e:
+        audit_ok = log_note_failure(ticket_id, e.failure_type, str(e))
+        print(f"Ticket {ticket_id}: note write failed ({e.failure_type})")
+        if not audit_ok:
+            print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
+        return
+    except Exception as e:
+        audit_ok = log_note_failure(ticket_id, "unknown", f"{type(e).__name__}: {e}")
+        print(f"Ticket {ticket_id}: note write failed (unknown)")
+        if not audit_ok:
+            print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
+        return
+
+    if outcome == SKIPPED:
+        log_note_skipped(ticket_id=ticket_id, reason="writes_disabled")
+        print(f"Ticket {ticket_id}: note skipped (writes disabled)")
+        return
+
+    # Recorded only after osTicket confirmed the write, so a failure leaves the
+    # ticket retryable rather than marked done.
+    mark_done(ticket_id, "note_written")
+    audit_ok = log_note_written(ticket_id=ticket_id)
+    print(f"Ticket {ticket_id}: note written")
     if not audit_ok:
         print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
 

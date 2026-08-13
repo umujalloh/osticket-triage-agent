@@ -102,3 +102,34 @@ def log_enrichment_failure(ticket_id, failure_type, error):
         "failure_type": failure_type,
         "error": error,
     })
+
+# The note body is not recorded. It is assembled from the enrichment events
+# already in the event above, and osTicket holds the note itself, so storing it
+# here would be a third copy that can disagree with the other two.
+def log_note_written(ticket_id):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "note_written",
+    })
+
+def log_note_skipped(ticket_id, reason):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "note_skipped",
+        "reason": reason,
+    })
+
+def log_note_failure(ticket_id, failure_type, error):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "note_failed",
+        "failure_type": failure_type,
+        "error": error,
+    })
+
+def log_human_review(ticket_id, reason):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "human_review",
+        "reason": reason,
+    })
