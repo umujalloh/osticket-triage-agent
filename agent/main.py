@@ -8,11 +8,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from action_table import actions_for
+from action_table import actions_for, PRIORITY_FOR_SEVERITY
 from classifier import classify_ticket, ClassificationError
 from idempotency import claim_ticket, completed_actions, mark_done
 from note_builder import build_note
-from osticket_client import write_note, OsTicketWriteError, SKIPPED
+from osticket_client import write_note, set_priority, OsTicketWriteError, SKIPPED
 from schemas import Category
 from writes import writes_enabled
 from splunk_enrichment import build_enrichment_query, enrich_ticket, EnrichmentError
@@ -21,6 +21,7 @@ from splunk_logger import (
     log_classification, log_classification_failure,
     log_enrichment, log_enrichment_failure, log_enrichment_skipped,
     log_note_written, log_note_skipped, log_note_failure,
+    log_priority_set, log_priority_skipped, log_priority_failure,
     log_human_review,
 )
 
@@ -174,6 +175,42 @@ def _take_actions(ticket_id, classification, actions, events, query):
 
     if actions.write_note:
         _write_ticket_note(ticket_id, classification, events, query)
+
+    if actions.set_priority:
+        _set_ticket_priority(ticket_id, classification)
+
+def _set_ticket_priority(ticket_id, classification):
+    if completed_actions(ticket_id)["priority_set"]:
+        print(f"Ticket {ticket_id}: priority already set, skipping")
+        return
+
+    priority = PRIORITY_FOR_SEVERITY[classification.severity]
+
+    try:
+        result = set_priority(ticket_id=int(ticket_id), priority=priority)
+    except OsTicketWriteError as e:
+        audit_ok = log_priority_failure(ticket_id, e.failure_type, str(e))
+        print(f"Ticket {ticket_id}: priority write failed ({e.failure_type})")
+        if not audit_ok:
+            print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
+        return
+    except Exception as e:
+        audit_ok = log_priority_failure(ticket_id, "unknown", f"{type(e).__name__}: {e}")
+        print(f"Ticket {ticket_id}: priority write failed (unknown)")
+        if not audit_ok:
+            print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
+        return
+
+    if result["outcome"] == SKIPPED:
+        log_priority_skipped(ticket_id=ticket_id, reason="writes_disabled")
+        print(f"Ticket {ticket_id}: priority skipped (writes disabled)")
+        return
+
+    mark_done(ticket_id, "priority_set")
+    audit_ok = log_priority_set(ticket_id, result["from"], result["to"])
+    print(f"Ticket {ticket_id}: priority {result['from']} to {result['to']}")
+    if not audit_ok:
+        print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
 
 def _write_ticket_note(ticket_id, classification, events, query):
     # The store, not the ticket, decides whether this already happened. A

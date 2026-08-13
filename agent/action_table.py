@@ -2,6 +2,15 @@ from dataclasses import dataclass
 
 from schemas import Category, Confidence, Severity
 
+# The table sets priority from severity for every category that writes a note,
+# so category does not appear here. The values are osTicket's priority names.
+PRIORITY_FOR_SEVERITY = {
+    Severity.critical: "emergency",
+    Severity.high: "high",
+    Severity.medium: "normal",
+    Severity.low: "low",
+}
+
 @dataclass(frozen=True)
 class Actions:
     """What the agent does with one classification.

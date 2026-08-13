@@ -28,7 +28,10 @@ if os.environ.get("WIRING_CASE"):
         category="it_support", severity="low", confidence="high_confidence"
     )
     main._write_ticket_note(TICKET_ID, classification, None, None)
-    print(f"STORE_NOTE_WRITTEN={completed_actions(TICKET_ID)['note_written']}")
+    main._set_ticket_priority(TICKET_ID, classification)
+    state = completed_actions(TICKET_ID)
+    print(f"STORE_NOTE_WRITTEN={state['note_written']}")
+    print(f"STORE_PRIORITY_SET={state['priority_set']}")
     sys.exit(0)
 
 STORE = os.path.join(tempfile.mkdtemp(prefix="triage-wiring-"), "state.db")
@@ -55,21 +58,27 @@ def check(name, condition):
     print(f"{'PASS' if condition else 'FAIL'}  {name}")
 
 out = run_case("writes_off", "false")
-check("kill switch off reports the write as skipped", "note skipped (writes disabled)" in out)
-check("kill switch off leaves the action unrecorded", "STORE_NOTE_WRITTEN=False" in out)
+check("kill switch off skips the note", "note skipped (writes disabled)" in out)
+check("kill switch off skips the priority", "priority skipped (writes disabled)" in out)
+check("kill switch off records neither",
+      "STORE_NOTE_WRITTEN=False" in out and "STORE_PRIORITY_SET=False" in out)
 
 out = run_case("writes_on", "true")
 check("kill switch on writes the note", "note written" in out)
-check("a successful write is recorded", "STORE_NOTE_WRITTEN=True" in out)
+check("kill switch on sets the priority", "to low" in out)
+check("both successes are recorded",
+      "STORE_NOTE_WRITTEN=True" in out and "STORE_PRIORITY_SET=True" in out)
 
 out = run_case("retry", "true")
-check("a second attempt is refused", "note already written, skipping" in out)
-check("the refusal leaves the record intact", "STORE_NOTE_WRITTEN=True" in out)
+check("a second note is refused", "note already written, skipping" in out)
+check("a second priority write is refused", "priority already set, skipping" in out)
+check("the refusals leave both records intact",
+      "STORE_NOTE_WRITTEN=True" in out and "STORE_PRIORITY_SET=True" in out)
 
 print()
 if failed:
     print(f"FAILED: {', '.join(failed)}")
     sys.exit(1)
 print(f"All {ran} checks passed.")
-print(f"One note was written to ticket {TICKET_ID}. Confirm the thread holds "
-      f"exactly one new note, not two.")
+print(f"Ticket {TICKET_ID} gained exactly one note and its priority was set "
+      f"once, across three runs.")

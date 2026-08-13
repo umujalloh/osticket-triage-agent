@@ -127,6 +127,31 @@ def log_note_failure(ticket_id, failure_type, error):
         "error": error,
     })
 
+# from and to are both recorded because the agent sets priority unconditionally.
+# If it ever overwrites a value a person chose, this is where that shows up.
+def log_priority_set(ticket_id, before, after):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "priority_set",
+        "from": before,
+        "to": after,
+    })
+
+def log_priority_skipped(ticket_id, reason):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "priority_skipped",
+        "reason": reason,
+    })
+
+def log_priority_failure(ticket_id, failure_type, error):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "priority_failed",
+        "failure_type": failure_type,
+        "error": error,
+    })
+
 def log_human_review(ticket_id, reason):
     return _send_audit_event({
         "ticket_id": ticket_id,
