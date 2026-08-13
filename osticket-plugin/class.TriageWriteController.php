@@ -1,5 +1,6 @@
 <?php
 require_once(INCLUDE_DIR . 'class.ticket.php');
+require_once(INCLUDE_DIR . 'class.thread.php');
 require_once(INCLUDE_DIR . 'class.http.php');
 
 /**
@@ -54,9 +55,20 @@ class TriageWriteController {
         if (!($ticket = Ticket::lookup($ticket_id)))
             Http::response(404, 'Ticket not found');
 
+        // A text body, not the HTML one logNote() would wrap a string in: line
+        // breaks survive, and log values are escaped on output rather than
+        // handed to the HTML purifier.
+        //
         // alert=false: a note must not email staff. Slack and PagerDuty own
         // alerting, and doubling it teaches people to ignore both.
-        if (!$ticket->logNote($title, $note, 'Triage Agent', false))
+        $errors = array();
+        $entry = $ticket->postNote(
+            array('title' => $title, 'note' => new TextThreadEntryBody($note)),
+            $errors,
+            'Triage Agent',
+            false
+        );
+        if (!$entry)
             Http::response(500, 'Could not write the note');
 
         Http::response(200, json_encode(array(
