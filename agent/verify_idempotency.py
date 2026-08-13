@@ -12,8 +12,11 @@ os.environ["TRIAGE_STATE_DB"] = TEST_DB
 import idempotency as store
 
 failed = []
+ran = 0
 
 def check(name, got, expected):
+    global ran
+    ran += 1
     ok = got == expected
     if not ok:
         failed.append(name)
@@ -39,6 +42,12 @@ check("marking the same action twice is harmless", store.completed_actions(43)["
 
 check("an unknown ticket reports nothing done", store.completed_actions(9999), nothing_done)
 
+# A completed action must survive even if the claim never happened, or a retry
+# would repeat it.
+store.mark_done(77, "note_written")
+check("marking an unclaimed ticket still records it",
+      store.completed_actions(77)["note_written"], True)
+
 try:
     store.mark_done(43, "not_a_real_action")
     check("an unknown action is rejected", "no exception", "ValueError")
@@ -58,4 +67,4 @@ print()
 if failed:
     print(f"FAILED: {', '.join(failed)}")
     sys.exit(1)
-print(f"All 13 checks passed. Temporary store: {TEST_DB}")
+print(f"All {ran} checks passed. Temporary store: {TEST_DB}")

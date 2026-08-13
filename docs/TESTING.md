@@ -180,7 +180,7 @@ operation, so name a ticket you don't mind marking.
 
 ## Idempotency store verification
 
-Measured 2026-08-12, thirteen checks, all passing. Run against a temporary
+Measured 2026-08-12, fourteen checks, all passing. Run against a temporary
 database so the live store is never written to. That separation matters: a test
 that inserted ticket IDs into the real store would later refuse the genuine
 ticket carrying the same number.
@@ -197,6 +197,7 @@ ticket carrying the same number.
 | Marking twice is harmless | mark `note_written` again | still `True` |
 | An unknown ticket does not raise | `completed_actions(9999)` | all four `False` |
 | A misspelled action is refused | `mark_done(43, "not_a_real_action")` | `ValueError` |
+| A completed action outlives a missing claim | `mark_done(77)` with no claim | recorded, warning printed |
 | A claim survives a restart | reload module, `claim_ticket(42)` | `False` |
 | Action state survives a restart | reload module, read `note_written` | `True` |
 | The store still accepts new tickets | reload module, `claim_ticket(44)` | `True` |

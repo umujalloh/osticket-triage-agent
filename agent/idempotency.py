@@ -59,14 +59,27 @@ def claim_ticket(ticket_id) -> bool:
         return cur.rowcount == 1
 
 def mark_done(ticket_id, action):
-    """Records that one action completed for a ticket."""
+    """Records that one action completed for a ticket.
+
+    claim_ticket should already have created the row. If it has not, the row is
+    created here anyway: losing the record of a completed action is what lets a
+    retry repeat it, which is worse than a row with a late timestamp. The
+    anomaly is printed rather than raised, because raising after a successful
+    write would report it as a failure and invite the retry.
+    """
     if action not in ACTIONS:
         raise ValueError(f"Unknown action: {action}")
     with _connect() as conn:
+        unclaimed = conn.execute(
+            "INSERT OR IGNORE INTO processed_tickets (ticket_id, accepted_at) VALUES (?, ?)",
+            (_key(ticket_id), datetime.now(timezone.utc).isoformat()),
+        ).rowcount == 1
         conn.execute(
             f"UPDATE processed_tickets SET {action} = 1 WHERE ticket_id = ?",
             (_key(ticket_id),),
         )
+    if unclaimed:
+        print(f"Ticket {ticket_id}: recorded {action} for a ticket that was never claimed")
 
 def completed_actions(ticket_id) -> dict:
     """Returns which actions have completed for a ticket.
