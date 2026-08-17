@@ -24,7 +24,7 @@ Phase 1, receive and classify. Receive the webhook and classify. No writes.
  
 Phase 2, enrich. Add Splunk enrichment for security_incident + critical tickets only. Still no writes.
  
-Phase 3, act. Write the internal note, post to Slack for high and critical severity, and page PagerDuty only when a ticket is critical and high confidence. Audit logging runs from Phase 1 onward.
+Phase 3, act. Write the internal note, set the ticket priority, post to one of three Slack channels chosen by what the classification says needs doing, and page PagerDuty only when a ticket is critical and high confidence. Audit logging runs from Phase 1 onward.
  
 This document covers the design across all three phases.
  
@@ -40,7 +40,7 @@ Claude API. An external LLM used for classification only. It receives the ticket
  
 Splunk. The SIEM. It has two roles. It returns enrichment data when the agent runs a pre-defined, read-only query template against named indexes, and it stores the audit log of every action the agent takes.
  
-PagerDuty and Slack. External alert destinations. Slack receives high and critical alerts so the team sees them in channel. PagerDuty pages on-call staff only for critical incidents at high confidence, so a page means wake someone up.
+PagerDuty and Slack. External alert destinations. Slack receives every security incident and every ticket the classifier could not place, split across three channels so each reader can decide what is allowed to interrupt them. PagerDuty pages on-call staff only for critical incidents at high confidence, so a page means wake someone up.
  
 Inside vs outside. osTicket, the agent, and Splunk run inside my own infrastructure. Claude, PagerDuty, and Slack are external services. This split defines the trust boundary covered in Section 8.
  
@@ -58,7 +58,7 @@ Claude reads the ticket text and returns a classification: category, severity, a
  
 If the ticket is a security_incident at critical severity, the agent runs a pre-defined, read-only Splunk query to enrich the ticket with context. Confidence does not gate this. The query is a single fixed template filled from the submitter's identifiers, not one of several chosen from the classification.
  
-After enrichment, the agent looks up the response in the pre-defined action table, writes an internal note back to osTicket, posts to Slack for high and critical severity, and pages PagerDuty only when the ticket is critical and high confidence. Any low-confidence ticket routes to a human regardless of category or severity.
+After enrichment, the agent looks up the response in the pre-defined action table, writes an internal note back to osTicket, sets the ticket priority, posts to the Slack channel that row selects, and pages PagerDuty only when the ticket is critical and high confidence. Any low-confidence ticket routes to human review, which still reaches a channel, a note, and a priority. Only the page is withheld.
  
 The agent writes an audit log to Splunk at every step of this process, not only at the end.
 
@@ -195,7 +195,7 @@ Vector. A leaked key. Credentials get exposed in source code, committed to git, 
  
 Defense.
  
-Least privilege per credential. Each key is scoped to the minimum it needs. Splunk account: read-only on named indexes, no write, no admin. osTicket key: comment and priority update only, no delete, no user management. Claude key: daily token budget cap and rate limit, which also limits the damage if a stolen key is used to run up the bill or exhaust the quota.
+Least privilege per credential. Each key is scoped to the minimum it needs. Splunk account: read-only on named indexes, no write, no admin. osTicket: no API key at all, since osTicket's own API cannot write to an existing ticket. Writes go through an endpoint the triage plugin registers, which implements note and priority and nothing else. Claude key: daily token budget cap and rate limit, which also limits the damage if a stolen key is used to run up the bill or exhaust the quota.
  
 Rotatable keys. Keys can be rotated, so a compromised one can be revoked and replaced.
  
@@ -310,17 +310,44 @@ The full table is in [docs/action-table.md](action-table.md). A few example rows
  
 | Category | Severity | Confidence | Action |
 |----------|----------|------------|--------|
-| security_incident | critical | high | Page on-call, post to Slack, write enrichment note, set priority critical |
-| security_incident | high | high | Post to Slack, write note, set priority high, no page |
-| it_support | low | high | Write note, no alert |
-| any | any | low | Route to human review |
+| security_incident | critical | high | Urgent channel with a mention, page on-call, enrichment note, priority critical |
+| security_incident | critical | low | Urgent channel with a mention, no page, enrichment note, priority critical |
+| security_incident | high | any | Incidents channel, note, priority high, no page |
+| unclear | any | any | Triage channel, note, priority from severity, no page |
  
 The page is reserved for critical at high confidence. Splunk enrichment is not: it runs on every security_incident at critical severity, whatever the confidence. They are gated differently on purpose. A page interrupts a person, so it takes the double condition. Enrichment is read-only and bounded by the agent's Splunk role, which allows three concurrent searches against one index, so running it on an uncertain ticket costs search capacity and nothing else.
 
 Gating it on confidence too would have withheld enrichment from the tickets that need it most, because the rubric forces unexplained behavior to low_confidence. A critical incident nobody can account for is exactly where a reviewer needs a starting point.
 
-High severity at high confidence posts to Slack and writes a note but does not page or enrich, so an urgent ticket that isn't severe enough to page still reaches the team channel without waking on-call. Anything at low confidence falls through to human review before any alert fires, now with enrichment attached when it was critical.
+Alerting splits across three channels, and the line between the first two is the one the severity rubric already draws. Critical means someone unauthorized holds access right now, which is what justifies interrupting people, so critical incidents reach an urgent channel and mention it. High, medium, and low incidents are ones where nobody currently holds access, an attempt that failed or a suspicion the ticket cannot establish, so they reach an incidents channel that interrupts nobody. Tickets the classifier could not place, and those it placed without confidence, reach a triage channel whose job is deciding what they are.
+
+Mention and page are independent rules. A mention follows severity alone: every critical security incident gets one. A page follows severity and confidence: critical plus high confidence. They reach different people, the page tasking the one person on call and the mention telling the rest of the team, so on a confident critical both fire and the highest severity class ends up with two independent delivery paths.
+
+Human review is an outcome rather than a label. A ticket routed to it still reaches a channel, still gets its note so any enrichment is on the ticket when someone opens it, and still gets its priority so the queue sorts correctly. Only the page is withheld. Confidence gates interruption, not visibility: gating the channel post on confidence would make the system quietest about the tickets it understands least, which is backwards for a security tool.
  
+Order of actions. A page runs first when the table calls for one, then the note, then the priority, then the channel post. The page leads because it must not depend on osTicket being healthy: a slow note write would otherwise delay the most urgent action the system takes by however long that write takes to time out. Everything else follows the opposite logic, so the channel post runs last and a reader who opens the ticket finds it complete. Enrichment has already run before any of this, so nothing is alerted before the system knows what it found. What has not happened at page time is the note being written, which lands a few hundred milliseconds later.
+
+Enrichment not producing results does not cancel the alert. Enrichment adds context; alerting is the point, so neither a Splunk outage nor a ticket with no verified identifier may silence a critical incident. The agent carries on to the actions in every case and reports which case it was, because four different things can happen and three of them look alike if collapsed:
+
+| State | What it means | What the note and alert say |
+|---|---|---|
+| Not eligible | The ticket was never a critical incident, so no query applied | nothing |
+| No verified identifier | Eligible, but nothing could safely be queried, which is what a guest submission with no valid IP produces | `no verified identifier` |
+| Ran, empty | The query ran and Splunk returned no matches | `no related events` |
+| Failed | The query did not complete | `enrichment unavailable` |
+
+The middle two are the pair most easily confused and the most misleading to confuse. "No related events" tells a reader the environment was searched and looked clean. "No verified identifier" tells them nothing was searched at all, which on a critical incident is a reason to look harder rather than to relax.
+
+That second state is a direct consequence of the requester email gate in Attack 3. A guest filing a critical incident has a typed email the agent will not query and an IP that may match nothing, so the agent correctly has nothing to look up. It must still write the note, set the priority, post, and page.
+
+Alert delivery failure. Connection errors, timeouts, 429 and 5xx are retried three times with backoff. 400, 403, 404 and 410 are terminal, because a malformed payload, a disabled app, a revoked webhook and an archived channel are not fixed by trying again.
+
+When the retries are exhausted on a critical incident and nothing has paged, the agent pages as a fallback, and the page says that is why. The interruption is justified by the delivery failure rather than by confidence in the classification, and the responder is told which it is rather than being woken for what looks like a confident critical. Below critical there is no fallback: the note and the priority are still on the ticket, so it sits correctly ordered in the queue even though nobody was pushed. If both Slack and PagerDuty fail, the agent has no path left and only the audit event records it, which is stated as a boundary in KNOWN_LIMITATIONS.md rather than papered over.
+
+Repeated failure. A revoked webhook fails on every ticket, not just one. The agent does not count failures or trip a breaker, because a component that monitors itself is unreliable exactly when it is broken. Every failure is already an audit event, and a Splunk saved search shipped with the stack alerts on them. That search alerts inside Splunk only: routing an alert about Slack being broken through Slack would be circular, so where a deployment delivers it is a deployment decision.
+
+Alert credentials. Each channel has its own Slack incoming webhook, three values rather than one bot token. A webhook is bound to its channel, so a leaked one lets an attacker post to that channel and nothing else, where a bot token would grant the whole workspace. All three are asserted at boot when ENABLE_WRITES is true and none are required when it is false, so a deployment cannot believe it is alerting on critical incidents while missing the webhook that would carry them. A webhook URL is a bearer credential and never appears in a log line, a console message, or an audit event. That requires care in exception handling, because HTTP client errors routinely embed the request URL in their message text.
+
 Phasing. The build is in three phases, each proven before the next.
  
 Phase 1: receive the webhook and classify. No writes.
@@ -352,14 +379,34 @@ The important crossing is at the webhook. The network path from osTicket to the 
 Exposure. The osTicket and Splunk containers publish their ports on 127.0.0.1, so the web UIs, the HEC endpoint, and the management port are reachable only from the machine running them. The agent is the exception: it listens on all interfaces, because the osTicket container reaches it through the host gateway rather than over loopback, so binding it to 127.0.0.1 would break the webhook. That leaves the webhook as the one port on this stack exposed beyond the host, which is why it is also the one port with signature verification in front of it.
  
 Outbound, only the ticket body and the classification request go to Claude. Credentials and raw Splunk data never leave the trust zone. I limit what crosses to an external service to the minimum that service needs to do its job.
+
+A Slack alert carries only values the agent generated. In full, an alert on a critical incident is:
+
+```
+🔴 critical security_incident  ·  Ticket #465581
+20 related events
+http://helpdesk.example.com/scp/tickets.php?id=15
+```
+
+Severity, category, ticket number, an enrichment count, and a link. Nothing else crosses, and that is a rule rather than a per-field judgement, so adding a field later is a decision about the rule instead of an argument about one field.
+
+Three exclusions are deliberate. The ticket subject, because it is written by whoever filed the ticket and Slack renders bare URLs as links, so including it would let anyone who can file a ticket put a clickable link into a trusted internal channel under the agent's name. The requester address, because it is personal data the ticket already holds inside the zone. The enrichment results themselves, including sourcetype names, because those are Splunk data and would tell anyone reading the channel what this organisation detects and with what tooling.
+
+That costs something. An alert with no ticket text is harder to tell from another at a glance, so a reader clicks through more often. The link is a raw URL rather than text hiding one, so a reader can check where it points before clicking, which matters because anyone holding the webhook can post a message that looks exactly like a real alert.
+
+Slack retains what it receives, so these messages are a permanent record outside the trust zone, reachable by anyone who later gains access to the workspace. That is a second reason the message carries as little as it does.
  
 Least privilege. Each of the agent's three credentials is scoped to the minimum it needs, so a compromised key is bounded to what that key was allowed to do.
  
 Splunk service account: read-only, scoped to only the index(es) enrichment queries need. No write, no admin, no deploy.
  
-osTicket write-back: the agent holds no osTicket API key. osTicket's own API exposes ticket creation and a cron trigger, neither of which touches an existing ticket, so notes go through an endpoint the triage plugin registers on osTicket's api signal. That endpoint implements exactly one operation, writing an internal note to a named ticket, so its scope is set by what it implements rather than by a permission list. It authenticates with its own HMAC secret, separate from the inbound one, so a leak of the secret that submits tickets does not also grant writing into them.
+osTicket write-back: the agent holds no osTicket API key. osTicket's own API exposes ticket creation and a cron trigger, neither of which touches an existing ticket, so notes go through an endpoint the triage plugin registers on osTicket's api signal. That endpoint implements two operations, writing an internal note and setting priority on a named ticket, so its scope is set by what it implements rather than by a permission list. It authenticates with its own HMAC secret, separate from the inbound one, so a leak of the secret that submits tickets does not also grant writing into them.
  
 Claude API key: not scoped in code. Spend is capped by a limit set in the Anthropic Console, outside the agent. The agent backs off when the API rejects a call, but never limits how often it calls.
+
+Slack webhooks: one per channel, each bound to its channel by Slack itself, so a leaked webhook posts to that channel and nothing else. Covered in Section 7.
+
+Deployment preconditions are listed in Section 10, because they are obligations on the environment rather than properties of the design.
  
 ---
  
@@ -378,3 +425,15 @@ Audit write failure. If a write to Splunk fails, the agent does not treat the de
 Always on. Audit logging is exempt from the kill switch. When the kill switch disables effectful writes, audit writes keep running, because visibility matters most during the incidents that make you flip the switch.
  
 Separate system. The audit log lives in Splunk, on a separate credential from osTicket. A compromised osTicket key can tamper with tickets but cannot reach the Splunk audit record, so the agent's original decisions survive in a place the tampered system can't touch.
+ 
+---
+ 
+## 10. Deployment Preconditions
+ 
+Three things the environment must provide. The agent cannot enforce any of them, and the design depends on all three, so a deployment that skips one is quietly weaker than this document describes.
+ 
+A security-tagged queue must exist in osTicket. Without it, `security_question` routing has nowhere to send tickets, and the reason that category exists separately from `it_support` disappears. Queue naming is organisation-specific, which is why the agent does not create it.
+ 
+Notifications must be enabled on the urgent Slack channel, by whatever mechanism the workspace provides. The agent cannot set them and cannot detect that they are unset, so a critical alert can arrive in a channel nobody is notified about. The `@here` on critical incidents covers most of this, but a member who has muted the channel outright will still miss it. This is the precondition most likely to be skipped, because nothing about the system looks broken when it is.
+ 
+The osTicket ticket form must have CAPTCHA enabled and client registration configured deliberately. An open form with neither is an unauthenticated path for anyone on the internet to submit unlimited tickets, which is the flood Attack 5 describes: bury a real incident under noise. The agent cannot throttle its way out of that, because every option either delays the flood, hides the real ticket inside a digest, or is defeated by varying the tickets. The defence is at the front door.

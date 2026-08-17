@@ -292,6 +292,24 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 Submit a ticket at `http://localhost:8080`. The classification appears in the
 agent's output and in Splunk under `index=osticket_triage`.
 
+### 6. Deployment preconditions
+
+Three things the agent cannot enforce and the design depends on. Reasoning in
+[docs/architecture.md, Section 10](docs/architecture.md#10-deployment-preconditions).
+
+- **A security-tagged queue in osTicket.** Without it, `security_question`
+  tickets have nowhere to route.
+- **Notifications enabled on the urgent Slack channel**, by whatever mechanism
+  your workspace provides. The agent cannot set them and cannot detect that
+  they are unset, so a critical alert can arrive in a channel nobody is
+  notified about.
+- **CAPTCHA enabled and client registration set deliberately** on the ticket
+  form. An open form with neither lets anyone on the internet submit unlimited
+  tickets, which is how a real incident gets buried under noise.
+
+Nothing looks broken when these are missing, which is what makes them worth
+checking.
+
 ## Evaluation
 
 The classifier is evaluated against 36 hand-written tickets with expected

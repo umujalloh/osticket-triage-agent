@@ -109,3 +109,55 @@ addresses.
 Together with the limitation above, a guest ticket in this lab produces a query
 that returns zero events. The pipeline runs correctly, there is simply nothing
 for it to match.
+
+## Alerting
+
+### A failed alert can exhaust every delivery path
+
+When a Slack post fails on a critical incident and nothing has paged, the agent
+pages as a fallback. Nothing catches the case where both fail. At that point the
+agent has no route left, and the only record is an audit event nobody is
+watching at the time. No arrangement inside the agent fixes this. It is the
+boundary of what the system can promise.
+
+### The agent does not throttle or batch alerts
+
+A burst of tickets produces a burst of posts. Slack rate-limits, the retries
+back off, and the messages land in a channel too busy to read. That is the flood
+Attack 5 describes: bury a real incident under noise. The agent cannot solve it,
+because throttling only delays the same messages, batching hides the real
+incident inside a digest, and duplicate suppression is defeated by varying the
+tickets. The defence is CAPTCHA and registration on the ticket form, which is a
+deployment precondition rather than code.
+
+### Delivery failures are visible only in Splunk
+
+Every failed post writes an audit event, and a saved search shipped with the
+stack alerts on them. The agent does not count failures or trip a breaker,
+because a component that monitors itself is unreliable exactly when it is
+broken. If that saved search is removed or never enabled, a revoked webhook
+fails silently on every ticket afterwards.
+
+### Nothing knows whether an alert was acted on
+
+The agent records that it posted or paged. It has no way to learn whether anyone
+opened the ticket or worked it. Slack does not report clicks on a plain link
+without hosting a redirector, and ticket activity would require polling
+osTicket. osTicket's own SLA plans and due dates cover timeliness, and the audit
+index can be joined against ticket history after the fact, but the agent raises
+nothing when an alert is delivered and then ignored.
+
+### Slack messages are a permanent record outside the trust zone
+
+What crosses to Slack is deliberately small, but it is retained under Slack's
+policy rather than yours, reachable by anyone who later gains access to the
+workspace, and subject to legal discovery. Notes written into osTicket stay
+inside the trust zone. Alerts do not.
+
+### A leaked webhook can post convincing fake alerts
+
+A Slack incoming webhook is a bearer credential: anyone holding one can post to
+that channel under the agent's identity, including a message shaped exactly like
+a real alert. One webhook per channel bounds the damage to that channel, and
+posting the ticket link as a raw URL lets a reader check where it points before
+clicking. Neither prevents a plausible fake.
