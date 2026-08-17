@@ -44,7 +44,7 @@ PagerDuty and Slack. External alert destinations. Slack receives every security 
  
 Inside vs outside. osTicket, the agent, and Splunk run inside my own infrastructure. Claude, PagerDuty, and Slack are external services. This split defines the trust boundary covered in Section 8.
  
-Deployment. All components run in a local VMware homelab during development. osTicket and Splunk each run in their own VM, and the agent runs alongside them.
+Deployment. During development everything runs on one machine: osTicket, its MySQL database, and Splunk each as a Docker container, with the agent as an ordinary process on the host beside them. What that exposes, and why the agent binds differently from the containers, is in Section 8.
  
 ---
  

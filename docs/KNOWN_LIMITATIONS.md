@@ -110,6 +110,39 @@ Together with the limitation above, a guest ticket in this lab produces a query
 that returns zero events. The pipeline runs correctly, there is simply nothing
 for it to match.
 
+### The idempotency store assumes one agent process
+
+Processed ticket IDs and completed actions live in a SQLite file next to the
+agent. That is correct for a single process and wrong for two. Run a second
+worker, or a second container, and each has its own store, so the same ticket
+can be claimed twice and produce two notes and two pages. Nothing in the agent
+detects this.
+
+Fixing it means moving the store to something shared, which is a real
+dependency rather than a file, so it is deliberately not done while the agent
+runs as one process.
+
+### Retries have no jitter and no circuit breaker
+
+Every retry uses the same fixed backoff. If an upstream is down, every ticket
+backs off on the same schedule and retries in lockstep, which is the pattern
+that turns a recovering service back into an overloaded one. There is also no
+breaker: a dead endpoint is retried on every ticket forever, rather than being
+marked down.
+
+Neither matters at the ticket volume this is built for. Both would matter at a
+volume where the retries themselves become load.
+
+### Secrets live in environment files
+
+Every credential is read from `agent/.env` and the plugin's stored settings.
+There is no secrets manager, no rotation, and no expiry. The write-back secret
+is the one that matters most, because it grants writing into any ticket, and it
+sits in a file on the host in plain text.
+
+That is acceptable for a single-machine lab and is not how a production
+deployment should hold it.
+
 ## Alerting
 
 ### A failed alert can exhaust every delivery path
