@@ -1,5 +1,7 @@
 from collections import Counter
 
+from schemas import EnrichmentOutcome, enrichment_line
+
 # Human label to the Splunk fields that feed it. Several vendors name the same
 # thing differently and BOTSv3 has no CIM normalisation, so the grouping happens
 # here rather than in the query. Order is the reading order of the note, so
@@ -45,25 +47,36 @@ def _selection(query):
     # only makes the line stutter.
     return selection[7:].strip() if selection.startswith("search ") else selection
 
-def build_note(classification, events, query=None) -> str:
+def build_note(classification, outcome=EnrichmentOutcome.not_eligible,
+               events=None, query=None) -> str:
     """Assembles the internal note body from enrichment results.
 
     Written in code, never by Claude, so a ticket cannot influence what the
     note says about it. Returns the body only; the title is set by the caller.
+
+    The four enrichment outcomes are in schemas.py, shared with the alert so the
+    two cannot describe the same search differently.
     """
     lines = [
         f"{classification.category.value} / {classification.severity.value} "
         f"/ {classification.confidence.value}",
-        "",
     ]
+    selection = _selection(query)
 
-    if not events:
-        lines.append("Splunk returned no related events.")
-        selection = _selection(query)
+    # A ticket that was never eligible has no search to report, so the note is
+    # the classification alone.
+    if outcome == EnrichmentOutcome.not_eligible:
+        return "\n".join(lines)
+
+    # Anything other than a completed search with results is one line: nothing
+    # was searched, or the search found nothing, or it did not finish.
+    if outcome != EnrichmentOutcome.completed or not events:
+        lines += ["", enrichment_line(outcome, len(events) if events else 0)]
         if selection:
             lines += ["", f"Search: {selection}"]
         return "\n".join(lines)
 
+    lines.append("")
     times = sorted(e["_time"] for e in events if e.get("_time"))
     if times:
         lines.append(f"{len(events)} events, {times[0]} to {times[-1]}.")
@@ -87,7 +100,6 @@ def build_note(classification, events, query=None) -> str:
         f"{name} ({count})" for name, count in sourcetypes.most_common()
     )]
 
-    selection = _selection(query)
     if selection:
         lines += ["", f"Search: {selection}"]
 

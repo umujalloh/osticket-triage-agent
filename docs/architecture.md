@@ -420,7 +420,9 @@ This record is also what makes the future mismatch-detection hardening (Section 
  
 Rejected requests. A request that fails the signature check, carries a body that is not a JSON object, arrives outside the freshness window, names no usable ticket ID, or repeats an accepted ticket ID is logged with its reason and the requesting IP, so probing and replay leave a trace rather than a silent rejection. Nothing from the body is recorded when the signature check is what failed, since at that point it is unverified. These writes are queued rather than made inline, so a slow write cannot delay the response and forged requests cannot be used to stall the rejection path.
  
-Audit write failure. If a write to Splunk fails, the agent does not treat the decision as recorded. It flags the ticket for human review the same way a Claude failure does in Section 6, since a decision with no audit trail cannot be trusted to have happened correctly.
+Audit write failure. If a write to Splunk fails, the agent does not treat the decision as recorded. It routes the ticket to human review, since a decision with no audit trail cannot be trusted to have happened correctly, and then carries on with the actions the table selected.
+
+Carrying on is deliberate. An unrecorded decision is a reason to get a person's eyes on the ticket, not a reason to say nothing about it, and the actions are themselves records: the note lands permanently in osTicket and the alert lands in a channel. So acting leaves evidence in two systems even when Splunk holds none, where stopping would leave a critical incident unhandled and unannounced with only a console line to show for it. Splunk being briefly unavailable, during a restart or an upgrade, must not mean the agent quietly stops alerting.
  
 Always on. Audit logging is exempt from the kill switch. When the kill switch disables effectful writes, audit writes keep running, because visibility matters most during the incidents that make you flip the switch.
  

@@ -13,7 +13,8 @@ from classifier import classify_ticket, ClassificationError
 from idempotency import claim_ticket, completed_actions, mark_done
 from note_builder import build_note
 from osticket_client import write_note, set_priority, OsTicketWriteError, SKIPPED
-from schemas import Category
+from schemas import Category, EnrichmentOutcome
+from slack_client import build_message, post_alert, SlackError, SKIPPED as SLACK_SKIPPED
 from writes import writes_enabled
 from splunk_enrichment import build_enrichment_query, enrich_ticket, EnrichmentError
 from splunk_logger import (
@@ -22,6 +23,7 @@ from splunk_logger import (
     log_enrichment, log_enrichment_failure, log_enrichment_skipped,
     log_note_written, log_note_skipped, log_note_failure,
     log_priority_set, log_priority_skipped, log_priority_failure,
+    log_slack_posted, log_slack_skipped, log_slack_failure,
     log_human_review,
 )
 
@@ -100,26 +102,38 @@ def process_ticket(payload: dict):
           f"{classification.category.value}/{classification.severity.value}/"
           f"{classification.confidence.value}, "
           f"requester_verified={requester_verified}")
+    # An unrecorded decision cannot be trusted, which is a reason to get a
+    # person's eyes on the ticket rather than to say nothing. The actions still
+    # run: a note and a channel post are themselves records, so acting leaves
+    # evidence in osTicket and Slack even when Splunk has none, where returning
+    # here would leave a critical incident unhandled and unannounced.
     if not audit_ok:
-        print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
-        return
+        _route_to_human(ticket_id, "audit_write_failed")
 
     actions = actions_for(
         classification.category, classification.severity, classification.confidence
     )
 
+    # Enrichment adds context; alerting is the point. Every path below records
+    # what happened and carries on, so neither a Splunk outage nor a ticket with
+    # nothing safe to query can silence a critical incident. The four outcomes
+    # are in architecture.md, Section 7.
     events = None
     query = None
-    if not actions.enrich:
-        _take_actions(ticket_id, classification, actions, events, query)
-        return
+    outcome = EnrichmentOutcome.not_eligible
 
-    query = build_enrichment_query(
-        submitter_email=payload.get("requester"),
-        submitter_ip=payload.get("submitter_ip"),
-        requester_verified=requester_verified,
-    )
+    if actions.enrich:
+        query = build_enrichment_query(
+            submitter_email=payload.get("requester"),
+            submitter_ip=payload.get("submitter_ip"),
+            requester_verified=requester_verified,
+        )
+        outcome, events = _enrich(ticket_id, payload, requester_verified)
 
+    _take_actions(ticket_id, classification, actions, payload, outcome, events, query)
+
+def _enrich(ticket_id, payload, requester_verified):
+    """Runs the enrichment query and reports which of the four outcomes it hit."""
     try:
         events = enrich_ticket(
             submitter_email=payload.get("requester"),
@@ -127,57 +141,97 @@ def process_ticket(payload: dict):
             requester_verified=requester_verified,
         )
     except EnrichmentError as e:
-        audit_ok = log_enrichment_failure(
-            ticket_id=ticket_id,
-            failure_type=e.failure_type,
-            error=str(e)
-        )
+        log_enrichment_failure(ticket_id=ticket_id, failure_type=e.failure_type,
+                               error=str(e))
         print(f"Ticket {ticket_id}: enrichment failed ({e.failure_type})")
-        if not audit_ok:
-            print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
-        return
+        return EnrichmentOutcome.unavailable, None
     except Exception as e:
-        audit_ok = log_enrichment_failure(
-            ticket_id=ticket_id,
-            failure_type="unknown",
-            error=f"{type(e).__name__}: {e}"
-        )
+        log_enrichment_failure(ticket_id=ticket_id, failure_type="unknown",
+                               error=f"{type(e).__name__}: {e}")
         print(f"Ticket {ticket_id}: enrichment failed (unknown)")
-        if not audit_ok:
-            print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
-        return
+        return EnrichmentOutcome.unavailable, None
 
     if events is None:
-        audit_ok = log_enrichment_skipped(ticket_id=ticket_id, reason="no_entity")
-        print(f"Ticket {ticket_id}: no entity to enrich on, skipped")
-        if not audit_ok:
-            print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
-        return
+        log_enrichment_skipped(ticket_id=ticket_id, reason="no_verified_identifier")
+        print(f"Ticket {ticket_id}: nothing safe to search on, skipped")
+        return EnrichmentOutcome.no_identifier, None
 
-    audit_ok = log_enrichment(ticket_id=ticket_id, events=events)
+    log_enrichment(ticket_id=ticket_id, events=events)
     print(f"Ticket {ticket_id}: enrichment found {len(events)} related event(s)")
-    if not audit_ok:
-        print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
-        return
+    return EnrichmentOutcome.completed, events
 
-    _take_actions(ticket_id, classification, actions, events, query)
+def _take_actions(ticket_id, classification, actions, payload, outcome, events, query):
+    """Runs the actions the table selected, after enrichment has settled.
 
-def _take_actions(ticket_id, classification, actions, events, query):
-    """Runs the actions the table selected, after enrichment has settled."""
+    Ordered so the ticket is ready before anyone is told: the note and priority
+    land first, and only then does the channel post invite someone to open it.
+    The page, when there is one, runs before all of them and is not built yet.
+    """
     if actions.human_review:
-        reason = ("unclear_category"
-                  if classification.category == Category.unclear
-                  else "low_confidence")
-        audit_ok = log_human_review(ticket_id=ticket_id, reason=reason)
-        print(f"Ticket {ticket_id}: needs human review ({reason})")
-        if not audit_ok:
-            print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
+        _route_to_human(ticket_id, "unclear_category"
+                        if classification.category == Category.unclear
+                        else "low_confidence")
 
     if actions.write_note:
-        _write_ticket_note(ticket_id, classification, events, query)
+        _write_ticket_note(ticket_id, classification, outcome, events, query)
 
     if actions.set_priority:
         _set_ticket_priority(ticket_id, classification)
+
+    if actions.channel:
+        _post_alert(ticket_id, classification, actions, payload, outcome, events)
+
+def _route_to_human(ticket_id, reason):
+    """The single path for anything a person has to pick up."""
+    audit_ok = log_human_review(ticket_id=ticket_id, reason=reason)
+    print(f"Ticket {ticket_id}: needs human review ({reason})")
+    if not audit_ok:
+        print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
+
+def _post_alert(ticket_id, classification, actions, payload, outcome, events):
+    channel = actions.channel
+    if completed_actions(ticket_id)["slack_posted"]:
+        print(f"Ticket {ticket_id}: slack already posted, skipping")
+        return
+
+    text = build_message(
+        ticket_id=ticket_id,
+        ticket_number=payload.get("ticket_number"),
+        classification=classification,
+        channel=channel,
+        mention=actions.mention,
+        outcome=outcome,
+        event_count=len(events) if events else None,
+    )
+
+    try:
+        result = post_alert(channel, text)
+    except SlackError as e:
+        log_slack_failure(ticket_id, channel, e.failure_type, str(e))
+        print(f"Ticket {ticket_id}: slack post to {channel} failed ({e.failure_type})")
+        # A failed alert means nobody has been told, which is the one failure
+        # that cannot be left sitting in a log. On a critical incident the
+        # design also pages as a fallback; PagerDuty does not exist yet.
+        _route_to_human(ticket_id, "alert_delivery_failed")
+        return
+    except Exception as e:
+        log_slack_failure(ticket_id, channel, "unknown", f"{type(e).__name__}: {e}")
+        print(f"Ticket {ticket_id}: slack post to {channel} failed (unknown)")
+        _route_to_human(ticket_id, "alert_delivery_failed")
+        return
+
+    if result == SLACK_SKIPPED:
+        log_slack_skipped(ticket_id=ticket_id, channel=channel, reason="writes_disabled")
+        print(f"Ticket {ticket_id}: slack post to {channel} skipped (writes disabled)")
+        return
+
+    # Recorded only after Slack accepted it, so a failure leaves the ticket
+    # retryable rather than marked done.
+    mark_done(ticket_id, "slack_posted")
+    audit_ok = log_slack_posted(ticket_id, channel, actions.mention)
+    print(f"Ticket {ticket_id}: slack posted to {channel}")
+    if not audit_ok:
+        print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
 
 def _set_ticket_priority(ticket_id, classification):
     if completed_actions(ticket_id)["priority_set"]:
@@ -212,14 +266,14 @@ def _set_ticket_priority(ticket_id, classification):
     if not audit_ok:
         print(f"Ticket {ticket_id}: needs human review (audit log write failed)")
 
-def _write_ticket_note(ticket_id, classification, events, query):
+def _write_ticket_note(ticket_id, classification, outcome, events, query):
     # The store, not the ticket, decides whether this already happened. A
     # retried webhook that got past the claim must not add a second note.
     if completed_actions(ticket_id)["note_written"]:
         print(f"Ticket {ticket_id}: note already written, skipping")
         return
 
-    body = build_note(classification, events or [], query)
+    body = build_note(classification, outcome, events, query)
 
     try:
         outcome = write_note(ticket_id=int(ticket_id), note=body)

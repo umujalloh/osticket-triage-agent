@@ -152,6 +152,36 @@ def log_priority_failure(ticket_id, failure_type, error):
         "error": error,
     })
 
+# The message text is not recorded. It is built from the classification and the
+# enrichment count already in the events above, so a copy here could disagree
+# with them. The channel and the mention are recorded because they are what the
+# action table produced at the time, which a later table change would otherwise
+# make unrecoverable.
+def log_slack_posted(ticket_id, channel, mentioned):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "slack_posted",
+        "channel": channel,
+        "mentioned": mentioned,
+    })
+
+def log_slack_skipped(ticket_id, channel, reason):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "slack_skipped",
+        "channel": channel,
+        "reason": reason,
+    })
+
+def log_slack_failure(ticket_id, channel, failure_type, error):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "slack_failed",
+        "channel": channel,
+        "failure_type": failure_type,
+        "error": error,
+    })
+
 def log_human_review(ticket_id, reason):
     return _send_audit_event({
         "ticket_id": ticket_id,
