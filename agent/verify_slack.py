@@ -41,7 +41,7 @@ if CASE == "live":
     print(f"OUTCOME={slack.post_alert(slack.URGENT, text)}")
     sys.exit(0)
 
-from schemas import Category, Confidence, EnrichmentOutcome, Severity, TicketClassification
+from schemas import EnrichmentOutcome, TicketClassification
 import slack_client as slack
 
 failed = []
@@ -60,39 +60,15 @@ def check(name, got, expected):
 def classification(category, severity, confidence):
     return TicketClassification(category=category, severity=severity, confidence=confidence)
 
-print("channel selection, one case per action table row")
-ROWS = [
-    ("security_incident", "critical", "high_confidence", slack.URGENT),
-    ("security_incident", "critical", "low_confidence", slack.URGENT),
-    ("security_incident", "high", "high_confidence", slack.INCIDENTS),
-    ("security_incident", "high", "low_confidence", slack.INCIDENTS),
-    ("security_incident", "medium", "high_confidence", slack.INCIDENTS),
-    ("security_incident", "low", "low_confidence", slack.INCIDENTS),
-    ("security_question", "high", "high_confidence", None),
-    ("security_question", "high", "low_confidence", slack.REVIEW),
-    ("it_support", "low", "high_confidence", None),
-    ("it_support", "low", "low_confidence", slack.REVIEW),
-    ("unclear", "medium", "high_confidence", slack.REVIEW),
-    ("unclear", "medium", "low_confidence", slack.REVIEW),
-]
-for category, severity, confidence, expected in ROWS:
-    check(f"  {category}/{severity}/{confidence}",
-          slack.channel_for(Category(category), Severity(severity), Confidence(confidence)),
-          expected)
-
-print("mention rule, severity alone")
-check("  critical incident mentions",
-      slack.mentions(Category.security_incident, Severity.critical), True)
-check("  high incident does not",
-      slack.mentions(Category.security_incident, Severity.high), False)
-check("  unclear does not",
-      slack.mentions(Category.unclear, Severity.critical), False)
+# Which channel a classification reaches, and whether it mentions, are the
+# action table's decisions and are checked by verify_action_table.py. This
+# verifier covers what the client does with them.
 
 print("message content")
 critical = classification("security_incident", "critical", "high_confidence")
-msg = slack.build_message(15, "465581", critical, slack.URGENT,
-                          EnrichmentOutcome.completed, 20)
-check("  critical carries the mention", "<!here>" in msg, True)
+msg = slack.build_message(15, "465581", critical, slack.URGENT, mention=True,
+                          outcome=EnrichmentOutcome.completed, event_count=20)
+check("  a mention renders as here", "<!here>" in msg, True)
 check("  severity and category appear", "critical security_incident" in msg, True)
 check("  ticket number appears", "#465581" in msg, True)
 check("  enrichment count appears", "20 related events" in msg, True)
@@ -100,7 +76,7 @@ check("  link is a raw url", "/scp/tickets.php?id=15" in msg, True)
 check("  no markdown link syntax", "|Open ticket>" in msg, False)
 
 high = classification("security_incident", "high", "high_confidence")
-check("  non-critical carries no mention",
+check("  no mention renders none",
       "<!here>" in slack.build_message(15, "465581", high, slack.INCIDENTS), False)
 
 print("review channel shows the reason, not the severity")
@@ -121,7 +97,8 @@ for outcome, count, expected in [
     (EnrichmentOutcome.completed, 20, "20 related events"),
     (EnrichmentOutcome.unavailable, None, "enrichment unavailable"),
 ]:
-    text = slack.build_message(15, "465581", critical, slack.URGENT, outcome, count)
+    text = slack.build_message(15, "465581", critical, slack.URGENT,
+                               outcome=outcome, event_count=count)
     present = expected is None or expected in text
     check(f"  {outcome.value}{'' if count is None else f' ({count})'}", present, True)
 

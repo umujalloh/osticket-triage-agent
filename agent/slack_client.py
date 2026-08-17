@@ -3,12 +3,11 @@ import time
 
 import requests
 
-from schemas import Category, Confidence, EnrichmentOutcome, Severity, enrichment_line
+# The channel names come from the action table, which is what selects a channel
+# for a classification. This module posts to the channel it is handed.
+from action_table import INCIDENTS, REVIEW, URGENT
+from schemas import Category, EnrichmentOutcome, Severity, enrichment_line
 from writes import writes_enabled
-
-URGENT = "urgent"
-INCIDENTS = "incidents"
-REVIEW = "review"
 
 WEBHOOKS = {
     URGENT: os.getenv("SLACK_WEBHOOK_URGENT"),
@@ -47,32 +46,13 @@ class SlackError(Exception):
         self.failure_type = failure_type
         super().__init__(message)
 
-def channel_for(category, severity, confidence):
-    """Which channel a classification belongs in, or None for no alert.
-
-    Implements the Channel column of docs/action-table.md. Change them together
-    or neither.
-    """
-    if category == Category.security_incident:
-        return URGENT if severity == Severity.critical else INCIDENTS
-    if category == Category.unclear:
-        return REVIEW
-    if confidence == Confidence.low_confidence:
-        return REVIEW
-    return None
-
-def mentions(category, severity):
-    """Every critical security incident mentions the channel.
-
-    Independent of whether it pages: a page tasks the one person on call, a
-    mention tells the rest of the team.
-    """
-    return category == Category.security_incident and severity == Severity.critical
-
-def build_message(ticket_id, ticket_number, classification, channel,
+def build_message(ticket_id, ticket_number, classification, channel, mention=False,
                   outcome=EnrichmentOutcome.not_eligible, event_count=None) -> str:
     """Assembles the alert from values the agent generated, and nothing a user
     typed.
+
+    The channel and the mention are decided by the action table and passed in,
+    so the contract lives in one module rather than two.
 
     The ticket subject is absent on purpose: it is attacker-controlled text and
     Slack renders bare URLs as links, so including it would let anyone who files
@@ -92,8 +72,7 @@ def build_message(ticket_id, ticket_number, classification, channel,
         head = (f"{icon} *{classification.severity.value} {category}*"
                 f"  ·  Ticket #{ticket_number or ticket_id}")
 
-    lines = ["<!here>", head] if mentions(classification.category,
-                                          classification.severity) else [head]
+    lines = ["<!here>", head] if mention else [head]
 
     line = enrichment_line(outcome, event_count)
     if line:
