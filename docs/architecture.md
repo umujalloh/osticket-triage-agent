@@ -313,13 +313,13 @@ The full table is in [docs/action-table.md](action-table.md). A few example rows
 | security_incident | critical | high | Urgent channel with a mention, page on-call, enrichment note, priority critical |
 | security_incident | critical | low | Urgent channel with a mention, no page, enrichment note, priority critical |
 | security_incident | high | any | Incidents channel, note, priority high, no page |
-| unclear | any | any | Triage channel, note, priority from severity, no page |
+| unclear | any | any | Review channel, note, priority from severity, no page |
  
 The page is reserved for critical at high confidence. Splunk enrichment is not: it runs on every security_incident at critical severity, whatever the confidence. They are gated differently on purpose. A page interrupts a person, so it takes the double condition. Enrichment is read-only and bounded by the agent's Splunk role, which allows three concurrent searches against one index, so running it on an uncertain ticket costs search capacity and nothing else.
 
 Gating it on confidence too would have withheld enrichment from the tickets that need it most, because the rubric forces unexplained behavior to low_confidence. A critical incident nobody can account for is exactly where a reviewer needs a starting point.
 
-Alerting splits across three channels, and the line between the first two is the one the severity rubric already draws. Critical means someone unauthorized holds access right now, which is what justifies interrupting people, so critical incidents reach an urgent channel and mention it. High, medium, and low incidents are ones where nobody currently holds access, an attempt that failed or a suspicion the ticket cannot establish, so they reach an incidents channel that interrupts nobody. Tickets the classifier could not place, and those it placed without confidence, reach a triage channel whose job is deciding what they are.
+Alerting splits across three channels, and the line between the first two is the one the severity rubric already draws. Critical means someone unauthorized holds access right now, which is what justifies interrupting people, so critical incidents reach an urgent channel and mention it. High, medium, and low incidents are ones where nobody currently holds access, an attempt that failed or a suspicion the ticket cannot establish, so they reach an incidents channel that interrupts nobody. Tickets the classifier could not place, and those it placed without confidence, reach a review channel whose job is deciding what they are.
 
 Mention and page are independent rules. A mention follows severity alone: every critical security incident gets one. A page follows severity and confidence: critical plus high confidence. They reach different people, the page tasking the one person on call and the mention telling the rest of the team, so on a confident critical both fire and the highest severity class ends up with two independent delivery paths.
 

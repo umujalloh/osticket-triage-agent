@@ -32,10 +32,10 @@ someone is what needs certainty.
 | security_incident | medium | any | incidents | no | Write note, set priority medium |
 | security_incident | low | any | incidents | no | Write note, set priority low |
 | security_question | any | high | none | no | Write note, route to security queue, set priority from severity |
-| security_question | any | low | triage | no | Write note, route to security queue, set priority from severity |
+| security_question | any | low | review | no | Write note, route to security queue, set priority from severity |
 | it_support | any | high | none | no | Write note, set priority from severity |
-| it_support | any | low | triage | no | Write note, set priority from severity |
-| unclear | any | any | triage | no | Write note, set priority from severity |
+| it_support | any | low | review | no | Write note, set priority from severity |
+| unclear | any | any | review | no | Write note, set priority from severity |
 
 Three channels, and the line between the first two is the same line the
 severity rubric already draws.
@@ -53,7 +53,7 @@ already contained. They need working, not interrupting over. It is the
 only channel carrying more than one severity, so a reader has to sort
 within it.
 
-**triage** carries `unclear` at any confidence, and the tickets the
+**review** carries `unclear` at any confidence, and the tickets the
 classifier did categorise but was not sure about. `unclear` and low
 confidence are the same signal on two axes: both say nobody has
 established what the ticket is. Keeping them together means the channel
@@ -91,9 +91,9 @@ indicating urgency.
 
 **Assumptions worth revisiting.** Two, with the trigger for each.
 
-The triage channel is assumed to be read. If it fills with low-confidence
+The review channel is assumed to be read. If it fills with low-confidence
 routine tickets and stops being read, `unclear` moves up to the incidents
-channel, because it is the only thing in triage that could be an
+channel, because it is the only thing in review that could be an
 unreported breach.
 
 `@here` is assumed to stay rare, which holds only while critical
