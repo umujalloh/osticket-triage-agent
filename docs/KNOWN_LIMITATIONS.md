@@ -153,6 +153,17 @@ agent has no route left, and the only record is an audit event nobody is
 watching at the time. No arrangement inside the agent fixes this. It is the
 boundary of what the system can promise.
 
+### An unclassified ticket has one delivery path and no fallback
+
+When Claude fails, the agent posts to the review channel because that is all it
+can correctly do: there is no classification, so no action table row, no note
+content, and no severity. Severity is what qualifies a ticket for the fallback
+page, so an unclassified ticket cannot have one. If that single post fails, the
+ticket is left untouched in the normal queue and the only record is an audit
+event and a console line, neither of which pushes anyone. The window is small,
+since it needs Claude and Slack failing together, but nothing inside the agent
+closes it.
+
 ### The agent does not throttle or batch alerts
 
 A burst of tickets produces a burst of posts. Slack rate-limits, the retries

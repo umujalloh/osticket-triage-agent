@@ -300,6 +300,32 @@ Logging note: each Splunk failure entry records which of the six
 failure types occurred, so failures are countable and comparable over
 time rather than logged as a single generic error.
 
+Routing to a human in these six cases means a post to the review
+channel carrying the ticket number and which of the six failures it
+was, and nothing more. The subject stays out for the reason Section 8
+gives. This is a Phase 3 action, since the channels do not exist
+before it; earlier phases had only a console line, which is the gap
+Phase 3 closes.
+
+It is a narrower thing than the human review Section 7 describes,
+which reaches a note and a priority as well, because that ticket has a
+classification to work from and this one does not.
+
+There is nothing else the agent can correctly do. A failed
+classification produces no category, severity, or confidence, so there
+is no row in the action table, no note content, and no priority to
+set, and constructing a placeholder to fill the gap is the one thing
+this design refuses. The ticket keeps the priority osTicket assigned
+at creation and sits in the normal queue, which is why someone has to
+be told it is there.
+
+The review channel is the right destination because its job is
+deciding what an unresolved ticket is, and a ticket the classifier
+never labelled is the strongest form of that. If that post fails
+there is nothing behind it: the fallback page belongs to critical
+incidents, and a ticket with no classification has no severity to
+qualify. That boundary is recorded in KNOWN_LIMITATIONS.md.
+
 ---
 
 ## 7. Action Layer and Phasing
@@ -390,6 +416,17 @@ http://helpdesk.example.com/scp/tickets.php?id=15
 
 Severity, category, ticket number, an enrichment count, and a link. Nothing else crosses, and that is a rule rather than a per-field judgement, so adding a field later is a decision about the rule instead of an argument about one field.
 
+There is one other message shape, and it is that decision made once. A ticket Claude never classified has no severity, category, or enrichment count, so its post to the review channel carries the ticket number, a link, and which of the six failure types occurred:
+
+```
+⚪ classification failed  ·  Ticket #465581  ·  rate_limited
+http://helpdesk.example.com/scp/tickets.php?id=15
+```
+
+It reuses the review channel's icon rather than introducing one. Icons here vary only by colour, and colour means severity, so a distinct shape on a ticket with no severity would assert an urgency the agent has no basis for. The text already says what happened.
+
+The failure type is one of six fixed values the agent chose, never text from a ticket, so it cannot be used to smuggle content into the channel. It earns its place because it tells the reader whether to wait or to fix something: `rate_limited` clears on its own, `auth_failure` does not. The cost is that it tells anyone who later reaches the workspace which part of the pipeline was broken and when.
+
 Three exclusions are deliberate. The ticket subject, because it is written by whoever filed the ticket and Slack renders bare URLs as links, so including it would let anyone who can file a ticket put a clickable link into a trusted internal channel under the agent's name. The requester address, because it is personal data the ticket already holds inside the zone. The enrichment results themselves, including sourcetype names, because those are Splunk data and would tell anyone reading the channel what this organisation detects and with what tooling.
 
 That costs something. An alert with no ticket text is harder to tell from another at a glance, so a reader clicks through more often. The link is a raw URL rather than text hiding one, so a reader can check where it points before clicking, which matters because anyone holding the webhook can post a message that looks exactly like a real alert.
@@ -420,9 +457,17 @@ This record is also what makes the future mismatch-detection hardening (Section 
  
 Rejected requests. A request that fails the signature check, carries a body that is not a JSON object, arrives outside the freshness window, names no usable ticket ID, or repeats an accepted ticket ID is logged with its reason and the requesting IP, so probing and replay leave a trace rather than a silent rejection. Nothing from the body is recorded when the signature check is what failed, since at that point it is unverified. These writes are queued rather than made inline, so a slow write cannot delay the response and forged requests cannot be used to stall the rejection path.
  
-Audit write failure. If a write to Splunk fails, the agent does not treat the decision as recorded. It routes the ticket to human review, since a decision with no audit trail cannot be trusted to have happened correctly, and then carries on with the actions the table selected.
+Audit write failure. If a write to Splunk fails, the agent does not treat what it did as recorded, and carries on with the actions the table selected regardless. There are two cases and they do not carry the same weight.
 
-Carrying on is deliberate. An unrecorded decision is a reason to get a person's eyes on the ticket, not a reason to say nothing about it, and the actions are themselves records: the note lands permanently in osTicket and the alert lands in a channel. So acting leaves evidence in two systems even when Splunk holds none, where stopping would leave a critical incident unhandled and unannounced with only a console line to show for it. Splunk being briefly unavailable, during a restart or an upgrade, must not mean the agent quietly stops alerting.
+A failed classification audit write means the decision itself is unrecorded. Nothing anywhere explains why the ticket was called what it was called, which is the case Section 7's mismatch detection depends on and cannot recover from. The agent writes that fact into the ticket note, so whoever opens the ticket sees that its reasoning was never captured. osTicket is reachable when Splunk is not, and the note is written on every row of the table, so it is the one carrier available in every case.
+
+A failed action audit write means Splunk has no record of an action that left its own artifact. The note is on the ticket, the priority is set, the message is in the channel. The evidence exists, only not in the audit index, so this goes to the console and no further.
+
+Neither case posts to a channel. The test is whether a message asks someone to do something about a particular ticket. A failed classification does, which is why Section 6 posts one: that ticket was never triaged and a person has to triage it. A failed audit write does not. The ticket received everything the table selected, and what is missing is the record, which is one fact about a component rather than one fact per ticket, so an outage would repeat it once for every ticket that arrived. Detecting that the audit pipeline is down is a deployment precondition (Section 10), because a system cannot alert on the absence of data using the system that is absent.
+
+Only the classification case is written into the note, because the note is written before the priority and the channel post. Their audit results are not known yet at that point, and a second note to report them would cost more clarity on the ticket than it buys.
+
+Carrying on is deliberate. Stopping would leave a critical incident unhandled and unannounced with only a console line to show for it. Splunk being briefly unavailable, during a restart or an upgrade, must not mean the agent quietly stops alerting.
  
 Always on. Audit logging is exempt from the kill switch. When the kill switch disables effectful writes, audit writes keep running, because visibility matters most during the incidents that make you flip the switch.
  
@@ -432,10 +477,12 @@ Separate system. The audit log lives in Splunk, on a separate credential from os
  
 ## 10. Deployment Preconditions
  
-Three things the environment must provide. The agent cannot enforce any of them, and the design depends on all three, so a deployment that skips one is quietly weaker than this document describes.
+Four things the environment must provide. The agent cannot enforce any of them, and the design depends on all four, so a deployment that skips one is quietly weaker than this document describes.
  
 A security-tagged queue must exist in osTicket. Without it, `security_question` routing has nowhere to send tickets, and the reason that category exists separately from `it_support` disappears. Queue naming is organisation-specific, which is why the agent does not create it.
  
 Notifications must be enabled on the urgent Slack channel, by whatever mechanism the workspace provides. The agent cannot set them and cannot detect that they are unset, so a critical alert can arrive in a channel nobody is notified about. The `@here` on critical incidents covers most of this, but a member who has muted the channel outright will still miss it. This is the precondition most likely to be skipped, because nothing about the system looks broken when it is.
  
+Something outside the agent must watch for the audit index going quiet. When Splunk is unreachable the agent keeps working and keeps alerting, by design, and records the gap on the ticket, but it cannot raise the alarm that its own audit trail has stopped. Alerting on the absence of data requires a system that is not the one that is absent, so this has to be an external check on the age of the newest event in `osticket_triage`. Without it a Splunk outage is invisible until someone goes looking for a record that was never written.
+
 The osTicket ticket form must have CAPTCHA enabled and client registration configured deliberately. An open form with neither is an unauthenticated path for anyone on the internet to submit unlimited tickets, which is the flood Attack 5 describes: bury a real incident under noise. The agent cannot throttle its way out of that, because every option either delays the flood, hides the real ticket inside a digest, or is defeated by varying the tickets. The defence is at the front door.
