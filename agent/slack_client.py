@@ -16,10 +16,17 @@ WEBHOOKS = {
 }
 OSTICKET_BASE_URL = os.getenv("OSTICKET_BASE_URL")
 
-# Asserted only when writes are on, the one relaxation of the fail-closed rule.
-# Reasoning in architecture.md, Section 7. All three are required together: a
-# deployment missing one would believe it is alerting on the class of ticket
-# that webhook carries.
+# Required either way. Every message carries a link, and a message is built
+# before the kill switch decides whether to send it, so leaving this to the
+# exception below would turn a missing value into an AttributeError inside a
+# background task rather than a refusal to boot.
+if not OSTICKET_BASE_URL:
+    raise RuntimeError("OSTICKET_BASE_URL must be set")
+
+# The webhooks are asserted only when writes are on, the one exception to the
+# fail-closed rule. Reasoning in architecture.md, Section 7. All three are
+# required together: a deployment missing one would believe it is alerting on
+# the class of ticket that webhook carries.
 if writes_enabled():
     missing = [name for name, url in WEBHOOKS.items() if not url]
     if missing:
@@ -27,8 +34,6 @@ if writes_enabled():
             "ENABLE_WRITES is true, so a webhook is required for every channel. "
             f"Missing: {', '.join(sorted(missing))}"
         )
-    if not OSTICKET_BASE_URL:
-        raise RuntimeError("OSTICKET_BASE_URL must be set when ENABLE_WRITES is true")
 
 DONE = "done"
 SKIPPED = "skipped_writes_disabled"

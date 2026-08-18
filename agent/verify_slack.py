@@ -15,7 +15,7 @@ if CASE == "kill_switch_off":
     print(f"OUTCOME={slack.post_alert(slack.URGENT, 'should not be sent')}")
     sys.exit(0)
 
-if CASE == "missing_webhook":
+if CASE in ("missing_webhook", "missing_base_url"):
     try:
         import slack_client  # noqa: F401
         print("OUTCOME=imported")
@@ -133,6 +133,14 @@ check("  writes off returns skipped", f"OUTCOME={slack.SKIPPED}" in out, True)
 out = run_case("missing_webhook", ENABLE_WRITES="true", SLACK_WEBHOOK_URGENT="")
 check("  a missing webhook refuses to boot", "OUTCOME=refused" in out, True)
 check("  and names which one", "urgent" in out, True)
+
+# The webhooks are optional when writes are off. The base URL is not, because a
+# message is built before the kill switch decides whether to send it, so without
+# it the builder would raise inside a background task instead of at boot.
+out = run_case("missing_base_url", ENABLE_WRITES="false", OSTICKET_BASE_URL="")
+check("  a missing base url refuses to boot with writes off too",
+      "OUTCOME=refused" in out, True)
+check("  and names the value", "OSTICKET_BASE_URL" in out, True)
 
 # A webhook URL is a bearer credential, and these errors reach the console and
 # the audit index. The canary is planted in the URL, so if any error path
