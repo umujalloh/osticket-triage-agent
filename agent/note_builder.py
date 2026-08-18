@@ -47,8 +47,19 @@ def _selection(query):
     # only makes the line stutter.
     return selection[7:].strip() if selection.startswith("search ") else selection
 
+def _finish(lines, audited):
+    """Closes the note, recording an unrecorded decision when there is one.
+
+    A failed classification audit write means nothing outside this ticket
+    explains how it was classified, so the ticket carries that itself. osTicket
+    is reachable when Splunk is not. architecture.md, Section 9.
+    """
+    if not audited:
+        lines += ["", "No audit record."]
+    return "\n".join(lines)
+
 def build_note(classification, outcome=EnrichmentOutcome.not_eligible,
-               events=None, query=None) -> str:
+               events=None, query=None, audited=True) -> str:
     """Assembles the internal note body from enrichment results.
 
     Written in code, never by Claude, so a ticket cannot influence what the
@@ -66,7 +77,7 @@ def build_note(classification, outcome=EnrichmentOutcome.not_eligible,
     # A ticket that was never eligible has no search to report, so the note is
     # the classification alone.
     if outcome == EnrichmentOutcome.not_eligible:
-        return "\n".join(lines)
+        return _finish(lines, audited)
 
     # Anything other than a completed search with results is one line: nothing
     # was searched, or the search found nothing, or it did not finish.
@@ -74,7 +85,7 @@ def build_note(classification, outcome=EnrichmentOutcome.not_eligible,
         lines += ["", enrichment_line(outcome, len(events) if events else 0)]
         if selection:
             lines += ["", f"Search: {selection}"]
-        return "\n".join(lines)
+        return _finish(lines, audited)
 
     lines.append("")
     times = sorted(e["_time"] for e in events if e.get("_time"))
@@ -103,4 +114,4 @@ def build_note(classification, outcome=EnrichmentOutcome.not_eligible,
     if selection:
         lines += ["", f"Search: {selection}"]
 
-    return "\n".join(lines)
+    return _finish(lines, audited)

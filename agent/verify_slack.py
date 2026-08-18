@@ -102,6 +102,22 @@ for outcome, count, expected in [
     present = expected is None or expected in text
     check(f"  {outcome.value}{'' if count is None else f' ({count})'}", present, True)
 
+print("the notice for a ticket that was never classified")
+fail_msg = slack.build_failure_message(15, "465581", "rate_limited")
+check("  says what happened", "classification failed" in fail_msg, True)
+check("  names the failure type", "rate_limited" in fail_msg, True)
+check("  carries the ticket number", "#465581" in fail_msg, True)
+check("  links the ticket", "/scp/tickets.php?id=15" in fail_msg, True)
+check("  reuses the review icon", slack.REVIEW_ICON in fail_msg, True)
+# A distinct shape would assert an urgency a ticket with no severity has no
+# basis for, so the only icon it may carry is the review one.
+check("  carries no severity icon",
+      any(i in fail_msg for i in slack.SEVERITY_ICON.values()
+          if i != slack.REVIEW_ICON), False)
+check("  never mentions the channel", "<!here>" in fail_msg, False)
+check("  falls back to the ticket id when there is no number",
+      "#15" in slack.build_failure_message(15, None, "auth_failure"), True)
+
 def run_case(name, **env_overrides):
     env = dict(os.environ)
     env["SLACK_CASE"] = name

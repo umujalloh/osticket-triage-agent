@@ -78,10 +78,29 @@ def build_message(ticket_id, ticket_number, classification, channel, mention=Fal
     if line:
         lines.append(line)
 
+    lines.append(_ticket_url(ticket_id))
+    return "\n".join(lines)
+
+def _ticket_url(ticket_id) -> str:
     # A raw URL rather than text hiding one, so a reader can see where it points
     # before clicking. Anyone holding a webhook can post a convincing fake.
-    lines.append(f"{OSTICKET_BASE_URL.rstrip('/')}/scp/tickets.php?id={ticket_id}")
-    return "\n".join(lines)
+    return f"{OSTICKET_BASE_URL.rstrip('/')}/scp/tickets.php?id={ticket_id}"
+
+def build_failure_message(ticket_id, ticket_number, failure_type) -> str:
+    """The notice for a ticket Claude never classified.
+
+    Separate from build_message because there is no classification to take a
+    severity or a category from. It reuses the review icon rather than adding
+    one: icons vary only by colour and colour means severity, so a new shape
+    would assert an urgency this ticket has no basis for.
+
+    The failure type is one of the six in architecture.md, Section 6, always a
+    value the agent chose and never text from a ticket.
+    """
+    head = (f"{REVIEW_ICON} *classification failed*"
+            f"  ·  Ticket #{ticket_number or ticket_id}"
+            f"  ·  {failure_type}")
+    return "\n".join([head, _ticket_url(ticket_id)])
 
 def post_alert(channel: str, text: str) -> str:
     """Posts one alert. Returns DONE, or SKIPPED when writes are off.
