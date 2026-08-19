@@ -14,28 +14,30 @@ missed or silently mishandled.
 following: the ticket is posted to the channel its row selects, the
 internal note is written so any enrichment is on the ticket when someone
 opens it, the priority is set from severity so the queue sorts
-correctly, no page is sent, and an audit event records why. The override
-suppresses the page and nothing else.
+correctly, and an audit event records why. On a critical it also pages,
+quietly. The override changes how loudly a ticket is escalated and
+nothing else about how it is handled.
 
 Confidence gates interruption, not visibility. Gating the channel post
 on confidence would mean the less the system understands a ticket, the
 quieter it becomes, which is backwards for a security tool. Waking
-someone is what needs certainty.
+someone is what needs certainty, which is why a critical the classifier
+could not place reaches PagerDuty at low urgency rather than not at all.
 
 ## Table
 
 | Category | Severity | Confidence | Channel | Page | Ticket actions |
 |---|---|---|---|---|---|
-| security_incident | critical | high | urgent, `@here` | yes | Write enrichment note, set priority critical |
-| security_incident | critical | low | urgent, `@here` | no | Write enrichment note, set priority critical |
-| security_incident | high | any | incidents | no | Write note, set priority high |
-| security_incident | medium | any | incidents | no | Write note, set priority medium |
-| security_incident | low | any | incidents | no | Write note, set priority low |
-| security_question | any | high | none | no | Write note, route to security queue, set priority from severity |
-| security_question | any | low | review | no | Write note, route to security queue, set priority from severity |
-| it_support | any | high | none | no | Write note, set priority from severity |
-| it_support | any | low | review | no | Write note, set priority from severity |
-| unclear | any | any | review | no | Write note, set priority from severity |
+| security_incident | critical | high | urgent, `@here` | WAKE | Write enrichment note, set priority critical |
+| security_incident | critical | low | urgent | NOTIFY | Write enrichment note, set priority critical |
+| security_incident | high | any | incidents | none | Write note, set priority high |
+| security_incident | medium | any | incidents | none | Write note, set priority medium |
+| security_incident | low | any | incidents | none | Write note, set priority low |
+| security_question | any | high | none | none | Write note, route to security queue, set priority from severity |
+| security_question | any | low | review | none | Write note, route to security queue, set priority from severity |
+| it_support | any | high | none | none | Write note, set priority from severity |
+| it_support | any | low | review | none | Write note, set priority from severity |
+| unclear | any | any | review | none | Write note, set priority from severity |
 
 Three channels, and the line between the first two is the same line the
 severity rubric already draws.
@@ -43,8 +45,8 @@ severity rubric already draws.
 **urgent** carries critical security incidents only, at either
 confidence. Critical means someone unauthorized holds access right now,
 or destructive action has already been carried out. That is what
-justifies interrupting people, which is why it is also the only channel
-that mentions.
+justifies interrupting people, which is why it is the only channel that
+mentions at all, and only on the row the classifier was confident about.
 
 **incidents** carries high, medium, and low security incidents. In every
 one of those, nobody currently holds access: an attempt that failed, a
@@ -64,22 +66,27 @@ with tickets that only need action.
 
 **Why severity only fully branches for `security_incident`.** Severity's
 only job in this system is to decide alert level: which channel a ticket
-reaches, whether it mentions, and whether it pages. Only security
+reaches, whether it mentions, and whether it pages at all. Only security
 incidents ever justify interrupting a human.
 For `security_question` and `it_support`, severity still sets the
 osTicket priority field but does not change whether an alert fires.
 
-**Mention and page are independent rules.** A mention is a function of
-severity alone: every critical security incident gets `@here`. A page is
-a function of severity and confidence: critical plus high confidence.
-Neither rule needs the other to be understood.
+**Mention and page reach different people.** A page tasks the one person
+on call. A mention tells the rest of the team a critical incident is in
+progress.
 
-They are separate because they reach different people. A page tasks the
-one person on call. A mention tells the rest of the team a critical
-incident is in progress. On the confident case both fire, which is
-deliberate: it means the highest severity class has two independent
-delivery paths, so a stale integration key or a wrong escalation policy
-does not silence it entirely.
+Every critical security incident pages. Confidence decides which of two
+PagerDuty services it reaches, not whether it reaches one. WAKE is a high
+urgency service and is meant to interrupt. NOTIFY is a low urgency
+service and creates an incident somebody owns without waking them.
+
+Only the confident row also mentions. Once a critical at low confidence
+pages NOTIFY, an `@here` would be the loudest signal on the
+classification the agent is least sure of, and it would shout at the
+whole team about something one person already owns. So the confident
+case has two independent delivery paths, which is deliberate for the
+highest severity class, and the other has one that nobody has to answer
+at three in the morning.
 
 **Why alerting and priority both exist.** They serve different readers.
 A channel post is push: it reaches whoever is watching, once, and then
@@ -112,11 +119,11 @@ is. A security question needs someone with security context, even at
 low urgency. General helpdesk queues don't guarantee that. The
 security-tagged queue this depends on is one of the deployment
 preconditions in
-[architecture.md, Section 8](architecture.md#8-trust-boundaries-and-least-privilege).
+[architecture.md, Section 10](architecture.md#10-deployment-preconditions).
 
 **Enrichment scope.** Splunk enrichment triggers on security_incident +
 critical, at either confidence. High, medium, and low severity security
-incidents are handled without enrichment. Confidence gates the page, not
-the query, because the tickets that read as uncertain are the ones a
-reviewer most needs context for. Reasoning in
+incidents are handled without enrichment. Confidence gates how loudly a
+ticket escalates, not the query, because the tickets that read as
+uncertain are the ones a reviewer most needs context for. Reasoning in
 [architecture.md, Section 7](architecture.md#7-action-layer-and-phasing).

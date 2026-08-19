@@ -187,24 +187,27 @@ def log_slack_failure(ticket_id, channel, failure_type, error):
 # in the events above. Whether the page was a fallback is recorded, because that
 # is the difference between waking someone for a confident critical and waking
 # them because nothing else could reach them.
-def log_paged(ticket_id, fallback):
+def log_paged(ticket_id, destination, fallback):
     return _send_audit_event({
         "ticket_id": ticket_id,
         "status": "paged",
+        "destination": destination,
         "fallback": fallback,
     })
 
-def log_page_skipped(ticket_id, reason):
+def log_page_skipped(ticket_id, destination, reason):
     return _send_audit_event({
         "ticket_id": ticket_id,
         "status": "page_skipped",
+        "destination": destination,
         "reason": reason,
     })
 
-def log_page_failure(ticket_id, failure_type, error):
+def log_page_failure(ticket_id, destination, failure_type, error):
     return _send_audit_event({
         "ticket_id": ticket_id,
         "status": "page_failed",
+        "destination": destination,
         "failure_type": failure_type,
         "error": error,
     })

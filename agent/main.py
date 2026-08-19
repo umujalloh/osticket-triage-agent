@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from action_table import actions_for, PRIORITY_FOR_SEVERITY, REVIEW
+from action_table import actions_for, PRIORITY_FOR_SEVERITY, REVIEW, WAKE
 from classifier import classify_ticket, ClassificationError
 from idempotency import claim_ticket, completed_actions, mark_done
 from note_builder import build_note
@@ -105,7 +105,7 @@ def process_ticket(payload: dict):
     # an enrichment count, since nothing has searched yet. architecture.md,
     # Section 7.
     if actions.page:
-        _page(ticket_id,
+        _page(ticket_id, actions.page,
               build_page(ticket_id, payload.get("ticket_number"), classification),
               fallback=False)
 
@@ -257,7 +257,7 @@ def _post_alert(ticket_id, classification, actions, payload, outcome, events):
         # KNOWN_LIMITATIONS.md.
         if needs_fallback_page(classification, actions):
             _page(
-                ticket_id,
+                ticket_id, WAKE,
                 build_fallback_page(ticket_id, payload.get("ticket_number"),
                                     classification),
                 fallback=True,
@@ -268,45 +268,57 @@ def needs_fallback_page(classification, actions) -> bool:
 
     Only a critical security incident does. Severity alone is not enough,
     because the classifier can rate an it_support ticket critical and a major
-    outage is not what the security on-call is there for. A row the table
-    already pages on is excluded, since that page ran before the alert and a
-    second would repeat it.
+    outage is not what the security on-call is there for.
+
+    A row that already paged WAKE is excluded, since that page ran before the
+    alert and a second would repeat it. That leaves the critical at low
+    confidence, which paged NOTIFY and was counting on the channel post to reach
+    anyone actually looking. With the post gone, the quiet incident is all there
+    is, and a delivery failure is the one thing that turns it loud.
     """
     return (classification.category == Category.security_incident
             and classification.severity == Severity.critical
-            and not actions.page)
+            and actions.page != WAKE)
 
-def _page(ticket_id, event, fallback) -> bool:
-    """Sends one page. Returns False only when nobody was paged.
+def _page(ticket_id, destination, event, fallback) -> bool:
+    """Sends one page to one destination. Returns False only when nobody was
+    paged.
 
     Writes being off is not a failure to page, and neither is a page that
     already went out.
+
+    The two kinds are guarded by separate columns, because a ticket that paged
+    NOTIFY can still need the WAKE that follows a failed alert, and one column
+    would let the first refuse the second.
     """
-    if completed_actions(ticket_id)["paged"]:
-        print(f"Ticket {ticket_id}: already paged, skipping")
+    column = "paged_fallback" if fallback else "paged"
+    if completed_actions(ticket_id)[column]:
+        print(f"Ticket {ticket_id}: already paged {destination}, skipping")
         return True
 
     try:
-        result = send_page(event)
+        result = send_page(destination, event)
     except PagerDutyError as e:
-        log_page_failure(ticket_id, e.failure_type, str(e))
-        print(f"Ticket {ticket_id}: page failed ({e.failure_type})")
+        log_page_failure(ticket_id, destination, e.failure_type, str(e))
+        print(f"Ticket {ticket_id}: {destination} page failed ({e.failure_type})")
         return False
     except Exception as e:
-        log_page_failure(ticket_id, "unknown", f"{type(e).__name__}: {e}")
-        print(f"Ticket {ticket_id}: page failed (unknown)")
+        log_page_failure(ticket_id, destination, "unknown", f"{type(e).__name__}: {e}")
+        print(f"Ticket {ticket_id}: {destination} page failed (unknown)")
         return False
 
     if result == PD_SKIPPED:
-        log_page_skipped(ticket_id=ticket_id, reason="writes_disabled")
-        print(f"Ticket {ticket_id}: page skipped (writes disabled)")
+        log_page_skipped(ticket_id=ticket_id, destination=destination,
+                         reason="writes_disabled")
+        print(f"Ticket {ticket_id}: {destination} page skipped (writes disabled)")
         return True
 
     # Recorded only after PagerDuty queued it, so a failure leaves the ticket
     # retryable rather than marked done.
-    mark_done(ticket_id, "paged")
-    audit_ok = log_paged(ticket_id, fallback)
-    print(f"Ticket {ticket_id}: paged{' as a fallback' if fallback else ''}")
+    mark_done(ticket_id, column)
+    audit_ok = log_paged(ticket_id, destination, fallback)
+    print(f"Ticket {ticket_id}: paged {destination}"
+          f"{' as a fallback' if fallback else ''}")
     if not audit_ok:
         _audit_failed(ticket_id, "paged")
     return True

@@ -147,20 +147,22 @@ deployment should hold it.
 
 ### A failed alert can exhaust every delivery path
 
-When a Slack post fails on a critical incident and nothing has paged, the agent
-pages as a fallback. Nothing catches the case where both fail. At that point the
-agent has no route left, and the only record is an audit event nobody is
-watching at the time. No arrangement inside the agent fixes this. It is the
-boundary of what the system can promise.
+When a Slack post fails on a critical incident that has not been paged loudly,
+the agent pages WAKE as a fallback. Nothing catches the case where both fail. At
+that point the agent has no route left, and the only record is an audit event
+nobody is watching at the time. No arrangement inside the agent fixes this. It
+is the boundary of what the system can promise.
 
-### A low-confidence critical escalates to nobody
+### A quiet page can sit unacknowledged
 
-A critical security incident the classifier is not confident about reaches the
-urgent channel with an `@here` and stops there. The page is withheld, because
-confidence gates interruption. That is the intended behaviour, and the cost is
-that delivery succeeding is not the same as anyone reading it. If the post lands
-and the channel is quiet, nothing chases the ticket and nothing escalates on its
-own. The fallback page covers a failed delivery, not an ignored one.
+A critical security incident the classifier could not place pages the NOTIFY
+service, which raises an incident without interrupting anyone. Someone owns it
+and has to acknowledge it, which is more than the channel post alone gave it,
+but nothing forces that to happen quickly. PagerDuty escalation policies can be
+configured to chase an unacknowledged incident and this deployment does not do
+so, because the whole point of the destination is that it does not chase at
+three in the morning. The result is that a real incident the classifier was
+unsure about can wait as long as the person on call takes to look.
 
 ### An unclassified ticket has one delivery path and no fallback
 

@@ -70,16 +70,19 @@ if os.environ.get("WIRING_CASE"):
     # The paging row, kept apart from the case below because the table pages on
     # critical alone and the row below is deliberately a high that does not.
     if os.environ["WIRING_CASE"].startswith("paging"):
+        from action_table import WAKE
         from pagerduty_client import build_page
 
         critical = TicketClassification(
             category="security_incident", severity="critical",
             confidence="high_confidence"
         )
-        main._page(TICKET_ID,
+        main._page(TICKET_ID, WAKE,
                    build_page(TICKET_ID, "VERIFY", critical),
                    fallback=False)
-        print(f"STORE_PAGED={completed_actions(TICKET_ID)['paged']}")
+        state = completed_actions(TICKET_ID)
+        print(f"STORE_PAGED={state['paged']}")
+        print(f"STORE_PAGED_FALLBACK={state['paged_fallback']}")
         sys.exit(0)
 
     # A real table row that writes a note, sets priority, and posts to a
@@ -123,7 +126,8 @@ def run_case(name, enable_writes, **overrides):
     # Same for pages, so the real service holds nothing but real pages.
     test_key = os.getenv("PAGERDUTY_ROUTING_KEY_TEST")
     if test_key:
-        env["PAGERDUTY_ROUTING_KEY"] = test_key
+        env["PAGERDUTY_ROUTING_KEY_WAKE"] = test_key
+        env["PAGERDUTY_ROUTING_KEY_NOTIFY"] = test_key
     env.update(overrides)
     result = subprocess.run([sys.executable, __file__, str(TICKET_ID)],
                             env=env, capture_output=True, text=True)
@@ -166,9 +170,10 @@ for cat, sev, conf in product(Category, Severity, Confidence):
     if needs_fallback_page(classification, acts):
         fallbacks.append(row)
 
-check("only a confident critical incident pages",
-      pages == ["security_incident/critical/high_confidence"])
-check("only an unconfident one falls back",
+check("both criticals page, and nothing else does",
+      pages == ["security_incident/critical/high_confidence",
+                "security_incident/critical/low_confidence"])
+check("only one at low confidence falls back",
       fallbacks == ["security_incident/critical/low_confidence"])
 
 RECORDED = ("STORE_NOTE_WRITTEN=True", "STORE_PRIORITY_SET=True",
@@ -236,8 +241,12 @@ check("kill switch on pages", "Ticket 18: paged" in out)
 check("the page is recorded", "STORE_PAGED=True" in out)
 
 out = run_case("paging_retry", "true", TRIAGE_STATE_DB=PAGE_STORE)
-check("a second page is refused", "already paged, skipping" in out)
+check("a second page is refused", "already paged wake, skipping" in out)
 check("the refusal leaves the record intact", "STORE_PAGED=True" in out)
+# The two pages are guarded by separate columns, so refusing the WAKE one must
+# not also mark the fallback as done. A single column would.
+check("and leaves the fallback still available",
+      "STORE_PAGED_FALLBACK=False" in out)
 
 # The finding this ordering exists for. Splunk holds the audit log and the
 # enrichment data, so a page sitting behind either is a page that waits out

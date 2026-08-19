@@ -67,6 +67,31 @@ check("a claim survives a restart", restarted.claim_ticket(42), False)
 check("action state survives a restart", restarted.completed_actions(43)["note_written"], True)
 check("an unseen ticket is still claimable after a restart", restarted.claim_ticket(44), True)
 
+# A store written before an action existed. CREATE TABLE IF NOT EXISTS does
+# nothing to a table that is already there, so without the migration the new
+# column would be missing and every read of the store would fail.
+import sqlite3
+
+OLD_DB = os.path.join(tempfile.mkdtemp(prefix="triage-verify-old-"), "state.db")
+with sqlite3.connect(OLD_DB) as conn:
+    conn.execute("""CREATE TABLE processed_tickets (
+        ticket_id TEXT PRIMARY KEY,
+        accepted_at TEXT NOT NULL,
+        note_written INTEGER NOT NULL DEFAULT 0
+    )""")
+    conn.execute("INSERT INTO processed_tickets VALUES ('99', 'then', 1)")
+
+os.environ["TRIAGE_STATE_DB"] = OLD_DB
+del sys.modules["idempotency"]
+migrated = importlib.import_module("idempotency")
+
+state = migrated.completed_actions(99)
+check("an older store gains the columns it is missing",
+      sorted(state), sorted(migrated.ACTIONS))
+check("what it already recorded survives", state["note_written"], True)
+check("a column added by the migration reads as not done", state["paged_fallback"], False)
+check("and the migrated store still works", migrated.claim_ticket(99), False)
+
 print()
 if failed:
     print(f"FAILED: {', '.join(failed)}")

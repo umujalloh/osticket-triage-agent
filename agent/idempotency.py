@@ -7,8 +7,13 @@ DB_PATH = os.getenv(
     os.path.join(os.path.dirname(__file__), "triage_state.db"),
 )
 
-# One column per effectful action. Adding a name here adds it to the schema.
-ACTIONS = ("note_written", "priority_set", "slack_posted", "paged")
+# One column per effectful action. Adding a name here adds it to the schema and
+# to any database that already exists, see init_db.
+#
+# The two pages are separate columns because one ticket can receive both. A
+# critical at low confidence pages NOTIFY at once, and pages WAKE afterwards if
+# its channel post fails. A single column would let the first refuse the second.
+ACTIONS = ("note_written", "priority_set", "slack_posted", "paged", "paged_fallback")
 
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS processed_tickets (
@@ -33,8 +38,25 @@ def _key(ticket_id) -> str:
     return str(ticket_id)
 
 def init_db():
+    """Creates the store, and adds any action column an older one is missing.
+
+    CREATE TABLE IF NOT EXISTS does nothing to a table that already exists, so
+    adding a name to ACTIONS would leave every existing store one column short
+    and every read of it failing. Each missing column is added with the same
+    default a new table would give it, which reads as "this action has not
+    happened", and that is the right answer for a ticket processed before the
+    action existed.
+    """
     with _connect() as conn:
         conn.executescript(_SCHEMA)
+        have = {r["name"] for r in conn.execute("PRAGMA table_info(processed_tickets)")}
+        for action in ACTIONS:
+            if action not in have:
+                conn.execute(
+                    f"ALTER TABLE processed_tickets "
+                    f"ADD COLUMN {action} INTEGER NOT NULL DEFAULT 0"
+                )
+                print(f"Idempotency store: added the {action} column")
 
 # A store that cannot be opened means duplicate protection is not in force,
 # and writes are not safe without it.

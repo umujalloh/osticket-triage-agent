@@ -17,7 +17,7 @@ CASE = os.environ.get("PAGERDUTY_CASE")
 
 if CASE == "kill_switch_off":
     import pagerduty_client as pd
-    print(f"OUTCOME={pd.send_page({'payload': {}})}")
+    print(f"OUTCOME={pd.send_page(pd.WAKE, {'payload': {}})}")
     sys.exit(0)
 
 if CASE == "missing_routing_key":
@@ -34,7 +34,7 @@ if CASE == "key_leak":
     c = TicketClassification(category="security_incident", severity="critical",
                              confidence="high_confidence")
     try:
-        pd.send_page(pd.build_page(15, "465581", c))
+        pd.send_page(pd.WAKE, pd.build_page(15, "465581", c))
         print("OUTCOME=no error raised")
     except pd.PagerDutyError as e:
         print(f"OUTCOME=raised {e}")
@@ -42,12 +42,22 @@ if CASE == "key_leak":
         print(f"OUTCOME=raised {type(e).__name__} {e}")
     sys.exit(0)
 
-if CASE == "live":
+if CASE == "bad_destination":
+    import pagerduty_client as pd
+    try:
+        pd.send_page("nowhere", {"payload": {}})
+        print("OUTCOME=no error raised")
+    except pd.PagerDutyError as e:
+        print(f"OUTCOME=raised {e}")
+    sys.exit(0)
+
+if CASE in ("live", "live_notify"):
     import pagerduty_client as pd
     from schemas import TicketClassification
     c = TicketClassification(category="security_incident", severity="critical",
                              confidence="high_confidence")
-    print(f"OUTCOME={pd.send_page(pd.build_page(15, 'VERIFY', c))}")
+    destination = pd.NOTIFY if CASE == "live_notify" else pd.WAKE
+    print(f"OUTCOME={pd.send_page(destination, pd.build_page(15, 'VERIFY', c))}")
     sys.exit(0)
 
 import pagerduty_client as pd
@@ -136,28 +146,43 @@ out = run_case("kill_switch_off", ENABLE_WRITES="false")
 check("  writes off returns skipped", f"OUTCOME={pd.SKIPPED}" in out, True)
 
 out = run_case("missing_routing_key", ENABLE_WRITES="true",
-               PAGERDUTY_ROUTING_KEY="")
+               PAGERDUTY_ROUTING_KEY_NOTIFY="")
 check("  a missing routing key refuses to boot", "OUTCOME=refused" in out, True)
+check("  and names which destination", "notify" in out, True)
 
 # The key travels in the request body rather than the URL, so the usual danger
 # of a client library echoing the URL does not apply. What can still leak it is
 # a rejection quoting the field it rejected, so the canary is the key itself.
 print("a failure never leaks the routing key")
 CANARY = "canary0000000000000000000000000d"
-out = run_case("key_leak", ENABLE_WRITES="true", PAGERDUTY_ROUTING_KEY=CANARY)
+out = run_case("key_leak", ENABLE_WRITES="true", PAGERDUTY_ROUTING_KEY_WAKE=CANARY)
 check("  a rejected key is not echoed", CANARY in out, False)
 check("  and it still raises", "OUTCOME=raised" in out, True)
+
+# A destination the table never produces would otherwise be sent with a routing
+# key of None, which PagerDuty answers with a 400 that quotes the body.
+print("an unknown destination is refused before anything is sent")
+out = run_case("bad_destination", ENABLE_WRITES="true")
+check("  it raises rather than posting", "OUTCOME=raised" in out, True)
+check("  and names the destination", "nowhere" in out, True)
 
 print("live delivery, to the test service only")
 test_key = os.getenv("PAGERDUTY_ROUTING_KEY_TEST")
 if not test_key:
     print("SKIP  PAGERDUTY_ROUTING_KEY_TEST is not set, delivery not checked")
 else:
-    out = run_case("live", ENABLE_WRITES="true", PAGERDUTY_ROUTING_KEY=test_key)
+    out = run_case("live", ENABLE_WRITES="true", PAGERDUTY_ROUTING_KEY_WAKE=test_key)
     check("  a real page is queued", f"OUTCOME={pd.DONE}" in out, True)
+    # Both destinations go to the one test service, so this proves delivery and
+    # not urgency. Urgency is a property of the service in PagerDuty, which the
+    # agent can neither read nor set, so it is a deployment precondition rather
+    # than something a check here could assert.
+    out = run_case("live_notify", ENABLE_WRITES="true",
+                   PAGERDUTY_ROUTING_KEY_NOTIFY=test_key)
+    check("  so is a page to the other destination", f"OUTCOME={pd.DONE}" in out, True)
 
 print()
 if failed:
     print(f"FAILED: {', '.join(failed)}")
     sys.exit(1)
-print(f"All {ran} checks passed. One page was sent to the test service.")
+print(f"All {ran} checks passed. Two pages were sent to the test service.")

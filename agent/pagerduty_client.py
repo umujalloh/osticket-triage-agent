@@ -4,6 +4,7 @@ from urllib.parse import urlparse
 
 import requests
 
+from action_table import NOTIFY, WAKE
 from schemas import Severity
 from writes import writes_enabled
 
@@ -13,17 +14,28 @@ from writes import writes_enabled
 PAGERDUTY_EVENTS_URL = os.getenv(
     "PAGERDUTY_EVENTS_URL", "https://events.pagerduty.com/v2/enqueue"
 )
-# PagerDuty's UI calls this the Integration Key. The API field is routing_key.
-PAGERDUTY_ROUTING_KEY = os.getenv("PAGERDUTY_ROUTING_KEY")
+# One key per destination, the same shape as the Slack webhooks. PagerDuty's UI
+# calls these Integration Keys; the API field is routing_key. Urgency belongs to
+# the service, not the event, so two services is the only way an event can
+# choose how loudly it arrives.
+ROUTING_KEYS = {
+    WAKE: os.getenv("PAGERDUTY_ROUTING_KEY_WAKE"),
+    NOTIFY: os.getenv("PAGERDUTY_ROUTING_KEY_NOTIFY"),
+}
 OSTICKET_BASE_URL = os.getenv("OSTICKET_BASE_URL")
 
 # Asserted only when writes are on, the same exception the Slack webhooks get and
 # for the same reason. Nothing is ever sent with the kill switch off, so a
-# read-only deployment should not have to hold a credential it cannot use.
-if writes_enabled() and not PAGERDUTY_ROUTING_KEY:
-    raise RuntimeError(
-        "ENABLE_WRITES is true, so PAGERDUTY_ROUTING_KEY is required"
-    )
+# read-only deployment should not have to hold a credential it cannot use. Both
+# are required together, since a deployment missing one would believe it is
+# escalating a class of incident it cannot reach.
+if writes_enabled():
+    missing = [name for name, key in ROUTING_KEYS.items() if not key]
+    if missing:
+        raise RuntimeError(
+            "ENABLE_WRITES is true, so a routing key is required for every page "
+            f"destination. Missing: {', '.join(sorted(missing))}"
+        )
 
 DONE = "done"
 SKIPPED = "skipped_writes_disabled"
@@ -63,12 +75,21 @@ def build_page(ticket_id, ticket_number, classification) -> dict:
     return _event(ticket_id, summary, classification.severity)
 
 def build_fallback_page(ticket_id, ticket_number, classification) -> dict:
-    """The page sent when a critical could not be delivered to Slack.
+    """The WAKE page sent when a critical could not be delivered to Slack.
 
-    It leads with the delivery failure because that is what justifies the
-    interruption. Leading with the classification would read exactly like a
-    confident critical, which is the one thing this page must not do. The table
-    declined to page on it, and the responder is owed that distinction.
+    Only a critical at low confidence reaches this. It already paged NOTIFY,
+    and the channel post that was meant to carry it failed, so the delivery
+    failure is what upgrades it to an interruption.
+
+    It leads with that failure because that is what justifies waking someone.
+    Leading with the classification would read exactly like a confident
+    critical, which is the one thing this page must not do, and the responder is
+    owed that distinction.
+
+    It goes to a different service from the NOTIFY page it follows, so the
+    shared dedup key raises a second incident rather than folding into the quiet
+    one. That is the intent. The quiet incident is the record; this is the
+    interruption.
     """
     summary = (f"alert delivery failed  ·  Ticket #{ticket_number or ticket_id}"
                f"  ·  {classification.severity.value} "
@@ -100,8 +121,12 @@ def _event(ticket_id, summary, severity) -> dict:
         "links": [{"href": url, "text": url}],
     }
 
-def send_page(event: dict) -> str:
-    """Sends one page. Returns DONE, or SKIPPED when writes are off.
+def send_page(destination: str, event: dict) -> str:
+    """Sends one page to the destination it is handed. Returns DONE, or SKIPPED
+    when writes are off.
+
+    The destination is decided by the action table and passed in, so the
+    contract lives in one module rather than two.
 
     Raises PagerDutyError on failure and never reports a page that did not
     happen. The routing key travels in the body rather than the URL, so an
@@ -111,18 +136,20 @@ def send_page(event: dict) -> str:
     """
     if not writes_enabled():
         return SKIPPED
+    if destination not in ROUTING_KEYS:
+        raise PagerDutyError("bad_request", f"Unknown page destination: {destination}")
 
-    body = dict(event, routing_key=PAGERDUTY_ROUTING_KEY)
+    body = dict(event, routing_key=ROUTING_KEYS[destination])
     last_error = None
     for attempt in range(3):
         try:
             response = requests.post(PAGERDUTY_EVENTS_URL, json=body, timeout=10)
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
-            last_error = ("server_down", "Could not reach PagerDuty")
+            last_error = ("server_down", f"Could not reach PagerDuty for the {destination} service")
             time.sleep([2, 5, 10][attempt])
             continue
         except requests.exceptions.RequestException as e:
-            raise PagerDutyError("unknown", f"{type(e).__name__} sending the page")
+            raise PagerDutyError("unknown", f"{type(e).__name__} sending the {destination} page")
 
         # The Events API answers 202, not 200, because it queues the event.
         if response.status_code == 202:
@@ -132,15 +159,15 @@ def send_page(event: dict) -> str:
         if response.status_code in (400, 401, 403, 404):
             raise PagerDutyError(
                 "bad_request",
-                f"PagerDuty refused the page: HTTP {response.status_code} "
+                f"PagerDuty refused the {destination} page: HTTP {response.status_code} "
                 f"{response.text[:100]}",
             )
         if response.status_code == 429:
-            last_error = ("rate_limited", "PagerDuty rate limited the page")
+            last_error = ("rate_limited", f"PagerDuty rate limited the {destination} service")
             time.sleep([5, 15, 30][attempt])
             continue
         raise PagerDutyError(
-            "unknown", f"Unexpected PagerDuty response: HTTP {response.status_code}"
+            "unknown", f"Unexpected PagerDuty response for {destination}: HTTP {response.status_code}"
         )
 
     failure_type, message = last_error

@@ -24,7 +24,7 @@ Phase 1, receive and classify. Receive the webhook and classify. No writes.
  
 Phase 2, enrich. Add Splunk enrichment for security_incident + critical tickets only. Still no writes.
  
-Phase 3, act. Write the internal note, set the ticket priority, post to one of three Slack channels chosen by what the classification says needs doing, and page PagerDuty only when a ticket is critical and high confidence. Audit logging runs from Phase 1 onward.
+Phase 3, act. Write the internal note, set the ticket priority, post to one of three Slack channels chosen by what the classification says needs doing, and page PagerDuty on a critical security incident. Audit logging runs from Phase 1 onward.
  
 This document covers the design across all three phases.
  
@@ -44,7 +44,7 @@ Claude API. An external LLM used for classification only. It receives the ticket
  
 Splunk. The SIEM. It has two roles. It returns enrichment data when the agent runs a pre-defined, read-only query template against named indexes, and it stores the audit log of every action the agent takes.
  
-PagerDuty and Slack. External alert destinations. Slack receives every security incident and every ticket the classifier could not place, split across three channels so each reader can decide what is allowed to interrupt them. PagerDuty pages on-call staff only for critical incidents at high confidence, so a page means wake someone up.
+PagerDuty and Slack. External alert destinations. Slack receives every security incident and every ticket the classifier could not place, split across three channels so each reader can decide what is allowed to interrupt them. PagerDuty receives critical security incidents only, across two services. Confidence decides which. A confident one goes to a high urgency service and means wake someone up. One at low confidence goes to a low urgency service and means somebody owns this, look when you look.
  
 Inside vs outside. osTicket, the agent, and Splunk run inside my own infrastructure. Claude, PagerDuty, and Slack are external services. This split defines the trust boundary covered in Section 8.
  
@@ -64,7 +64,7 @@ Claude reads the ticket text and returns a classification: category, severity, a
  
 If the ticket is a security_incident at critical severity, the agent runs a pre-defined, read-only Splunk query to enrich the ticket with context. Confidence does not gate this. The query is a single fixed template filled from the submitter's identifiers, not one of several chosen from the classification.
  
-After enrichment, the agent looks up the response in the pre-defined action table, writes an internal note back to osTicket, sets the ticket priority, posts to the Slack channel that row selects, and pages PagerDuty only when the ticket is critical and high confidence. Any low-confidence ticket routes to human review, which still reaches a channel, a note, and a priority. Only the page is withheld.
+The agent looks up the classification in the pre-defined action table. A critical security incident pages PagerDuty at once, before enrichment and before anything is written, because the page must not wait on a dependency that can stall. Then it writes an internal note back to osTicket, sets the ticket priority, and posts to the Slack channel that row selects. Any low-confidence ticket routes to human review, which still reaches a channel, a note, and a priority, and on a critical still pages, quietly.
  
 The agent writes an audit log to Splunk at every step of this process, not only at the end.
 
@@ -183,13 +183,13 @@ Vector. Two sources again. An attacker wording a benign ticket to look alarming 
  
 Defense.
  
-Paging requires critical severity and high confidence, both. A single weak signal can't trigger a page on its own.
+Waking someone requires critical severity and high confidence, both. A single weak signal cannot interrupt anyone on its own. A critical the classifier could not place still pages, to a low urgency service that creates an incident without notifying at once, so the cost of over-reacting to an unclear ticket is an item in a queue rather than a phone call.
  
 Threshold tuning. The bar for what escalates is adjusted based on how the system performs on real tickets.
  
 Mute during testing. While the system is being tested, alerts are suppressed so test traffic doesn't page real people.
  
-Residual risk. The double condition stops weak signals. In the case where a benign ticket is classified as critical with high confidence, the agent still pages because both conditions are met. This is the mirror of the false negative in Attack 4. Confidence guards the page in both directions, so it can't catch the case where the classifier is confidently wrong. Repeated confident false positives are what drive the alert fatigue this attack exploits. An attacker could purposely generate a burst of false positive tickets to distract analysts into chasing them while the real attack is buried in the noise.
+Residual risk. The double condition stops weak signals from waking anyone. In the case where a benign ticket is classified as critical with high confidence, the agent still wakes someone because both conditions are met. This is the mirror of the false negative in Attack 4. Confidence guards the interruption in both directions, so it cannot catch the case where the classifier is confidently wrong. Repeated confident false positives are what drive the alert fatigue this attack exploits. An attacker could purposely generate a burst of false positive tickets to distract analysts into chasing them while the real attack is buried in the noise.
  
 ---
  
@@ -347,15 +347,19 @@ The full table is in [docs/action-table.md](action-table.md). A few example rows
 | security_incident | high | any | Incidents channel, note, priority high, no page |
 | unclear | any | any | Review channel, note, priority from severity, no page |
  
-The page is reserved for critical at high confidence. Splunk enrichment is not: it runs on every security_incident at critical severity, whatever the confidence. They are gated differently on purpose. A page interrupts a person, so it takes the double condition. Enrichment is read-only and bounded by the agent's Splunk role, which allows three concurrent searches against one index, so running it on an uncertain ticket costs search capacity and nothing else.
+Paging is reserved for critical security incidents, at either confidence. Splunk enrichment has the same trigger. What confidence decides is not whether a page happens but where it goes, because a page can be loud or quiet and only the loud one needs certainty. Enrichment is read-only and bounded by the agent's Splunk role, which allows three concurrent searches against one index, so running it on an uncertain ticket costs search capacity and nothing else.
 
 Gating it on confidence too would have withheld enrichment from the tickets that need it most, because the rubric forces unexplained behavior to low_confidence. A critical incident nobody can account for is exactly where a reviewer needs a starting point.
 
 Alerting splits across three channels, and the line between the first two is the one the severity rubric already draws. Critical means someone unauthorized holds access right now, which is what justifies interrupting people, so critical incidents reach an urgent channel and mention it. High, medium, and low incidents are ones where nobody currently holds access, an attempt that failed or a suspicion the ticket cannot establish, so they reach an incidents channel that interrupts nobody. Tickets the classifier could not place, and those it placed without confidence, reach a review channel whose job is deciding what they are.
 
-Mention and page are independent rules. A mention follows severity alone: every critical security incident gets one. A page follows severity and confidence: critical plus high confidence. They reach different people, the page tasking the one person on call and the mention telling the rest of the team, so on a confident critical both fire and the highest severity class ends up with two independent delivery paths.
+Two PagerDuty services rather than one, because urgency is a property of a service and not something an event can request. WAKE is set to high urgency and is meant to interrupt. NOTIFY is set to low urgency and creates an incident somebody owns and has to acknowledge, without waking them. Sending a lower severity in the payload and letting a severity-mapped service downgrade it would save a service, at the cost of the payload misdescribing an incident that genuinely is critical.
 
-Human review is an outcome rather than a label. A ticket routed to it still reaches a channel, still gets its note so any enrichment is on the ticket when someone opens it, and still gets its priority so the queue sorts correctly. Only the page is withheld. Confidence gates interruption, not visibility: gating the channel post on confidence would make the system quietest about the tickets it understands least, which is backwards for a security tool.
+A mention and a page reach different people, the page tasking the one person on call and the mention telling the rest of the team. Only the confident critical does both. Once one at low confidence pages NOTIFY, an `@here` would be the loudest signal on the classification the agent is least sure of, and it would interrupt a whole team about something one person already owns.
+
+Human review is an outcome rather than a label. A ticket routed to it still reaches a channel, still gets its note so any enrichment is on the ticket when someone opens it, and still gets its priority so the queue sorts correctly. On a critical it also pages, quietly. What the override changes is how loudly the ticket escalates, and nothing else about how it is handled.
+
+Confidence gates interruption, not visibility, and withholding the page entirely got that wrong. It left a critical the classifier could not place with a channel post as its only push, arriving last and behind every retry above it, so the tickets the system understood least were also the slowest to reach anyone. A quiet page is visibility. It is the thing confidence was supposed to permit.
  
 Order of actions. A page runs before everything, including the classification audit write and enrichment. Then the note, the priority, and the channel post last, so a reader who opens the ticket finds it complete.
 
@@ -495,11 +499,11 @@ Separate system. The audit log lives in Splunk, on a separate credential from os
  
 ## 10. Deployment Preconditions
  
-Four things the environment must provide. The agent cannot enforce any of them, and the design depends on all four, so a deployment that skips one is quietly weaker than this document describes.
+Four things the environment must provide. The agent cannot enforce any of them, and the design depends on all four, so a deployment that skips one is quietly weaker than this document describes. Alerting is one item rather than two because Slack and PagerDuty fail the same way here, by accepting a message that reaches nobody.
  
 A security-tagged queue must exist in osTicket. Without it, `security_question` routing has nowhere to send tickets, and the reason that category exists separately from `it_support` disappears. Queue naming is organisation-specific, which is why the agent does not create it.
  
-Notifications must be enabled on the urgent Slack channel, by whatever mechanism the workspace provides. The agent cannot set them and cannot detect that they are unset, so a critical alert can arrive in a channel nobody is notified about. The `@here` on critical incidents covers most of this, but a member who has muted the channel outright will still miss it. This is the precondition most likely to be skipped, because nothing about the system looks broken when it is. The same applies to PagerDuty. The agent sends the event and PagerDuty accepts it, but whether that interrupts anyone depends on the responder's notification rules and on what their plan actually delivers, and neither is visible from here.
+Notifications must be enabled on the urgent Slack channel, by whatever mechanism the workspace provides. The agent cannot set them and cannot detect that they are unset, so a critical alert can arrive in a channel nobody is notified about. The `@here` on critical incidents covers most of this, but a member who has muted the channel outright will still miss it. This is the precondition most likely to be skipped, because nothing about the system looks broken when it is. The same applies to PagerDuty, and more sharply, because the design depends on a setting rather than only on habits. The WAKE service must be configured for high urgency and the NOTIFY service for low urgency. Urgency belongs to the service in PagerDuty, so if NOTIFY is set to high, or to derive urgency from alert severity, every quiet page arrives as a loud one and the distinction the action table draws disappears. The agent sends `severity: critical` on both, since the incident genuinely is critical, and it can neither read the setting nor tell that it is wrong.
  
 Something outside the agent must watch for the audit index going quiet. When Splunk is unreachable the agent keeps working and keeps alerting, by design, and records the gap on the ticket, but it cannot raise the alarm that its own audit trail has stopped. Alerting on the absence of data requires a system that is not the one that is absent, so this has to be an external check on the age of the newest event in `osticket_triage`. Without it a Splunk outage is invisible until someone goes looking for a record that was never written.
 

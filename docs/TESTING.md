@@ -149,9 +149,10 @@ earlier run had produced. A push notification arrived on the responder's phone.
 
 The ordering in this run has since been changed and no longer describes the
 agent. The page ran after enrichment here, which meant it also ran after two
-audit writes, so a Splunk outage would have held it for around two and a half
-minutes. The page now goes out before both. A fresh run is needed to record the
-new order, and until it exists this table is a record of the old one.
+audit writes, so a Splunk that hung rather than refused would have held it for
+around 133 seconds. The page now goes out before both. A fresh run is needed to
+record the new order, and until it exists this table is a record of the old
+one.
 
 What the run still shows is every action reaching its destination on a confident
 critical, and the enrichment content that lands on the ticket.
@@ -264,7 +265,7 @@ operation, so name a ticket you don't mind marking.
 
 ## Idempotency store verification
 
-Measured 2026-08-12, fourteen checks, all passing. Run against a temporary
+Measured 2026-08-19, eighteen checks, all passing. Run against a temporary
 database so the live store is never written to. That separation matters: a test
 that inserted ticket IDs into the real store would later refuse the genuine
 ticket carrying the same number.
@@ -281,6 +282,9 @@ ticket carrying the same number.
 | Marking twice is harmless | mark `note_written` again | still `True` |
 | An unknown ticket does not raise | `completed_actions(9999)` | all four `False` |
 | A misspelled action is refused | `mark_done(43, "not_a_real_action")` | `ValueError` |
+| An older store gains missing columns | a store built with one action column | all five present |
+| What it recorded survives the migration | the same store | unchanged |
+| A migrated column reads as not done | the same store | `False` |
 | A completed action outlives a missing claim | `mark_done(77)` with no claim | recorded, warning printed |
 | A claim survives a restart | reload module, `claim_ticket(42)` | `False` |
 | Action state survives a restart | reload module, read `note_written` | `True` |
@@ -298,7 +302,7 @@ wiring below, where the note write is driven through the store three times.
 
 ## Action table verification
 
-Measured 2026-08-19, thirty checks, all passing. The table is the contract
+Measured 2026-08-19, thirty-one checks, all passing. The table is the contract
 between classification and action, so every row is compared as a whole `Actions`
 object rather than field by field. A row that gets one field wrong fails on that
 row instead of hiding behind the fields it gets right.
@@ -349,11 +353,12 @@ it.
 
 ## Paging verification
 
-Measured 2026-08-19, twenty-five checks, all passing.
+Measured 2026-08-19, twenty-nine checks, all passing.
 
 | Property | How it was checked | Result |
 |---|---|---|
 | The page leads with the classification | `build_page` on a confident critical | severity and category first |
+| An unknown destination is refused | `send_page` with a name the table never produces | raises before posting |
 | It claims nothing about enrichment | the built page | no events, enrichment or identifier wording |
 | Severity maps to PagerDuty's | every `Severity` member | all four mapped |
 | The dedup key is the ticket id | the built event | `"15"` |
@@ -381,15 +386,15 @@ call, which is the plan rather than a fault in the agent.
 
 ## Action wiring verification
 
-Measured 2026-08-19, thirty-three checks, all passing. Covers whether the actions
+Measured 2026-08-19, thirty-four checks, all passing. Covers whether the actions
 obey the kill switch and whether a retry can repeat one. Each case runs in its
 own process, because `ENABLE_WRITES` is read at import and patching it in place
 would not test what happens at boot.
 
 | Property | How it was checked | Result |
 |---|---|---|
-| Only a confident critical pages | every combination in the table | one row |
-| Only an unconfident one falls back | the same walk | one row |
+| Both criticals page, nothing else does | every combination in the table | two rows |
+| Only the one at low confidence falls back | the same walk | one row |
 | Writes off skips all four actions | kill switch off | four skips, nothing recorded |
 | Writes on performs all four | kill switch on | four done, all recorded |
 | A retry repeats nothing | a third run against the same store | four refusals |
@@ -397,6 +402,7 @@ would not test what happens at boot.
 | A failed classification reaches review | `classify_ticket` forced to raise | posted to review |
 | It writes no note and sets no priority | the same case | neither recorded |
 | A retried failure posts once | a second run against the same store | refused |
+| A refused page leaves the fallback available | the retry case | `paged_fallback` still false |
 | The page precedes the classification audit write | HEC pointed at a dead port | paged first |
 | The page precedes enrichment | the same case | paged first |
 

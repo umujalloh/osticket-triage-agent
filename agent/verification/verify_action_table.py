@@ -12,8 +12,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from action_table import (
-    HANDLED_CATEGORIES, INCIDENTS, PRIORITY_FOR_SEVERITY, REVIEW, URGENT,
-    Actions, actions_for,
+    HANDLED_CATEGORIES, INCIDENTS, NOTIFY, PRIORITY_FOR_SEVERITY, REVIEW,
+    URGENT, WAKE, Actions, actions_for,
 )
 from schemas import Category, Confidence, Severity
 
@@ -38,11 +38,13 @@ def row(category, severity, confidence, **expected):
     check(f"{category}/{severity}/{confidence}",
           got, Actions(write_note=True, set_priority=True, **expected))
 
-print("security_incident, critical: urgent channel, always mentions")
+print("security_incident, critical: urgent channel, and the only rows that page")
 row("security_incident", "critical", "high_confidence",
-    enrich=True, channel=URGENT, mention=True, page=True)
+    enrich=True, channel=URGENT, mention=True, page=WAKE)
+# Confidence picks the destination rather than whether one exists. The quiet
+# page is why this row does not also mention the channel.
 row("security_incident", "critical", "low_confidence",
-    enrich=True, channel=URGENT, mention=True, human_review=True)
+    enrich=True, channel=URGENT, page=NOTIFY, human_review=True)
 
 print("security_incident below critical: incidents channel, never mentions or pages")
 for sev in ("high", "medium", "low"):
@@ -62,14 +64,15 @@ print("unclear: review at either confidence, because the category is the signal"
 row("unclear", "medium", "high_confidence", channel=REVIEW, human_review=True)
 row("unclear", "medium", "low_confidence", channel=REVIEW, human_review=True)
 
-print("the override withholds the page and nothing else")
+print("the override quietens the escalation and changes nothing else")
 low_critical = actions_for(Category.security_incident, Severity.critical,
                            Confidence.low_confidence)
 check("  a low-confidence critical still writes its note", low_critical.write_note, True)
 check("  still sets its priority", low_critical.set_priority, True)
 check("  still reaches a channel", low_critical.channel, URGENT)
 check("  still enriches", low_critical.enrich, True)
-check("  and is not paged", low_critical.page, False)
+check("  still pages, quietly", low_critical.page, NOTIFY)
+check("  and does not mention the channel", low_critical.mention, False)
 
 print("enrichment is scoped to critical incidents at either confidence")
 for sev in ("high", "medium", "low"):
