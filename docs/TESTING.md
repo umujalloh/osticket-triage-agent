@@ -184,8 +184,8 @@ Splunk outage produced a console line and nothing else.
 
 ### What the live runs found that the verifiers did not
 
-Three faults that 146 passing checks would not have caught, because none of them
-is in the code those checks call.
+Three faults that no verifier would have caught, however many checks it ran,
+because none of them is in the code those checks call.
 
 The agent was bound to `127.0.0.1`, so the osTicket container could not reach it
 at all. A verifier calls functions directly and never crosses the container
@@ -405,18 +405,59 @@ Several cases write a real note, set a real priority and send real alerts, so
 name a ticket you don't mind marking. Alerts and pages go to the test
 destinations when those are configured.
 
+## Webhook gate verification
+
+Measured 2026-08-19, eighteen checks across seventeen requests, all passing. The
+duplicate request is asserted twice, on its status code and on the reason it
+gives. The endpoint osTicket calls is the only part of the agent an outsider can
+reach, and a request that fails any check here is refused before the agent does
+any work.
+
+| Request | Result |
+|---|---|
+| No signature header | 401 |
+| Wrong signature | 401 |
+| Signed with the wrong secret | 401 |
+| Signature missing its `sha256=` prefix | 401 |
+| Body that is not JSON | 400 |
+| Body that is a JSON array | 400 |
+| Body that is a JSON string | 400 |
+| Timestamp 10 minutes old | 401 |
+| Timestamp 5 minutes ahead | 401 |
+| Timestamp missing | 401 |
+| Timestamp unparseable | 401 |
+| Ticket ID missing | 400 |
+| Ticket ID `true` | 400 |
+| Ticket ID a list | 400 |
+| Ticket ID an object | 400 |
+| Ticket ID already processed | 200, `status: duplicate` |
+| The same request again | 200, `status: duplicate` |
+
+Each case is the only thing wrong with its request. The gate runs in a fixed
+order, so a body that is both unsigned and malformed only ever demonstrates the
+signature check, and the rest of the path never runs.
+
+A timestamp five minutes in the future is refused because the freshness window
+allows 60 seconds of clock skew and no more, so a replay cannot buy itself a
+window by claiming to be from ahead. A boolean ticket ID is refused explicitly,
+because `isinstance(True, int)` is true in Python and it would otherwise pass
+the numeric check.
+
+The accepted path is not exercised here. A `202` queues classification, a note,
+an alert and possibly a page against a real ticket, so proving it belongs with
+the end-to-end runs above, where all three returned `202` through the plugin's
+own signing.
+
+Reproduce with `./venv/bin/python verification/verify_webhook.py <ticket_id>`
+from `agent/`, naming a ticket the agent has already processed. That ID is used
+for the duplicate cases, and an unprocessed one would be claimed and queue real
+work. Set `TRIAGE_WEBHOOK_URL` if the agent is not on `127.0.0.1:8000`, and note
+that this is the address the agent bound to rather than the one osTicket uses.
+
 ## Not yet verified
 
-Four things this file does not cover, listed so the sections above are not read
+Three things this file does not cover, listed so the sections above are not read
 as a complete picture.
-
-The inbound webhook's own gates. `receive_ticket` rejects an invalid signature,
-a malformed body, a stale timestamp, a missing or non-scalar ticket ID, and a
-ticket ID already accepted. None of those paths has a test. The write-back
-endpoint has `verification/verify_writeback.py` covering the same shape, and the
-endpoint osTicket actually calls has nothing equivalent. Signature verification, replay
-protection and duplicate suppression are all asserted in the architecture and
-demonstrated only by a single unrecorded `401` from a manual request.
 
 The fallback page. `needs_fallback_page` is the most intricate condition in the
 agent and it has only ever run in the wiring verifier. No real Slack failure has
