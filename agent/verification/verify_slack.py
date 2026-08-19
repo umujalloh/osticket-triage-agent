@@ -87,11 +87,36 @@ print("review channel shows the reason, not the severity")
 unclear = classification("unclear", "high", "high_confidence")
 unclear_msg = slack.build_message(15, "465581", unclear, slack.REVIEW)
 check("  unclear names the category", "*unclear*" in unclear_msg, True)
-check("  unclear hides the severity guess", "high" in unclear_msg, False)
+# Severity is a guess on a ticket nobody could place. Matched as the bolded
+# severity-and-category pair the other channels use, since "high confidence"
+# legitimately contains the word on its own.
+check("  unclear hides the severity guess", "*high unclear*" in unclear_msg, False)
 
 low_conf = classification("it_support", "low", "low_confidence")
 low_msg = slack.build_message(15, "465581", low_conf, slack.REVIEW)
 check("  a low-confidence ticket says so", "low confidence" in low_msg, True)
+
+# Stating only the low case would leave a reader inferring the other from an
+# absence, which is the thing the urgent channel got wrong before.
+print("every alert states its confidence, and any page says where")
+for chan, conf, expected in [
+    (slack.URGENT, "high_confidence", "high confidence"),
+    (slack.URGENT, "low_confidence", "low confidence"),
+    (slack.INCIDENTS, "high_confidence", "high confidence"),
+    (slack.REVIEW, "high_confidence", "high confidence"),
+]:
+    text = slack.build_message(15, "465581",
+                               classification("security_incident", "critical", conf), chan)
+    check(f"  {chan} says {expected}", expected in text, True)
+
+paged = slack.build_message(15, "465581", critical, slack.URGENT, page="wake")
+check("  a paged alert names the destination", "paged WAKE" in paged, True)
+quiet = slack.build_message(15, "465581",
+                            classification("security_incident", "critical", "low_confidence"),
+                            slack.URGENT, page="notify")
+check("  and the quiet one names its own", "paged NOTIFY" in quiet, True)
+check("  an alert that did not page says nothing about paging",
+      "paged" in slack.build_message(15, "465581", high, slack.INCIDENTS), False)
 
 print("the four enrichment states")
 for outcome, count, expected in [

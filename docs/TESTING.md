@@ -323,13 +323,16 @@ is written and no network call is made.
 
 ## Alert delivery verification
 
-Measured 2026-08-19, thirty-three checks, all passing.
+Measured 2026-08-19, forty checks, all passing.
 
 | Property | How it was checked | Result |
 |---|---|---|
 | A mention renders for critical | `build_message` with `mention=True` | `<!here>` present |
 | Below critical does not mention | high severity to the incidents channel | absent |
 | The review channel shows the reason | an unclear ticket, then a low-confidence one | category, then "low confidence" |
+| Every alert states its confidence | all three channels, both confidences | stated, never inferred |
+| A paged alert names its destination | urgent, both rows | `paged WAKE`, `paged NOTIFY` |
+| An alert that did not page says nothing about paging | the incidents channel | no marker |
 | All four enrichment states read differently | each outcome built in turn | four distinct lines |
 | The failure notice names the failure | `build_failure_message` | "classification failed", the type |
 | It carries no severity icon | every icon except the review one | none present |

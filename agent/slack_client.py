@@ -6,7 +6,7 @@ import requests
 # The channel names come from the action table, which is what selects a channel
 # for a classification. This module posts to the channel it is handed.
 from action_table import INCIDENTS, REVIEW, URGENT
-from schemas import Category, EnrichmentOutcome, Severity, enrichment_line
+from schemas import EnrichmentOutcome, Severity, enrichment_line
 from writes import writes_enabled
 
 WEBHOOKS = {
@@ -52,7 +52,8 @@ class SlackError(Exception):
         super().__init__(message)
 
 def build_message(ticket_id, ticket_number, classification, channel, mention=False,
-                  outcome=EnrichmentOutcome.not_eligible, event_count=None) -> str:
+                  outcome=EnrichmentOutcome.not_eligible, event_count=None,
+                  page=None) -> str:
     """Assembles the alert from values the agent generated, and nothing a user
     typed.
 
@@ -63,6 +64,11 @@ def build_message(ticket_id, ticket_number, classification, channel, mention=Fal
     Slack renders bare URLs as links, so including it would let anyone who files
     a ticket put a clickable link into a trusted channel under the agent's name.
     What crosses to Slack is listed in architecture.md, Section 8.
+
+    Confidence is always stated, and any alert that paged says where. Marking
+    only the low-confidence case would leave a reader inferring the other from
+    an absence, and the urgent channel now carries two rows that read alike and
+    escalate differently.
     """
     category = classification.category.value
 
@@ -70,12 +76,17 @@ def build_message(ticket_id, ticket_number, classification, channel, mention=Fal
         # Severity is a guess on a ticket nobody could place, so the reason it
         # is here is shown instead.
         head = f"{REVIEW_ICON} *{category}*  ·  Ticket #{ticket_number or ticket_id}"
-        if classification.category != Category.unclear:
-            head += "  ·  low confidence"
     else:
         icon = SEVERITY_ICON.get(classification.severity, REVIEW_ICON)
         head = (f"{icon} *{classification.severity.value} {category}*"
                 f"  ·  Ticket #{ticket_number or ticket_id}")
+
+    head += f"  ·  {classification.confidence.value.replace('_', ' ')}"
+    if page:
+        # The destination rather than the fact of a page, because both rows in
+        # the urgent channel page and only the destination separates them. These
+        # are the names on the PagerDuty services a responder is paged from.
+        head += f"  ·  paged {page.upper()}"
 
     lines = ["<!here>", head] if mention else [head]
 

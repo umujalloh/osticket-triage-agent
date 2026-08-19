@@ -245,6 +245,7 @@ def _post_alert(ticket_id, classification, actions, payload, outcome, events):
         mention=actions.mention,
         outcome=outcome,
         event_count=len(events) if events else None,
+        page=actions.page,
     )
     if not _post(ticket_id, actions.channel, text, actions.mention):
         # A failed alert means nobody has been told, which is the one failure
