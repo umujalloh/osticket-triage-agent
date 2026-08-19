@@ -241,7 +241,7 @@ check("kill switch off skips the page", "page skipped (writes disabled)" in out)
 check("kill switch off records no page", "STORE_PAGED=False" in out)
 
 out = run_case("paging_on", "true", TRIAGE_STATE_DB=PAGE_STORE)
-check("kill switch on pages", "Ticket 18: paged" in out)
+check("kill switch on pages", f"Ticket {TICKET_ID}: paged" in out)
 check("the page is recorded", "STORE_PAGED=True" in out)
 
 out = run_case("paging_retry", "true", TRIAGE_STATE_DB=PAGE_STORE)
