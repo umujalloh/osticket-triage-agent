@@ -147,11 +147,14 @@ three source addresses and the account `bgist@froth.ly`. Ticket priority is
 Emergency. The idempotency store shows all four action columns set, which no
 earlier run had produced. A push notification arrived on the responder's phone.
 
-The page landing before the note is the design's ordering claim, and this is the
-first time it has been observed rather than asserted. What the run does not show
-is that the ordering helps. The gap is 28 milliseconds here, and the argument for
-paging first is about a note write that is slow or timing out, which this run
-does not produce.
+The ordering in this run has since been changed and no longer describes the
+agent. The page ran after enrichment here, which meant it also ran after two
+audit writes, so a Splunk outage would have held it for around two and a half
+minutes. The page now goes out before both. A fresh run is needed to record the
+new order, and until it exists this table is a record of the old one.
+
+What the run still shows is every action reaching its destination on a confident
+critical, and the enrichment content that lands on the ticket.
 
 ### Acting through a Splunk outage, 2026-08-18, ticket 18
 
@@ -351,7 +354,7 @@ Measured 2026-08-19, twenty-five checks, all passing.
 | Property | How it was checked | Result |
 |---|---|---|
 | The page leads with the classification | `build_page` on a confident critical | severity and category first |
-| It carries the enrichment result | the same page with 20 events | "20 related events" |
+| It claims nothing about enrichment | the built page | no events, enrichment or identifier wording |
 | Severity maps to PagerDuty's | every `Severity` member | all four mapped |
 | The dedup key is the ticket id | the built event | `"15"` |
 | The link text is the URL itself | the `links` entry | text equals href |
@@ -378,7 +381,7 @@ call, which is the plan rather than a fault in the agent.
 
 ## Action wiring verification
 
-Measured 2026-08-19, twenty-nine checks, all passing. Covers whether the actions
+Measured 2026-08-19, thirty-three checks, all passing. Covers whether the actions
 obey the kill switch and whether a retry can repeat one. Each case runs in its
 own process, because `ENABLE_WRITES` is read at import and patching it in place
 would not test what happens at boot.
@@ -394,11 +397,20 @@ would not test what happens at boot.
 | A failed classification reaches review | `classify_ticket` forced to raise | posted to review |
 | It writes no note and sets no priority | the same case | neither recorded |
 | A retried failure posts once | a second run against the same store | refused |
+| The page precedes the classification audit write | HEC pointed at a dead port | paged first |
+| The page precedes enrichment | the same case | paged first |
 
 The first two rows exist because of a bug this check found. The fallback page
 originally tested severity alone, so an `it_support` ticket the classifier rated
 critical would have paged the security on-call whenever its Slack post failed.
 Walking every combination surfaced it.
+
+The last two rows assert an order rather than a duration, because the retry
+constants are free to change and the ordering is not. The case points the HEC
+endpoint at a dead port so every audit write fails, then checks that the page
+went out ahead of the first of them. The page's own audit event is allowed to
+fail behind it, which is why the check names the classification write instead of
+matching the generic Splunk failure line.
 
 Reproduce with `./venv/bin/python verification/verify_wiring.py <ticket_id>` from `agent/`.
 Several cases write a real note, set a real priority and send real alerts, so
@@ -456,7 +468,7 @@ that this is the address the agent bound to rather than the one osTicket uses.
 
 ## Not yet verified
 
-Three things this file does not cover, listed so the sections above are not read
+Four things this file does not cover, listed so the sections above are not read
 as a complete picture.
 
 The fallback page. `needs_fallback_page` is the most intricate condition in the
@@ -467,9 +479,15 @@ A classification failure end to end. The wiring verifier forces
 `classify_ticket` to raise, which proves the path, but no run has been driven by
 a genuine Claude failure with the real failure-type mapping.
 
-A slow osTicket write. The page runs first so it does not wait on osTicket, and
-in the ticket 20 run the gap was 28 milliseconds. The case that justifies the
-ordering is a note write that times out, which has not been produced.
+A slow dependency in front of an action. The page now runs before enrichment and
+before the audit writes, and the wiring verifier proves that order against a
+dead audit endpoint. What no run has produced is the delay itself, an osTicket
+or Splunk call that hangs to its full timeout rather than refusing at once, so
+the numbers this ordering exists to avoid are arithmetic from the retry
+constants rather than measurements.
+
+An end-to-end run on the current ordering. The ticket 20 table above records the
+old one.
 
 ## Comparison against the previous rubric
 

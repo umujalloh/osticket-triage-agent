@@ -50,6 +50,23 @@ if os.environ.get("WIRING_CASE"):
         print(f"STORE_SLACK_POSTED={state['slack_posted']}")
         sys.exit(0)
 
+    # The page must not sit behind a Splunk call. The parent points HEC at a
+    # dead port, so every audit write fails, and the check is that the page went
+    # out before the first of those failures rather than after all of them. The
+    # search endpoint is left alone, since proving the page precedes the first
+    # audit write proves it precedes the enrichment that follows it.
+    if os.environ["WIRING_CASE"] == "page_before_audit":
+        critical = TicketClassification(
+            category="security_incident", severity="critical",
+            confidence="high_confidence"
+        )
+        main.classify_ticket = lambda subject, message: critical
+        main.process_ticket({
+            "ticket_id": TICKET_ID, "ticket_number": "VERIFY",
+            "subject": "verifier", "message": "verifier",
+        })
+        sys.exit(0)
+
     # The paging row, kept apart from the case below because the table pages on
     # critical alone and the row below is deliberately a high that does not.
     if os.environ["WIRING_CASE"].startswith("paging"):
@@ -221,6 +238,27 @@ check("the page is recorded", "STORE_PAGED=True" in out)
 out = run_case("paging_retry", "true", TRIAGE_STATE_DB=PAGE_STORE)
 check("a second page is refused", "already paged, skipping" in out)
 check("the refusal leaves the record intact", "STORE_PAGED=True" in out)
+
+# The finding this ordering exists for. Splunk holds the audit log and the
+# enrichment data, so a page sitting behind either is a page that waits out
+# Splunk's retries, and Splunk can be unwell for the same reason the ticket was
+# filed. Asserting the order rather than the elapsed time, since the retry
+# constants are free to change and the ordering is not.
+ORDER_STORE = os.path.join(tempfile.mkdtemp(prefix="triage-order-"), "state.db")
+out = run_case("page_before_audit", "true", TRIAGE_STATE_DB=ORDER_STORE,
+               SPLUNK_HEC_URL="https://127.0.0.1:1/services/collector/event")
+# Named events rather than the raw "Splunk logging failed" line, which appears
+# once per audit write and cannot be told apart. The page writes an audit event
+# of its own, and that one is allowed to fail behind the page.
+paged_at = out.find(f"Ticket {TICKET_ID}: paged")
+classification_audit_at = out.find("audit write failed (classification_complete)")
+check("a dead audit endpoint still fails the classification write",
+      classification_audit_at != -1)
+check("the page goes out anyway", paged_at != -1)
+check("and it goes out before the classification audit write",
+      paged_at != -1 and classification_audit_at > paged_at)
+check("the page does not wait for enrichment either",
+      paged_at < out.find("enrichment") if "enrichment" in out else True)
 
 print()
 if failed:

@@ -101,8 +101,9 @@ incidents are rare. If the urgent channel feels noisy, the fix is the
 severity rubric rather than the notification rule, because a system
 producing frequent criticals has a classification problem.
 
-**Order of actions** is not part of this table. A page runs before the
-ticket writes and the channel post runs after them, for reasons in
+**Order of actions** is not part of this table. A page runs before
+everything, including enrichment, and the channel post runs after the
+ticket writes, for reasons in
 [architecture.md, Section 7](architecture.md#7-action-layer-and-phasing).
 
 **Why `security_question` routes differently from `it_support`.**

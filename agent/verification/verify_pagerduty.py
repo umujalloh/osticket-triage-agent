@@ -51,7 +51,7 @@ if CASE == "live":
     sys.exit(0)
 
 import pagerduty_client as pd
-from schemas import EnrichmentOutcome, Severity, TicketClassification
+from schemas import Severity, TicketClassification
 
 failed = []
 ran = 0
@@ -76,13 +76,15 @@ def classification(category, severity, confidence):
 
 print("the page for a ticket the table said to page on")
 critical = classification("security_incident", "critical", "high_confidence")
-page = pd.build_page(15, "465581", critical,
-                     EnrichmentOutcome.completed, 20)
+page = pd.build_page(15, "465581", critical)
 check("  severity and category lead", "critical security_incident" in
       page["payload"]["summary"], True)
 check("  ticket number appears", "#465581" in page["payload"]["summary"], True)
-check("  enrichment count appears", "20 related events" in
-      page["payload"]["summary"], True)
+# The page is sent before enrichment runs, so there is no count to carry and
+# nothing here should imply one was searched for.
+check("  it claims nothing about enrichment",
+      any(w in page["payload"]["summary"]
+          for w in ("events", "enrichment", "identifier")), False)
 check("  severity maps to pagerduty's", page["payload"]["severity"], "critical")
 check("  dedup key is the ticket id", page["dedup_key"], "15")
 check("  event action is trigger", page["event_action"], "trigger")

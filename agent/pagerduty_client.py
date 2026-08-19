@@ -4,7 +4,7 @@ from urllib.parse import urlparse
 
 import requests
 
-from schemas import Severity, enrichment_line, EnrichmentOutcome
+from schemas import Severity
 from writes import writes_enabled
 
 # The Events API v2 endpoint is the same for every account in a region and holds
@@ -46,22 +46,20 @@ class PagerDutyError(Exception):
 def _ticket_url(ticket_id) -> str:
     return f"{OSTICKET_BASE_URL.rstrip('/')}/scp/tickets.php?id={ticket_id}"
 
-def build_page(ticket_id, ticket_number, classification,
-               outcome=EnrichmentOutcome.not_eligible, event_count=None) -> dict:
+def build_page(ticket_id, ticket_number, classification) -> dict:
     """The page for a ticket the table said to page on.
 
-    Carries the same fields as the Slack alert and nothing a user typed. The
-    ticket subject is absent for the reason in architecture.md, Section 8.
+    Carries nothing a user typed. The ticket subject is absent for the reason in
+    architecture.md, Section 8.
 
-    Severity and confidence are constant across every page the table produces,
-    so the enrichment result is the only field that varies and the only one that
-    separates one page from another at three in the morning.
+    No enrichment result, because the page is sent before enrichment runs. A
+    count would have been the only field that varies between one page and the
+    next, and waiting for it put the pager behind a Splunk call that can retry
+    for a minute and a half. The enrichment lands on the ticket a moment later,
+    which is where a woken responder is going anyway.
     """
     summary = (f"{classification.severity.value} {classification.category.value}"
                f"  ·  Ticket #{ticket_number or ticket_id}")
-    line = enrichment_line(outcome, event_count)
-    if line:
-        summary += f"  ·  {line}"
     return _event(ticket_id, summary, classification.severity)
 
 def build_fallback_page(ticket_id, ticket_number, classification) -> dict:

@@ -87,16 +87,34 @@ def process_ticket(payload: dict):
     # gate will act on, rather than the raw payload value.
     requester_verified = payload.get("requester_verified") is True
 
+    print(f"Ticket {ticket_id}: classified "
+          f"{classification.category.value}/{classification.severity.value}/"
+          f"{classification.confidence.value}, "
+          f"requester_verified={requester_verified}")
+
+    actions = actions_for(
+        classification.category, classification.severity, classification.confidence
+    )
+
+    # The page goes out before anything else, including the audit write, because
+    # everything between here and the actions talks to Splunk. Enrichment and
+    # audit are the same system, so leaving the page behind either of them means
+    # a Splunk outage delays the pager by as long as those retries take, and
+    # Splunk can be struggling for the same reason the ticket exists. PagerDuty
+    # is the page's only dependency now. The cost is that the page cannot carry
+    # an enrichment count, since nothing has searched yet. architecture.md,
+    # Section 7.
+    if actions.page:
+        _page(ticket_id,
+              build_page(ticket_id, payload.get("ticket_number"), classification),
+              fallback=False)
+
     audit_ok = log_classification(
         ticket_id=ticket_id,
         subject=payload.get("subject", ""),
         classification=classification,
         requester_verified=requester_verified
     )
-    print(f"Ticket {ticket_id}: classified "
-          f"{classification.category.value}/{classification.severity.value}/"
-          f"{classification.confidence.value}, "
-          f"requester_verified={requester_verified}")
     # The actions still run when this write fails: a note and a channel post are
     # themselves records, so acting leaves evidence in osTicket and Slack even
     # when Splunk has none, where returning here would leave a critical incident
@@ -104,10 +122,6 @@ def process_ticket(payload: dict):
     # the ticket would otherwise explain how it was classified.
     if not audit_ok:
         _audit_failed(ticket_id, "classification_complete")
-
-    actions = actions_for(
-        classification.category, classification.severity, classification.confidence
-    )
 
     # Enrichment adds context; alerting is the point. Every path below records
     # what happened and carries on, so neither a Splunk outage nor a ticket with
@@ -194,17 +208,9 @@ def _take_actions(ticket_id, classification, actions, payload, outcome, events,
 
     Ordered so the ticket is ready before anyone is told. The note and priority
     land first, and only then does the channel post invite someone to open it.
-    The page leads, because it must not wait on osTicket being healthy. A slow
-    note write would otherwise delay the most urgent thing the system does.
+    The page is not here. It runs in process_ticket ahead of enrichment, so it
+    cannot be delayed by a dependency that only reads.
     """
-    if actions.page:
-        _page(
-            ticket_id,
-            build_page(ticket_id, payload.get("ticket_number"), classification,
-                       outcome, len(events) if events else None),
-            fallback=False,
-        )
-
     if actions.human_review:
         _flag_human_review(ticket_id, "unclear_category"
                            if classification.category == Category.unclear
