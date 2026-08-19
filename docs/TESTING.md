@@ -1,7 +1,8 @@
 # Testing
 
 How the agent is tested and what has been measured, both the classifier on its
-own and the full path from osTicket through to Splunk. Figures here state
+own and the full path from a submitted ticket through to the note, the alert and
+the page. Figures here state
 the date, the number of runs, and the files they were measured against. A
 figure without that method cannot be reproduced and should not be trusted.
 
@@ -121,6 +122,86 @@ guest submission, which the authenticated-session gate now excludes from the
 email clause, and it stored whole raw events, which the named field list now
 replaces. Reproducing it takes a confirmed account and returns the named fields.
 
+It is kept because it is the only run that shows the extracted entity being
+recorded and not used. A high-severity ticket does not enrich, and the runs below
+are the ones that exercise Phase 3.
+
+### The full path, 2026-08-19, ticket 20
+
+A confident critical, the only row that reaches every action the agent has.
+Submitted through the osTicket form as a confirmed user, with text describing an
+account the submitter could not lock an intruder out of.
+
+| Time | Event | Value |
+|---|---|---|
+| 03:49:06.604 | classification_complete | security_incident / critical / high_confidence |
+| 03:49:07.494 | enrichment_complete | 20 events |
+| 03:49:08.037 | paged | fallback false |
+| 03:49:08.065 | note_written | |
+| 03:49:08.096 | priority_set | normal to emergency |
+| 03:49:08.365 | slack_posted | urgent, mentioned true |
+
+Confirmed outside Splunk as well. The osTicket note is `format: text` and holds
+20 events spanning 2018-08-20 13:10 to 15:07, grouped into sign-in outcomes,
+three source addresses and the account `bgist@froth.ly`. Ticket priority is
+Emergency. The idempotency store shows all four action columns set, which no
+earlier run had produced. A push notification arrived on the responder's phone.
+
+The page landing before the note is the design's ordering claim, and this is the
+first time it has been observed rather than asserted. What the run does not show
+is that the ordering helps. The gap is 28 milliseconds here, and the argument for
+paging first is about a note write that is slow or timing out, which this run
+does not produce.
+
+### Acting through a Splunk outage, 2026-08-18, ticket 18
+
+The audit pipeline stopped while the agent kept working. Splunk was stopped with
+`docker stop`, then a ticket was submitted normally.
+
+Every audit write failed after three attempts. The note was still written, the
+priority was still set, and the alert still reached the incidents channel,
+confirmed in the osTicket database rather than from console output.
+
+The delay is measurable without Splunk, because the idempotency store records
+when the webhook was accepted and osTicket records when the note was written.
+Ticket 17 was submitted with identical text 38 minutes earlier and produced an
+identical classification, so the two runs differ only in whether Splunk was up.
+
+| | Webhook accepted | Note written | Elapsed |
+|---|---|---|---|
+| Ticket 17, Splunk up | 23:31:38.365 | 23:31:39 | about 0.6s |
+| Ticket 18, Splunk down | 00:09:12.341 | 00:09:22 | about 9.7s |
+
+osTicket stores thread entries to the second, so each figure carries up to a
+second of error. Two audit writes fail before the note is reached, the
+classification and the human-review record, and each burns three attempts with
+one and three second backoffs. That accounts for eight of the nine seconds, with
+the Claude call making up the rest. Three more failed writes follow the note, so
+the full sequence runs longer still.
+
+An earlier build returned as soon as the classification audit write failed, so a
+Splunk outage produced a console line and nothing else.
+
+### What the live runs found that the verifiers did not
+
+Three faults that 146 passing checks would not have caught, because none of them
+is in the code those checks call.
+
+The agent was bound to `127.0.0.1`, so the osTicket container could not reach it
+at all. A verifier calls functions directly and never crosses the container
+boundary. The plugin logged the refused connection to `ost_syslog`, nothing else
+noticed, and the ticket was never triaged.
+
+Console output was block-buffered when stdout was redirected to a file, so every
+diagnostic the agent prints sat in a buffer. A verifier reads subprocess output,
+which flushes on exit, so it never sees this. In a deployment it means a log tail
+shows nothing.
+
+The first attempt at the ticket 20 run was processed by an agent started seven
+hours earlier, before the paging code existed. It classified, enriched, wrote and
+alerted correctly and never paged, because `uvicorn` does not reload on file
+change. The run measured a build that no longer matched the repository.
+
 ## Authentication gate verification
 
 **Method.** Measured 2026-08-11. Two tickets filed through the real osTicket
@@ -209,8 +290,145 @@ this one.
 Reproduce with `./venv/bin/python verify_idempotency.py` from `agent/`.
 
 Whether a retried webhook actually avoids writing a second note is not verified
-here, because nothing calls the store's action tracking yet. That belongs with
-the end-to-end run once the write path is wired.
+here, because this file only exercises the store. It is covered under action
+wiring below, where the note write is driven through the store three times.
+
+## Action table verification
+
+Measured 2026-08-19, thirty checks, all passing. The table is the contract
+between classification and action, so every row is compared as a whole `Actions`
+object rather than field by field. A row that gets one field wrong fails on that
+row instead of hiding behind the fields it gets right.
+
+| Property | How it was checked | Result |
+|---|---|---|
+| Every documented row matches the code | 30 rows from `docs/action-table.md` | all match |
+| Every category has a row | each `schemas.Category` member looked up | no gaps |
+| An unknown category is refused | a category with no row | raises |
+
+An earlier version returned `human_review` for an unknown category at low
+confidence, which reads as safe and is not. It would have let a category the
+table has never seen produce a plausible-looking action instead of failing
+loudly.
+
+Reproduce with `./venv/bin/python verify_action_table.py` from `agent/`. Nothing
+is written and no network call is made.
+
+## Alert delivery verification
+
+Measured 2026-08-19, thirty-three checks, all passing.
+
+| Property | How it was checked | Result |
+|---|---|---|
+| A mention renders for critical | `build_message` with `mention=True` | `<!here>` present |
+| Below critical does not mention | high severity to the incidents channel | absent |
+| The review channel shows the reason | an unclear ticket, then a low-confidence one | category, then "low confidence" |
+| All four enrichment states read differently | each outcome built in turn | four distinct lines |
+| The failure notice names the failure | `build_failure_message` | "classification failed", the type |
+| It carries no severity icon | every icon except the review one | none present |
+| The kill switch stops delivery | writes off | returns skipped |
+| A missing webhook refuses to boot | writes on, one webhook blank | refuses, names it |
+| A missing base URL refuses to boot | writes off, base URL blank | refuses |
+| A failure never leaks the webhook | canary planted in the URL | canary absent from output |
+| A real post is delivered | one message to the test channel | accepted |
+
+A webhook URL is a bearer credential, and HTTP client errors routinely embed the
+request URL in their message text, which then reaches the console and the audit
+index. The canary test plants a known string inside the URL, forces two
+different failures, and fails if that string appears anywhere in the child
+process output.
+
+Reproduce with `./venv/bin/python verify_slack.py` from `agent/`. One case takes
+about 17 seconds because it exhausts three retries against an unreachable host.
+The delivery case needs `SLACK_WEBHOOK_TEST` set and skips without it, so a run
+reporting fewer than thirty-three checks skipped delivery rather than proving
+it.
+
+## Paging verification
+
+Measured 2026-08-19, twenty-five checks, all passing.
+
+| Property | How it was checked | Result |
+|---|---|---|
+| The page leads with the classification | `build_page` on a confident critical | severity and category first |
+| It carries the enrichment result | the same page with 20 events | "20 related events" |
+| Severity maps to PagerDuty's | every `Severity` member | all four mapped |
+| The dedup key is the ticket id | the built event | `"15"` |
+| The link text is the URL itself | the `links` entry | text equals href |
+| No enrichment output crosses | the payload | no `custom_details` |
+| The fallback leads with the failure | `build_fallback_page` | "alert delivery failed" first |
+| It does not read as a confident critical | the same summary | does not start with the severity |
+| The kill switch stops delivery | writes off | returns skipped |
+| A missing routing key refuses to boot | writes on, key blank | refuses |
+| A failure never leaks the routing key | canary as the key | canary absent from output |
+| A real page is delivered | one event to the test service | accepted |
+
+The routing key sits in the request body rather than the URL, so the usual
+danger of a client library echoing the URL does not apply here. What can still
+expose it is a rejection quoting the field it refused, which is why the canary
+is the key itself and why the response body is truncated before it is logged.
+
+Reproduce with `./venv/bin/python verify_pagerduty.py` from `agent/`. The
+delivery case needs `PAGERDUTY_ROUTING_KEY_TEST` and skips without it.
+
+A PagerDuty developer account cannot deliver SMS or voice notifications, and
+this cannot be enabled for any reason. Push and email work. Anyone reproducing
+the delivery case on a developer account will see the incident created and no
+call, which is the plan rather than a fault in the agent.
+
+## Action wiring verification
+
+Measured 2026-08-19, twenty-nine checks, all passing. Covers whether the actions
+obey the kill switch and whether a retry can repeat one. Each case runs in its
+own process, because `ENABLE_WRITES` is read at import and patching it in place
+would not test what happens at boot.
+
+| Property | How it was checked | Result |
+|---|---|---|
+| Only a confident critical pages | every combination in the table | one row |
+| Only an unconfident one falls back | the same walk | one row |
+| Writes off skips all four actions | kill switch off | four skips, nothing recorded |
+| Writes on performs all four | kill switch on | four done, all recorded |
+| A retry repeats nothing | a third run against the same store | four refusals |
+| An unaudited note records the gap | note built with the audit failed | "No audit record." last |
+| A failed classification reaches review | `classify_ticket` forced to raise | posted to review |
+| It writes no note and sets no priority | the same case | neither recorded |
+| A retried failure posts once | a second run against the same store | refused |
+
+The first two rows exist because of a bug this check found. The fallback page
+originally tested severity alone, so an `it_support` ticket the classifier rated
+critical would have paged the security on-call whenever its Slack post failed.
+Walking every combination surfaced it.
+
+Reproduce with `./venv/bin/python verify_wiring.py <ticket_id>` from `agent/`.
+Several cases write a real note, set a real priority and send real alerts, so
+name a ticket you don't mind marking. Alerts and pages go to the test
+destinations when those are configured.
+
+## Not yet verified
+
+Four things this file does not cover, listed so the sections above are not read
+as a complete picture.
+
+The inbound webhook's own gates. `receive_ticket` rejects an invalid signature,
+a malformed body, a stale timestamp, a missing or non-scalar ticket ID, and a
+ticket ID already accepted. None of those paths has a test. The write-back
+endpoint has `verify_writeback.py` covering the same shape, and the endpoint
+osTicket actually calls has nothing equivalent. Signature verification, replay
+protection and duplicate suppression are all asserted in the architecture and
+demonstrated only by a single unrecorded `401` from a manual request.
+
+The fallback page. `needs_fallback_page` is the most intricate condition in the
+agent and it has only ever run in the wiring verifier. No real Slack failure has
+produced one.
+
+A classification failure end to end. The wiring verifier forces
+`classify_ticket` to raise, which proves the path, but no run has been driven by
+a genuine Claude failure with the real failure-type mapping.
+
+A slow osTicket write. The page runs first so it does not wait on osTicket, and
+in the ticket 20 run the gap was 28 milliseconds. The case that justifies the
+ordering is a note write that times out, which has not been produced.
 
 ## Comparison against the previous rubric
 
