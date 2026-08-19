@@ -32,9 +32,13 @@ This document covers the design across all three phases.
  
 ## 2. System Components
  
-osTicket. An open-source helpdesk system, the place where tickets live. Users submit a ticket here when they have an issue. When a ticket is created, osTicket sends a POST request to the agent through a webhook. It is also where the agent writes its internal notes back.
+osTicket. An open-source helpdesk system, the place where tickets live. Users submit a ticket here when they have an issue. It is also where the agent writes its internal notes back, and where the ticket priority it sets decides how the queue sorts. It does not call the agent itself; the plugin below does.
  
-The triage agent. The FastAPI service I am building. It is the orchestrator: the code that ties everything together. It receives the webhook from osTicket, sends the ticket to Claude for classification, queries Splunk for enrichment, decides what to do from a pre-defined action table, and writes back to osTicket.
+The triage plugin. PHP that runs inside osTicket, in `osticket-plugin/`. It listens for the ticket-created signal, signs the payload, and posts it to the agent. It also registers the endpoints the agent writes back through, because osTicket's stock API can create a ticket and trigger cron and nothing else, so there is no supported way to add a note to an existing ticket without it. Both directions are signed, on separate secrets.
+
+The triage agent. The FastAPI service I am building. It is the orchestrator: the code that ties everything together. It receives the webhook from the plugin, sends the ticket to Claude for classification, queries Splunk for enrichment, decides what to do from a pre-defined action table, then writes the note and priority back to osTicket, posts to Slack, and pages PagerDuty when the row calls for it.
+
+The idempotency store. A SQLite file beside the agent, holding one row per ticket the agent has accepted and a column per action it has taken. It is what makes a retried webhook safe, since a ticket already claimed is refused before any work starts and an action already recorded is skipped rather than repeated. It survives a restart, which is the point, and losing it is the case the PagerDuty deduplication key exists to cover.
  
 Claude API. An external LLM used for classification only. It receives the ticket text from the agent and returns a classification: category, severity, confidence. It does not run queries and does not write anything. Its only job is to classify.
  
@@ -50,9 +54,11 @@ Deployment. During development everything runs on one machine: osTicket, its MyS
  
 ## 3. Ticket Lifecycle and Data Flow
  
-When a user submits a ticket in osTicket, osTicket fires an authenticated webhook POST to the agent.
- 
-When the agent receives the ticket, it does two things first. It authenticates the webhook to verify the request really came from osTicket, using an HMAC shared-secret signature, and rejects anything that fails. Once the request is verified, the agent sanitizes and isolates the ticket body. It treats the body as untrusted data, wraps it in delimiters, and sends it to Claude as user-role content.
+When a user submits a ticket in osTicket, the triage plugin fires an authenticated webhook POST to the agent.
+
+The agent answers before it classifies. It verifies the HMAC signature, checks that the request is recent, and checks that the ticket is not one it has already accepted, then returns 202. Everything after that runs in a background task, so a slow or rate-limited Claude call cannot hold open the request osTicket is waiting on. A request that fails any of those checks is refused and no work is queued for it.
+
+The agent then sanitizes and isolates the ticket body. It treats the body as untrusted data, wraps it in delimiters, and sends it to Claude as user-role content.
  
 Claude reads the ticket text and returns a classification: category, severity, and confidence. How that classification works is covered in Section 5.
  
@@ -386,8 +392,6 @@ Phase 2: add Splunk enrichment. Still no writes.
  
 Phase 3: internal note writes and alerting (Slack posts, and PagerDuty pages for critical high-confidence incidents).
  
- Until write-back lands in Phase 3, failure routing (Section 6) is console-only: the agent prints a needs-human line and logs to Splunk, and the ticket stays in osTicket's normal queue.
- 
 Writes are the risky capability, so they come last, after classification and enrichment are working. Within Phase 3, alerts are kill-switched effectful writes in the same risk class as note writes, which is why they land together.
  
 Idempotency. Accepted ticket IDs are recorded in a SQLite store beside the agent, so a retried webhook doesn't double-page or double-note and a restart doesn't forget what was handled. The store also records which of the four effectful actions completed for each ticket, so a ticket interrupted partway through can be finished later without repeating what already succeeded.
@@ -406,7 +410,7 @@ Trust boundary. The trust zone is the part of the system that runs in my own inf
  
 The important crossing is at the webhook. The network path from osTicket to the agent is trusted, since both run in my infrastructure, but the data crossing it is not. The ticket body was written by an unknown user, so it enters as untrusted input even though it arrives over a trusted channel. This is why the agent treats every ticket body as data to be validated, never as instructions.
  
-Exposure. The osTicket and Splunk containers publish their ports on 127.0.0.1, so the web UIs, the HEC endpoint, and the management port are reachable only from the machine running them. The agent is the exception: it listens on all interfaces, because the osTicket container reaches it through the host gateway rather than over loopback, so binding it to 127.0.0.1 would break the webhook. That leaves the webhook as the one port on this stack exposed beyond the host, which is why it is also the one port with signature verification in front of it.
+Exposure. The osTicket and Splunk containers publish their ports on 127.0.0.1, so the web UIs, the HEC endpoint, and the management port are reachable only from the machine running them. The agent cannot use loopback, because the osTicket container reaches it through the host gateway, so 127.0.0.1 would break the webhook. It binds to the Docker bridge instead of to all interfaces, which is the one address the container actually calls and leaves the agent unreachable from every other interface the machine has. The webhook is still the one port on this stack a container can reach, which is why it is also the one port with signature verification in front of it.
  
 Outbound, only the ticket body and the classification request go to Claude. Credentials and raw Splunk data never leave the trust zone. I limit what crosses to an external service to the minimum that service needs to do its job.
 

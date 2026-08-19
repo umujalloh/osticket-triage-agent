@@ -6,12 +6,11 @@ right place. Real security incidents stop getting buried in helpdesk noise.
 
 ## Status
 
-Phases 1 and 2 complete, Phase 3 in progress. Tickets are received over an
-authenticated webhook, classified, enriched with Splunk context when the gate
-matches, and written to a Splunk audit log. The agent writes an internal note
-back to osTicket, sets the ticket priority, posts to one of three Slack
-channels, and pages PagerDuty on a confident critical. What remains in Phase 3
-is the testing write-up and a documentation pass.
+All three phases built. Tickets are received over an authenticated webhook,
+classified, enriched with Splunk context when the gate matches, and written to a
+Splunk audit log. The agent writes an internal note back to osTicket, sets the
+ticket priority, posts to one of three Slack channels, and pages PagerDuty on a
+confident critical.
 
 See [docs/architecture.md](docs/architecture.md) for the design and threat
 model, [docs/TESTING.md](docs/TESTING.md) for how the agent is tested and what
@@ -288,15 +287,26 @@ against the demo dataset.
 ```bash
 cd agent
 source venv/bin/activate
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+uvicorn main:app --reload --host "$(ip -4 addr show docker0 | awk '/inet /{print $2}' | cut -d/ -f1)" --port 8000
 ```
+
+Bind to the Docker bridge rather than `0.0.0.0` or `127.0.0.1`. Loopback is
+unreachable from the osTicket container, which comes in through the host
+gateway, and `0.0.0.0` would also expose the agent on every other interface the
+machine has. The bridge is the one address the caller actually uses. On this
+setup that is `172.17.0.1`, and the command above reads it rather than assuming
+it, since another Docker installation may differ.
+
+Keep `--reload`. Without it uvicorn holds whatever code it started with, and a
+stale process produces results that look correct while testing a build that no
+longer exists.
 
 Submit a ticket at `http://localhost:8080`. The classification appears in the
 agent's output and in Splunk under `index=osticket_triage`.
 
 ### 6. Deployment preconditions
 
-Three things the agent cannot enforce and the design depends on. Reasoning in
+Four things the agent cannot enforce and the design depends on. Reasoning in
 [docs/architecture.md, Section 10](docs/architecture.md#10-deployment-preconditions).
 
 - **A security-tagged queue in osTicket.** Without it, `security_question`
@@ -304,7 +314,13 @@ Three things the agent cannot enforce and the design depends on. Reasoning in
 - **Notifications enabled on the urgent Slack channel**, by whatever mechanism
   your workspace provides. The agent cannot set them and cannot detect that
   they are unset, so a critical alert can arrive in a channel nobody is
-  notified about.
+  notified about. The same holds for PagerDuty, where whether a page interrupts
+  anyone depends on the responder's notification rules and on what their plan
+  delivers.
+- **Something outside the agent watching the audit index.** When Splunk is
+  unreachable the agent keeps working and records the gap on the ticket, but it
+  cannot raise an alarm that its own audit trail has stopped, since that would
+  mean alerting on the absence of data using the system that is absent.
 - **CAPTCHA enabled and client registration set deliberately** on the ticket
   form. An open form with neither lets anyone on the internet submit unlimited
   tickets, which is how a real incident gets buried under noise.
