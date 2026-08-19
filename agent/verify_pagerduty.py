@@ -1,0 +1,157 @@
+import os
+import subprocess
+import sys
+from urllib.parse import urlparse
+
+from dotenv import load_dotenv
+load_dotenv()
+
+# The child half. Each case runs in its own process because ENABLE_WRITES and
+# the routing key are read at import, so patching them in place would not test
+# what happens at boot.
+CASE = os.environ.get("PAGERDUTY_CASE")
+
+if CASE == "kill_switch_off":
+    import pagerduty_client as pd
+    print(f"OUTCOME={pd.send_page({'payload': {}})}")
+    sys.exit(0)
+
+if CASE == "missing_routing_key":
+    try:
+        import pagerduty_client  # noqa: F401
+        print("OUTCOME=imported")
+    except RuntimeError as e:
+        print(f"OUTCOME=refused: {e}")
+    sys.exit(0)
+
+if CASE == "key_leak":
+    import pagerduty_client as pd
+    from schemas import TicketClassification
+    c = TicketClassification(category="security_incident", severity="critical",
+                             confidence="high_confidence")
+    try:
+        pd.send_page(pd.build_page(15, "465581", c))
+        print("OUTCOME=no error raised")
+    except pd.PagerDutyError as e:
+        print(f"OUTCOME=raised {e}")
+    except Exception as e:
+        print(f"OUTCOME=raised {type(e).__name__} {e}")
+    sys.exit(0)
+
+if CASE == "live":
+    import pagerduty_client as pd
+    from schemas import TicketClassification
+    c = TicketClassification(category="security_incident", severity="critical",
+                             confidence="high_confidence")
+    print(f"OUTCOME={pd.send_page(pd.build_page(15, 'VERIFY', c))}")
+    sys.exit(0)
+
+import pagerduty_client as pd
+from schemas import EnrichmentOutcome, Severity, TicketClassification
+
+failed = []
+ran = 0
+
+def check(name, got, expected):
+    global ran
+    ran += 1
+    ok = got == expected
+    if not ok:
+        failed.append(name)
+    print(f"{'PASS' if ok else 'FAIL'}  {name}")
+    if not ok:
+        print(f"        got {got!r}, expected {expected!r}")
+
+def classification(category, severity, confidence):
+    return TicketClassification(category=category, severity=severity,
+                                confidence=confidence)
+
+# Whether a classification pages at all is the action table's decision and is
+# checked by verify_action_table.py. This verifier covers what the client builds
+# and sends once that decision is made.
+
+print("the page for a ticket the table said to page on")
+critical = classification("security_incident", "critical", "high_confidence")
+page = pd.build_page(15, "465581", critical,
+                     EnrichmentOutcome.completed, 20)
+check("  severity and category lead", "critical security_incident" in
+      page["payload"]["summary"], True)
+check("  ticket number appears", "#465581" in page["payload"]["summary"], True)
+check("  enrichment count appears", "20 related events" in
+      page["payload"]["summary"], True)
+check("  severity maps to pagerduty's", page["payload"]["severity"], "critical")
+check("  dedup key is the ticket id", page["dedup_key"], "15")
+check("  event action is trigger", page["event_action"], "trigger")
+check("  source names the osticket host", page["payload"]["source"],
+      urlparse(os.getenv("OSTICKET_BASE_URL")).netloc)
+
+# Anyone holding the routing key can create a convincing incident, so a
+# responder has to be able to see where a link points before tapping it.
+link = page["links"][0]
+check("  link text is the url itself", link["text"], link["href"])
+check("  link points at the ticket", "/scp/tickets.php?id=15" in link["href"], True)
+
+# Enrichment output stays inside the trust zone. Section 8 refuses it for Slack
+# and PagerDuty is outside for the same reason, so there is nowhere to put it.
+check("  no custom details are attached", "custom_details" in page["payload"], False)
+
+print("the page sent when a critical could not be delivered")
+low_conf = classification("security_incident", "critical", "low_confidence")
+fb = pd.build_fallback_page(15, "465581", low_conf)
+summary = fb["payload"]["summary"]
+check("  it leads with the delivery failure",
+      summary.startswith("alert delivery failed"), True)
+check("  it says the confidence was low", "low confidence" in summary, True)
+check("  it still names the classification",
+      "critical security_incident" in summary, True)
+check("  it does not read as a confident critical",
+      summary.startswith("critical"), False)
+check("  it dedups on the same ticket", fb["dedup_key"], "15")
+
+check("  the ticket id stands in for a missing number",
+      "#15" in pd.build_fallback_page(15, None, low_conf)["payload"]["summary"], True)
+
+# A table change that paged on another severity would otherwise send a value
+# PagerDuty rejects, and the page would fail at the moment it mattered.
+print("every severity maps to a pagerduty severity")
+for sev in Severity:
+    check(f"  {sev.value}", sev in pd.PAGERDUTY_SEVERITY, True)
+
+def run_case(name, **env_overrides):
+    env = dict(os.environ)
+    env["PAGERDUTY_CASE"] = name
+    env.update(env_overrides)
+    result = subprocess.run([sys.executable, __file__], env=env,
+                            capture_output=True, text=True)
+    return result.stdout + result.stderr
+
+print("boot and kill switch, each in its own process")
+out = run_case("kill_switch_off", ENABLE_WRITES="false")
+check("  writes off returns skipped", f"OUTCOME={pd.SKIPPED}" in out, True)
+
+out = run_case("missing_routing_key", ENABLE_WRITES="true",
+               PAGERDUTY_ROUTING_KEY="")
+check("  a missing routing key refuses to boot", "OUTCOME=refused" in out, True)
+
+# The key travels in the request body rather than the URL, so the usual danger
+# of a client library echoing the URL does not apply. What can still leak it is
+# a rejection quoting the field it rejected, so the canary is the key itself.
+print("a failure never leaks the routing key")
+CANARY = "canary0000000000000000000000000d"
+out = run_case("key_leak", ENABLE_WRITES="true", PAGERDUTY_ROUTING_KEY=CANARY)
+check("  a rejected key is not echoed", CANARY in out, False)
+check("  and it still raises", "OUTCOME=raised" in out, True)
+
+print("live delivery, to the test service only")
+test_key = os.getenv("PAGERDUTY_ROUTING_KEY_TEST")
+if not test_key:
+    print("SKIP  PAGERDUTY_ROUTING_KEY_TEST is not set, delivery not checked")
+else:
+    out = run_case("live", ENABLE_WRITES="true", PAGERDUTY_ROUTING_KEY=test_key)
+    check("  a real page is queued", f"OUTCOME={pd.DONE}" in out, True)
+
+print()
+if failed:
+    print(f"FAILED: {', '.join(failed)}")
+    sys.exit(1)
+print(f"All {ran} checks passed. One page was sent to the test service.")
