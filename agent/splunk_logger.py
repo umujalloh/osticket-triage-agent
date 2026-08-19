@@ -182,6 +182,33 @@ def log_slack_failure(ticket_id, channel, failure_type, error):
         "error": error,
     })
 
+# The summary is not recorded, for the same reason the Slack message text is
+# not. It is assembled from the classification and the enrichment count already
+# in the events above. Whether the page was a fallback is recorded, because that
+# is the difference between waking someone for a confident critical and waking
+# them because nothing else could reach them.
+def log_paged(ticket_id, fallback):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "paged",
+        "fallback": fallback,
+    })
+
+def log_page_skipped(ticket_id, reason):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "page_skipped",
+        "reason": reason,
+    })
+
+def log_page_failure(ticket_id, failure_type, error):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "page_failed",
+        "failure_type": failure_type,
+        "error": error,
+    })
+
 def log_human_review(ticket_id, reason):
     return _send_audit_event({
         "ticket_id": ticket_id,

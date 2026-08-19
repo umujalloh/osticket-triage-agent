@@ -46,6 +46,21 @@ if os.environ.get("WIRING_CASE"):
         print(f"STORE_SLACK_POSTED={state['slack_posted']}")
         sys.exit(0)
 
+    # The paging row, kept apart from the case below because the table pages on
+    # critical alone and the row below is deliberately a high that does not.
+    if os.environ["WIRING_CASE"].startswith("paging"):
+        from pagerduty_client import build_page
+
+        critical = TicketClassification(
+            category="security_incident", severity="critical",
+            confidence="high_confidence"
+        )
+        main._page(TICKET_ID,
+                   build_page(TICKET_ID, "VERIFY", critical),
+                   fallback=False)
+        print(f"STORE_PAGED={completed_actions(TICKET_ID)['paged']}")
+        sys.exit(0)
+
     # A real table row that writes a note, sets priority, and posts to a
     # channel, without enriching or paging. One classification exercises every
     # write the agent currently makes.
@@ -84,6 +99,10 @@ def run_case(name, enable_writes, **overrides):
     if test_hook:
         env["SLACK_WEBHOOK_INCIDENTS"] = test_hook
         env["SLACK_WEBHOOK_REVIEW"] = test_hook
+    # Same for pages, so the real service holds nothing but real pages.
+    test_key = os.getenv("PAGERDUTY_ROUTING_KEY_TEST")
+    if test_key:
+        env["PAGERDUTY_ROUTING_KEY"] = test_key
     env.update(overrides)
     result = subprocess.run([sys.executable, __file__, str(TICKET_ID)],
                             env=env, capture_output=True, text=True)
@@ -102,6 +121,34 @@ def check(name, condition):
     if not condition:
         failed.append(name)
     print(f"{'PASS' if condition else 'FAIL'}  {name}")
+
+# Which rows reach PagerDuty at all, checked here rather than left to the
+# reading. Severity alone would page for an it_support ticket the classifier
+# rated critical, and the security on-call is not who a major outage wants.
+from itertools import product
+
+from action_table import actions_for
+from main import needs_fallback_page
+from schemas import Category, Confidence, Severity, TicketClassification
+
+pages, fallbacks = [], []
+for cat, sev, conf in product(Category, Severity, Confidence):
+    try:
+        acts = actions_for(cat, sev, conf)
+    except Exception:
+        continue
+    row = f"{cat.value}/{sev.value}/{conf.value}"
+    classification = TicketClassification(category=cat.value, severity=sev.value,
+                                          confidence=conf.value)
+    if acts.page:
+        pages.append(row)
+    if needs_fallback_page(classification, acts):
+        fallbacks.append(row)
+
+check("only a confident critical incident pages",
+      pages == ["security_incident/critical/high_confidence"])
+check("only an unconfident one falls back",
+      fallbacks == ["security_incident/critical/low_confidence"])
 
 RECORDED = ("STORE_NOTE_WRITTEN=True", "STORE_PRIORITY_SET=True",
             "STORE_SLACK_POSTED=True")
@@ -155,10 +202,27 @@ out = run_case("claude_failed_retry", "true", TRIAGE_STATE_DB=FAILURE_STORE)
 check("a retried failure does not post the notice twice",
       "slack already posted, skipping" in out)
 
+# Its own store again, so the paging checks start from a ticket that has not
+# been paged rather than one the cases above already claimed.
+PAGE_STORE = os.path.join(tempfile.mkdtemp(prefix="triage-paging-"), "state.db")
+
+out = run_case("paging_off", "false", TRIAGE_STATE_DB=PAGE_STORE)
+check("kill switch off skips the page", "page skipped (writes disabled)" in out)
+check("kill switch off records no page", "STORE_PAGED=False" in out)
+
+out = run_case("paging_on", "true", TRIAGE_STATE_DB=PAGE_STORE)
+check("kill switch on pages", "Ticket 18: paged" in out)
+check("the page is recorded", "STORE_PAGED=True" in out)
+
+out = run_case("paging_retry", "true", TRIAGE_STATE_DB=PAGE_STORE)
+check("a second page is refused", "already paged, skipping" in out)
+check("the refusal leaves the record intact", "STORE_PAGED=True" in out)
+
 print()
 if failed:
     print(f"FAILED: {', '.join(failed)}")
     sys.exit(1)
 print(f"All {ran} checks passed.")
-print(f"Ticket {TICKET_ID} gained exactly one note, one priority change, and "
-      f"one alert, plus one notice from the classification-failure cases.")
+print(f"Ticket {TICKET_ID} gained exactly one note, one priority change and one "
+      f"alert, plus one notice and one page from the cases that use their own "
+      f"stores.")

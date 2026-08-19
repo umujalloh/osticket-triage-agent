@@ -13,7 +13,11 @@ from classifier import classify_ticket, ClassificationError
 from idempotency import claim_ticket, completed_actions, mark_done
 from note_builder import build_note
 from osticket_client import write_note, set_priority, OsTicketWriteError, SKIPPED
-from schemas import Category, EnrichmentOutcome
+from pagerduty_client import (
+    build_page, build_fallback_page, send_page, PagerDutyError,
+    SKIPPED as PD_SKIPPED,
+)
+from schemas import Category, EnrichmentOutcome, Severity
 from slack_client import (
     build_message, build_failure_message, post_alert, SlackError,
     SKIPPED as SLACK_SKIPPED,
@@ -27,6 +31,7 @@ from splunk_logger import (
     log_note_written, log_note_skipped, log_note_failure,
     log_priority_set, log_priority_skipped, log_priority_failure,
     log_slack_posted, log_slack_skipped, log_slack_failure,
+    log_paged, log_page_skipped, log_page_failure,
     log_human_review,
 )
 
@@ -187,10 +192,19 @@ def _take_actions(ticket_id, classification, actions, payload, outcome, events,
                   query, audited):
     """Runs the actions the table selected, after enrichment has settled.
 
-    Ordered so the ticket is ready before anyone is told: the note and priority
+    Ordered so the ticket is ready before anyone is told. The note and priority
     land first, and only then does the channel post invite someone to open it.
-    The page, when there is one, runs before all of them and is not built yet.
+    The page leads, because it must not wait on osTicket being healthy. A slow
+    note write would otherwise delay the most urgent thing the system does.
     """
+    if actions.page:
+        _page(
+            ticket_id,
+            build_page(ticket_id, payload.get("ticket_number"), classification,
+                       outcome, len(events) if events else None),
+            fallback=False,
+        )
+
     if actions.human_review:
         _flag_human_review(ticket_id, "unclear_category"
                            if classification.category == Category.unclear
@@ -228,9 +242,68 @@ def _post_alert(ticket_id, classification, actions, payload, outcome, events):
     )
     if not _post(ticket_id, actions.channel, text, actions.mention):
         # A failed alert means nobody has been told, which is the one failure
-        # that cannot be left sitting in a log. On a critical incident the
-        # design also pages as a fallback; PagerDuty does not exist yet.
+        # that cannot be left sitting in a log.
         _flag_human_review(ticket_id, "alert_delivery_failed")
+        # A critical incident the table declined to page on has now had no
+        # delivery at all, so the page becomes the fallback and says so. Where
+        # the table did page, the page already ran ahead of this and a second
+        # one would repeat it. Both failing is the boundary in
+        # KNOWN_LIMITATIONS.md.
+        if needs_fallback_page(classification, actions):
+            _page(
+                ticket_id,
+                build_fallback_page(ticket_id, payload.get("ticket_number"),
+                                    classification),
+                fallback=True,
+            )
+
+def needs_fallback_page(classification, actions) -> bool:
+    """Whether an undelivered alert justifies waking someone.
+
+    Only a critical security incident does. Severity alone is not enough,
+    because the classifier can rate an it_support ticket critical and a major
+    outage is not what the security on-call is there for. A row the table
+    already pages on is excluded, since that page ran before the alert and a
+    second would repeat it.
+    """
+    return (classification.category == Category.security_incident
+            and classification.severity == Severity.critical
+            and not actions.page)
+
+def _page(ticket_id, event, fallback) -> bool:
+    """Sends one page. Returns False only when nobody was paged.
+
+    Writes being off is not a failure to page, and neither is a page that
+    already went out.
+    """
+    if completed_actions(ticket_id)["paged"]:
+        print(f"Ticket {ticket_id}: already paged, skipping")
+        return True
+
+    try:
+        result = send_page(event)
+    except PagerDutyError as e:
+        log_page_failure(ticket_id, e.failure_type, str(e))
+        print(f"Ticket {ticket_id}: page failed ({e.failure_type})")
+        return False
+    except Exception as e:
+        log_page_failure(ticket_id, "unknown", f"{type(e).__name__}: {e}")
+        print(f"Ticket {ticket_id}: page failed (unknown)")
+        return False
+
+    if result == PD_SKIPPED:
+        log_page_skipped(ticket_id=ticket_id, reason="writes_disabled")
+        print(f"Ticket {ticket_id}: page skipped (writes disabled)")
+        return True
+
+    # Recorded only after PagerDuty queued it, so a failure leaves the ticket
+    # retryable rather than marked done.
+    mark_done(ticket_id, "paged")
+    audit_ok = log_paged(ticket_id, fallback)
+    print(f"Ticket {ticket_id}: paged{' as a fallback' if fallback else ''}")
+    if not audit_ok:
+        _audit_failed(ticket_id, "paged")
+    return True
 
 def _post(ticket_id, channel, text, mention) -> bool:
     """Posts one message. Returns False only when nobody was told.

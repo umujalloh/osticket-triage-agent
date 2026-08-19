@@ -153,6 +153,15 @@ agent has no route left, and the only record is an audit event nobody is
 watching at the time. No arrangement inside the agent fixes this. It is the
 boundary of what the system can promise.
 
+### A low-confidence critical escalates to nobody
+
+A critical security incident the classifier is not confident about reaches the
+urgent channel with an `@here` and stops there. The page is withheld, because
+confidence gates interruption. That is the intended behaviour, and the cost is
+that delivery succeeding is not the same as anyone reading it. If the post lands
+and the channel is quiet, nothing chases the ticket and nothing escalates on its
+own. The fallback page covers a failed delivery, not an ignored one.
+
 ### An unclassified ticket has one delivery path and no fallback
 
 When Claude fails, the agent posts to the review channel because that is all it

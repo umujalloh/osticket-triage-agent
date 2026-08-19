@@ -6,10 +6,12 @@ right place. Real security incidents stop getting buried in helpdesk noise.
 
 ## Status
 
-Phases 1 and 2 complete. Tickets are received over an authenticated webhook,
-classified, enriched with Splunk context when the gate matches, and written to a
-Splunk audit log. No writes back to osTicket yet: internal notes, alerting, and
-paging are Phase 3.
+Phases 1 and 2 complete, Phase 3 in progress. Tickets are received over an
+authenticated webhook, classified, enriched with Splunk context when the gate
+matches, and written to a Splunk audit log. The agent writes an internal note
+back to osTicket, sets the ticket priority, posts to one of three Slack
+channels, and pages PagerDuty on a confident critical. What remains in Phase 3
+is the testing write-up and a documentation pass.
 
 See [docs/architecture.md](docs/architecture.md) for the design and threat
 model, [docs/TESTING.md](docs/TESTING.md) for how the agent is tested and what
@@ -62,11 +64,11 @@ result, or the reason there wasn't one, goes to the audit log either way.
 If Claude fails to return a classification, rate limited, unreachable, a bad
 credential, or an invalid response, the agent flags the ticket for human review
 and logs the specific failure type to Splunk instead of guessing at a
-classification. Until Phase 3 lands write-back, flagging means a line in the
-agent's output and an audit event in Splunk; the ticket itself stays in
-osTicket's normal queue. The same applies when the audit write fails, since a
-decision with no audit trail cannot be trusted to have been recorded. The full
-breakdown is in
+classification. Flagging means a post to the review channel naming the ticket
+and the failure, which is all the agent can do with no classification to work
+from. When the audit write fails instead, the classification stands but nothing
+outside Splunk records how it was reached, so the agent writes that gap onto
+the ticket note. The full breakdown is in
 [docs/architecture.md](docs/architecture.md#6-failure-modes-for-the-claude-dependency).
 
 Claude only ever produces a label. Every action the agent takes comes from a
