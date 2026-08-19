@@ -12,7 +12,9 @@ from action_table import actions_for, PRIORITY_FOR_SEVERITY, REVIEW, WAKE
 from classifier import classify_ticket, ClassificationError
 from idempotency import claim_ticket, completed_actions, mark_done
 from note_builder import build_note
-from osticket_client import write_note, set_priority, OsTicketWriteError, SKIPPED
+from osticket_client import (
+    write_note, set_priority, OsTicketWriteError, SKIPPED, ALREADY_WRITTEN,
+)
 from pagerduty_client import (
     build_page, build_fallback_page, send_page, PagerDutyError,
     SKIPPED as PD_SKIPPED,
@@ -423,10 +425,14 @@ def _write_ticket_note(ticket_id, classification, outcome, events, query, audite
         return
 
     # Recorded only after osTicket confirmed the write, so a failure leaves the
-    # ticket retryable rather than marked done.
+    # ticket retryable rather than marked done. A note the endpoint found
+    # already there counts as confirmed, since the ticket carries it either
+    # way, and it is named separately so a retry that landed on an existing
+    # note is not read as a fresh one.
     mark_done(ticket_id, "note_written")
-    audit_ok = log_note_written(ticket_id=ticket_id)
-    print(f"Ticket {ticket_id}: note written")
+    audit_ok = log_note_written(ticket_id=ticket_id, already_written=result == ALREADY_WRITTEN)
+    print(f"Ticket {ticket_id}: note "
+          f"{'already present' if result == ALREADY_WRITTEN else 'written'}")
     if not audit_ok:
         _audit_failed(ticket_id, "note_written")
 

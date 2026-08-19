@@ -188,7 +188,11 @@ check("kill switch off skips the alert", "skipped (writes disabled)" in out)
 check("kill switch off records nothing", all(s in out for s in UNRECORDED))
 
 out = run_case("writes_on", "true")
-check("kill switch on writes the note", "note written" in out)
+# Either outcome means the kill switch let the write through. Which one depends
+# on whether the named ticket already carried an agent note, since the endpoint
+# answers a repeat rather than writing a second copy.
+check("kill switch on writes the note",
+      "note written" in out or "note already present" in out)
 check("kill switch on sets the priority", "to high" in out)
 check("kill switch on posts the alert", "slack posted to incidents" in out)
 check("all three successes are recorded", all(s in out for s in RECORDED))

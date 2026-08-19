@@ -106,10 +106,14 @@ def log_enrichment_failure(ticket_id, failure_type, error):
 # The note body is not recorded. It is assembled from the enrichment events
 # already in the event above, and osTicket holds the note itself, so storing it
 # here would be a third copy that can disagree with the other two.
-def log_note_written(ticket_id):
+# already_written means the endpoint found a note from the agent already there
+# and did not write a second one, which is what a retry after a timeout looks
+# like. Recorded because it is the only trace that the first write landed.
+def log_note_written(ticket_id, already_written=False):
     return _send_audit_event({
         "ticket_id": ticket_id,
         "status": "note_written",
+        "already_written": already_written,
     })
 
 def log_note_skipped(ticket_id, reason):

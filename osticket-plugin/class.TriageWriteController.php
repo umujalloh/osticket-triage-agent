@@ -22,6 +22,10 @@ class TriageWriteController {
     // rejected request instead of a silent write to whatever row holds that id.
     const PRIORITIES = array('low', 'normal', 'high', 'emergency');
 
+    // Who a triage note is posted as. Also what marks a note as already
+    // written, so a retried request is answered rather than acted on twice.
+    const POSTER = 'Triage Agent';
+
     private $config;
 
     function __construct($plugin, $instance) {
@@ -40,6 +44,17 @@ class TriageWriteController {
         if (!is_string($title))
             Http::response(400, 'title must be a string');
 
+        // A write the agent can safely repeat. It retries on a timeout, and a
+        // timeout says the reply was lost rather than that the note was not
+        // written, so without this a slow response puts the same note on the
+        // ticket twice. Keyed on the poster rather than the body, because that
+        // is a value this endpoint sets itself and needs no comparison against
+        // whatever osTicket stored.
+        if ($this->agentNoteExists($ticket)) {
+            $this->respond(array('status' => 'note_exists', 'ticket_id' => $ticket_id));
+            return;
+        }
+
         // A text body, not the HTML one logNote() would wrap a string in: line
         // breaks survive, and log values are escaped on output rather than
         // handed to the HTML purifier.
@@ -50,7 +65,7 @@ class TriageWriteController {
         $entry = $ticket->postNote(
             array('title' => $title, 'note' => new TextThreadEntryBody($note)),
             $errors,
-            'Triage Agent',
+            self::POSTER,
             false
         );
         if (!$entry)
@@ -124,6 +139,24 @@ class TriageWriteController {
             Http::response(401, 'Request timestamp is stale or invalid');
 
         return $payload;
+    }
+
+    /**
+     * Whether this ticket already carries a note from the agent.
+     *
+     * The design writes exactly one, guarded on the agent's side by the
+     * idempotency store, so a second request for the same ticket is a retry
+     * rather than a new note. If that ever stops being true this refuses the
+     * second note, which is a deliberate change here rather than a silent one.
+     */
+    private function agentNoteExists($ticket) {
+        if (!($thread = $ticket->getThread()))
+            return false;
+        foreach ($thread->getEntries() as $entry) {
+            if ($entry->getType() === 'N' && $entry->getPoster() === self::POSTER)
+                return true;
+        }
+        return false;
     }
 
     private function requireTicket($payload) {

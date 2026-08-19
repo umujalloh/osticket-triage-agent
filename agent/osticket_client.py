@@ -17,6 +17,10 @@ if not OSTICKET_WRITE_URL or not TRIAGE_WRITE_SECRET:
     raise RuntimeError("OSTICKET_WRITE_URL and TRIAGE_WRITE_SECRET must both be set")
 
 DONE = "done"
+# The endpoint found a note from the agent already on the ticket and did not
+# write a second one. Reached by a retry after a timeout, where the reply was
+# lost rather than the write failing.
+ALREADY_WRITTEN = "already_written"
 SKIPPED = "skipped_writes_disabled"
 
 class OsTicketWriteError(Exception):
@@ -77,11 +81,18 @@ def _post(operation: str, payload: dict) -> dict:
 # The kill switch is checked in this module rather than left to callers, so no
 # future write path can forget it.
 def write_note(ticket_id: int, note: str, title: str = "AI Triage") -> str:
-    """Writes an internal note. Returns DONE, or SKIPPED when writes are off."""
+    """Writes an internal note.
+
+    Returns DONE, ALREADY_WRITTEN when the ticket already carried one, or
+    SKIPPED when writes are off. The middle case is not a failure, and the
+    caller records the note as done either way, but the two are distinguished
+    so a retry that landed on an existing note is visible rather than looking
+    like a fresh write.
+    """
     if not writes_enabled():
         return SKIPPED
-    _post("/note", {"ticket_id": ticket_id, "title": title, "note": note})
-    return DONE
+    result = _post("/note", {"ticket_id": ticket_id, "title": title, "note": note})
+    return ALREADY_WRITTEN if result.get("status") == "note_exists" else DONE
 
 def set_priority(ticket_id: int, priority: str) -> dict:
     """Sets the ticket priority.

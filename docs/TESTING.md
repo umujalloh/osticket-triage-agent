@@ -240,7 +240,7 @@ bytes across 20 events.
 
 ## Write-back endpoint verification
 
-Measured 2026-08-12 against the running stack.
+Measured 2026-08-19 against the running stack.
 
 | Request | Result |
 |---|---|
@@ -251,17 +251,22 @@ Measured 2026-08-12 against the running stack.
 | Signed, note field missing | 400 |
 | Signed, ticket 99999 | 404 |
 | Signed, valid, ticket 11 | 200 |
+| Signed, valid, a second note on the same ticket | 200, `status: note_exists` |
 
 The successful write was confirmed in the database rather than from the response
 code: an internal thread entry on ticket 11, type N, poster `Triage Agent`.
-Ticket 11 carries two of them, entries 14 and 15, because the run was repeated
-when the script below was added. Type N is an internal note, which is what makes
-the Attack 3 claim that notes are invisible to the submitter true rather than
-aspirational.
+Type N is an internal note, which is what makes the Attack 3 claim that notes
+are invisible to the submitter true rather than aspirational.
+
+The repeat case is the reason the endpoint now checks. Ticket 18 accumulated 35
+agent notes across the runs made before it did, each one a verifier writing
+another copy onto the same ticket, which is what a retry after a timeout would
+have done in production. Running the verifier against ticket 21 afterwards left
+it with the one note it already had.
 
 Reproduce with `./venv/bin/python verification/verify_writeback.py <ticket_id>`
-from `agent/`. The last case writes a real note, and the endpoint has no delete
-operation, so name a ticket you don't mind marking.
+from `agent/`. It writes a real note to a ticket that has none, and the endpoint
+has no delete operation, so name a ticket you don't mind marking.
 
 ## Idempotency store verification
 

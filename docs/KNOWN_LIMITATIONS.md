@@ -153,6 +153,22 @@ that point the agent has no route left, and the only record is an audit event
 nobody is watching at the time. No arrangement inside the agent fixes this. It
 is the boundary of what the system can promise.
 
+### A Slack post can be delivered more than once
+
+The agent retries a post that times out, and a timeout means the reply was lost
+rather than the post failing, so Slack may already have it. On a critical that
+lands up to three identical `@here` messages in the urgent channel, which is the
+alert fatigue the design is otherwise careful about.
+
+The osTicket note has the same shape and is fixed, because the endpoint it
+writes to is this project's own plugin and can check whether the note is already
+there. Slack's incoming webhook is not ours and offers no way to ask, so there
+is nothing to check against and no deduplication to lean on. PagerDuty avoids it
+a third way, with a deduplication key the Events API honours.
+
+Setting a priority twice is harmless, since the second write produces the same
+value as the first.
+
 ### A quiet page can sit unacknowledged
 
 A critical security incident the classifier could not place pages the NOTIFY

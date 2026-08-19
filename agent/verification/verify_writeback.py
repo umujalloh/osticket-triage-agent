@@ -86,6 +86,19 @@ response = post("/note", note_payload(
     note="Write-back verification. Signed request, note written by the agent."))
 check("  valid signed write succeeds", response.status_code, 200)
 
+# The agent retries a note write on a timeout, and a timeout means the reply was
+# lost rather than the write failing, so the endpoint has to answer a repeat
+# instead of acting on it again. Whichever of the two runs above wrote the note,
+# this one finds it already there.
+repeat = post("/note", note_payload(note="A second note that must not be written."))
+check("  a repeat is accepted rather than refused", repeat.status_code, 200)
+ran += 1
+if repeat.status_code == 200 and repeat.json().get("status") == "note_exists":
+    print("PASS    and reports that the note was already there")
+else:
+    failed.append("and reports that the note was already there")
+    print("FAIL    and reports that the note was already there")
+
 print("priority endpoint")
 check("  unsigned is rejected", post("/priority", priority_payload(), sign=False).status_code, 401)
 check("  stale timestamp is rejected",
@@ -116,5 +129,5 @@ print()
 if failed:
     print(f"FAILED: {', '.join(failed)}")
     sys.exit(1)
-print(f"All {ran} checks passed. Ticket {TICKET_ID} gained a note and its "
-      f"priority was changed.")
+print(f"All {ran} checks passed. Ticket {TICKET_ID} carries one agent note, "
+      f"whether or not it already had one, and its priority was changed.")
