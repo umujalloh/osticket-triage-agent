@@ -2,9 +2,9 @@
 
 How the agent is tested and what has been measured, both the classifier on its
 own and the full path from a submitted ticket through to the note, the alert and
-the page. Figures here state
-the date, the number of runs, and the files they were measured against. A
-figure without that method cannot be reproduced and should not be trusted.
+the page. Figures here state the date, the number of runs, and the files they
+were measured against. A figure without that method cannot be reproduced and
+should not be trusted.
 
 ## Running the evaluation
 
@@ -255,8 +255,8 @@ when the script below was added. Type N is an internal note, which is what makes
 the Attack 3 claim that notes are invisible to the submitter true rather than
 aspirational.
 
-Reproduce with `./venv/bin/python verify_writeback.py <ticket_id>` from
-`agent/`. The last case writes a real note, and the endpoint has no delete
+Reproduce with `./venv/bin/python verification/verify_writeback.py <ticket_id>`
+from `agent/`. The last case writes a real note, and the endpoint has no delete
 operation, so name a ticket you don't mind marking.
 
 ## Idempotency store verification
@@ -287,7 +287,7 @@ The last row exists to stop the two above it passing for the wrong reason. A
 store that refused everything after a restart would satisfy both, and only fail
 this one.
 
-Reproduce with `./venv/bin/python verify_idempotency.py` from `agent/`.
+Reproduce with `./venv/bin/python verification/verify_idempotency.py` from `agent/`.
 
 Whether a retried webhook actually avoids writing a second note is not verified
 here, because this file only exercises the store. It is covered under action
@@ -311,7 +311,7 @@ confidence, which reads as safe and is not. It would have let a category the
 table has never seen produce a plausible-looking action instead of failing
 loudly.
 
-Reproduce with `./venv/bin/python verify_action_table.py` from `agent/`. Nothing
+Reproduce with `./venv/bin/python verification/verify_action_table.py` from `agent/`. Nothing
 is written and no network call is made.
 
 ## Alert delivery verification
@@ -338,7 +338,7 @@ index. The canary test plants a known string inside the URL, forces two
 different failures, and fails if that string appears anywhere in the child
 process output.
 
-Reproduce with `./venv/bin/python verify_slack.py` from `agent/`. One case takes
+Reproduce with `./venv/bin/python verification/verify_slack.py` from `agent/`. One case takes
 about 17 seconds because it exhausts three retries against an unreachable host.
 The delivery case needs `SLACK_WEBHOOK_TEST` set and skips without it, so a run
 reporting fewer than thirty-three checks skipped delivery rather than proving
@@ -368,7 +368,7 @@ danger of a client library echoing the URL does not apply here. What can still
 expose it is a rejection quoting the field it refused, which is why the canary
 is the key itself and why the response body is truncated before it is logged.
 
-Reproduce with `./venv/bin/python verify_pagerduty.py` from `agent/`. The
+Reproduce with `./venv/bin/python verification/verify_pagerduty.py` from `agent/`. The
 delivery case needs `PAGERDUTY_ROUTING_KEY_TEST` and skips without it.
 
 A PagerDuty developer account cannot deliver SMS or voice notifications, and
@@ -400,7 +400,7 @@ originally tested severity alone, so an `it_support` ticket the classifier rated
 critical would have paged the security on-call whenever its Slack post failed.
 Walking every combination surfaced it.
 
-Reproduce with `./venv/bin/python verify_wiring.py <ticket_id>` from `agent/`.
+Reproduce with `./venv/bin/python verification/verify_wiring.py <ticket_id>` from `agent/`.
 Several cases write a real note, set a real priority and send real alerts, so
 name a ticket you don't mind marking. Alerts and pages go to the test
 destinations when those are configured.
@@ -413,8 +413,8 @@ as a complete picture.
 The inbound webhook's own gates. `receive_ticket` rejects an invalid signature,
 a malformed body, a stale timestamp, a missing or non-scalar ticket ID, and a
 ticket ID already accepted. None of those paths has a test. The write-back
-endpoint has `verify_writeback.py` covering the same shape, and the endpoint
-osTicket actually calls has nothing equivalent. Signature verification, replay
+endpoint has `verification/verify_writeback.py` covering the same shape, and the
+endpoint osTicket actually calls has nothing equivalent. Signature verification, replay
 protection and duplicate suppression are all asserted in the architecture and
 demonstrated only by a single unrecorded `401` from a manual request.
 

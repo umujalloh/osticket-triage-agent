@@ -3,6 +3,10 @@ import subprocess
 import sys
 from urllib.parse import urlparse
 
+# These sit one folder below the modules they exercise, so the agent directory
+# has to be on the path before anything is imported from it.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from dotenv import load_dotenv
 load_dotenv()
 

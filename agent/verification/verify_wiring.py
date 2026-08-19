@@ -3,9 +3,13 @@ import subprocess
 import sys
 import tempfile
 
+# These sit one folder below the modules they exercise, so the agent directory
+# has to be on the path before anything is imported from it.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 if len(sys.argv) != 2 or not sys.argv[1].isdigit():
     raise SystemExit(
-        "usage: python verify_wiring.py <ticket_id>\n\n"
+        "usage: python verification/verify_wiring.py <ticket_id>\n\n"
         "Checks that the note write obeys the kill switch, cannot repeat\n"
         "itself, and records a failed classification audit write on the note.\n"
         "One case writes a real note to the ticket you name, so pick one you\n"

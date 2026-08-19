@@ -3,6 +3,10 @@ import os
 import sys
 import tempfile
 
+# These sit one folder below the modules they exercise, so the agent directory
+# has to be on the path before anything is imported from it.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 # Point the store at a throwaway file before importing it. Running these
 # against the real store would insert ticket IDs that then refuse the genuine
 # ticket carrying the same number.

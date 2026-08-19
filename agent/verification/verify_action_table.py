@@ -4,7 +4,12 @@ The table is the contract between classification and action, so every row is
 compared as a whole Actions object rather than field by field. A single wrong
 field fails its row instead of hiding behind the ones that are right.
 """
+import os
 import sys
+
+# These sit one folder below the modules they exercise, so the agent directory
+# has to be on the path before anything is imported from it.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from action_table import (
     HANDLED_CATEGORIES, INCIDENTS, PRIORITY_FOR_SEVERITY, REVIEW, URGENT,

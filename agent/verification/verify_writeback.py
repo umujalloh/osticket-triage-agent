@@ -17,7 +17,7 @@ if not URL_BASE or not SECRET:
 
 if len(sys.argv) != 2 or not sys.argv[1].isdigit():
     raise SystemExit(
-        "usage: python verify_writeback.py <ticket_id>\n\n"
+        "usage: python verification/verify_writeback.py <ticket_id>\n\n"
         "Exercises the plugin's write endpoints against a running stack. Two\n"
         "cases change the ticket you name, writing a real note and setting its\n"
         "priority, and the endpoints have no undo, so pick a ticket you don't\n"
