@@ -276,7 +276,7 @@ has no delete operation, so name a ticket you don't mind marking.
 
 ## Idempotency store verification
 
-Measured 2026-08-19, eighteen checks, all passing. Run against a temporary
+Measured 2026-08-20, twenty-six checks, all passing. Run against a temporary
 database so the live store is never written to. That separation matters: a test
 that inserted ticket IDs into the real store would later refuse the genuine
 ticket carrying the same number.
@@ -287,13 +287,13 @@ ticket carrying the same number.
 | It cannot be claimed twice | second `claim_ticket(42)` | `False` |
 | Claiming one does not block others | `claim_ticket(43)` | `True` |
 | One ticket, either spelling | `claim_ticket("42")` after `42` | `False` |
-| A fresh ticket has done nothing | `completed_actions(43)` | all four `False` |
+| A fresh ticket has done nothing | `completed_actions(43)` | every action `False` |
 | A marked action is recorded | mark then read `note_written` | `True` |
 | Actions are independent | mark `note_written`, read `paged` | `False` |
 | Marking twice is harmless | mark `note_written` again | still `True` |
-| An unknown ticket does not raise | `completed_actions(9999)` | all four `False` |
+| An unknown ticket does not raise | `completed_actions(9999)` | every action `False` |
 | A misspelled action is refused | `mark_done(43, "not_a_real_action")` | `ValueError` |
-| An older store gains missing columns | a store built with one action column | all five present |
+| An older store gains missing columns | a store built with one action column | all present |
 | What it recorded survives the migration | the same store | unchanged |
 | A migrated column reads as not done | the same store | `False` |
 | A completed action outlives a missing claim | `mark_done(77)` with no claim | recorded, warning printed |
@@ -305,11 +305,102 @@ The last row exists to stop the two above it passing for the wrong reason. A
 store that refused everything after a restart would satisfy both, and only fail
 this one.
 
+The store also holds the classification each ticket was given, which is what a
+resumed ticket finishes on. It is written as JSON and validated on the way back
+out, so a value this build cannot read is reported as no decision rather than
+handed on as one.
+
+| Property | How it was checked | Result |
+|---|---|---|
+| A ticket nobody classified has no decision | `stored_classification(43)` | `None` |
+| A decision reads back unchanged | store, then read | identical object |
+| Storing a decision touches no action flag | read `priority_set` after | `False` |
+| A decision outlives a missing claim | store with no claim | kept, warning printed |
+| An unreadable decision is no decision | column overwritten with an invalid category | `None` |
+| A decision survives a restart | reload module, read it back | identical object |
+| A pre-migration ticket has no decision | the store built without the column | `None` |
+| And a migrated store can hold one | store, then read | identical object |
+
 Reproduce with `./venv/bin/python verification/verify_idempotency.py` from `agent/`.
 
 Whether a retried webhook actually avoids writing a second note is not verified
 here, because this file only exercises the store. It is covered under action
 wiring below, where the note write is driven through the store three times.
+
+## Resume verification
+
+Measured 2026-08-20, sixteen checks, all passing, against a temporary database.
+Nothing here reaches Claude, Slack, PagerDuty, osTicket or Splunk. It exercises
+the decision a repeat delivery lands on, which is one of three: a duplicate to
+refuse, a ticket to pick up, or a ticket another run is working on now.
+
+| Property | How it was checked | Result |
+|---|---|---|
+| A ticket never seen is undecided | `outstanding_actions(1)` | `["classified"]` |
+| A claim with no decision is undecided | claim only, then read | `["classified"]` |
+| A decision lists the actions its row selects | a confident critical, nothing done | all five |
+| What happened drops off the list | mark `paged`, read again | four left |
+| A finished ticket has nothing outstanding | mark all five | `[]` |
+| A page that never fell back is not outstanding | read `paged_fallback` | `False` |
+| A routine request wants no alert or page | `it_support`, high confidence | note, priority, audit |
+| A security question wants its move | `security_question`, high confidence | those three plus `routed` |
+| An unaudited decision is unfinished work | note and priority done, audit not | `["classification_audited"]` |
+| A ticket nobody is on can be started | `begin_processing(7)` | `True` |
+| And cannot be started twice | `begin_processing(7)` again | `False` |
+| One ticket, either spelling | `begin_processing("7")` after `7` | `False` |
+| Another ticket is unaffected | `begin_processing(8)` | `True` |
+| A finished ticket can be started again | end, then begin | `True` |
+| A run that raises does not swallow it | `_process_ticket` patched to raise | raises |
+| And still releases the ticket | `begin_processing(9)` after | `True` |
+
+The last two matter more than they look. The in-flight mark is only useful if it
+is always released, and a run that raised without releasing would lock that
+ticket out of every later delivery until the process restarted.
+
+Reproduce with `./venv/bin/python verification/verify_resume.py` from `agent/`.
+
+### Resuming a real interrupted ticket, 2026-08-20, ticket 23
+
+The verifier above tests the decision. This tests the path. Ticket 23 was
+submitted through the osTicket form as a confirmed user and classified
+`security_incident` / `high` / `high_confidence`, which writes a note, sets
+priority, alerts the incidents channel, and pages nowhere.
+
+| Time | Step | Result |
+|---|---|---|
+| 12:20:01.817 | accepted | claimed, decision stored |
+| 12:20:03.899 | classification_complete | audit recorded |
+| 12:20:04.020 | note_written | |
+| 12:20:04.113 | priority_set | |
+| 12:20:04.298 | slack_posted | incidents |
+| 16:06:28 | signed delivery repeated | `200 duplicate` |
+| | `slack_posted` cleared in the store | stands in for a run that died before the alert |
+| 16:17:17.807 | triage_resumed | `slack_posted` outstanding |
+| 16:17:18.009 | slack_posted | incidents |
+
+Both repeat deliveries were signed with the real secret and carried a current
+timestamp, which is what makes them retries rather than replays the freshness
+window would refuse. The resume is recorded before the work it authorises, so a
+resumed run that then hangs still leaves a record that it was resumed. The
+second delivery produced:
+
+```
+Ticket 23: resuming, slack_posted outstanding
+Ticket 23: resuming on the stored security_incident/high/high_confidence, requester_verified=True
+Ticket 23: note already written, skipping
+Ticket 23: priority already set, skipping
+Ticket 23: slack posted to incidents
+```
+
+No line reporting a classification, because none was requested. The audit index
+holds one `classification_complete` for ticket 23 across all three deliveries,
+which is the whole point of recording that the write landed: the decision was
+made once and is entered once. Each resume added a `triage_resumed` event naming
+what was outstanding, so a ticket that was interrupted is visible as one rather
+than as a second round of writes with nothing accounting for them.
+
+Both repeat deliveries were sent by hand, which is how the interruption was
+staged.
 
 ## Action table verification
 

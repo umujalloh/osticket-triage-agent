@@ -52,6 +52,36 @@ store.mark_done(77, "note_written")
 check("marking an unclaimed ticket still records it",
       store.completed_actions(77)["note_written"], True)
 
+from schemas import Category, Confidence, Severity, TicketClassification
+
+decision = TicketClassification(
+    category=Category.security_incident, severity=Severity.critical,
+    confidence=Confidence.high_confidence, hostname="BGIST-L",
+)
+
+check("a ticket nobody classified has no stored decision",
+      store.stored_classification(43), None)
+
+store.save_classification(43, decision)
+check("a stored decision reads back unchanged", store.stored_classification(43), decision)
+check("storing a decision leaves the action flags alone",
+      store.completed_actions(43)["priority_set"], False)
+
+store.save_classification(78, decision)
+check("storing for an unclaimed ticket still keeps the decision",
+      store.stored_classification(78), decision)
+
+# The reason the column is validated on the way out rather than trusted. A value
+# this build cannot read has to mean "decide it again", not "act on this".
+with store._connect() as conn:
+    conn.execute("UPDATE processed_tickets SET classification = ? WHERE ticket_id = '43'",
+                 ('{"category": "not_a_category", "severity": "low", '
+                  '"confidence": "high_confidence"}',))
+check("a decision this build cannot read is no decision",
+      store.stored_classification(43), None)
+
+store.save_classification(43, decision)
+
 try:
     store.mark_done(43, "not_a_real_action")
     check("an unknown action is rejected", "no exception", "ValueError")
@@ -66,6 +96,10 @@ restarted = importlib.import_module("idempotency")
 check("a claim survives a restart", restarted.claim_ticket(42), False)
 check("action state survives a restart", restarted.completed_actions(43)["note_written"], True)
 check("an unseen ticket is still claimable after a restart", restarted.claim_ticket(44), True)
+# The whole point of storing it. A ticket interrupted by the restart has to
+# finish on the decision made before it, not on a fresh one.
+check("a stored decision survives a restart",
+      restarted.stored_classification(43), decision)
 
 # A store written before an action existed. CREATE TABLE IF NOT EXISTS does
 # nothing to a table that is already there, so without the migration the new
@@ -91,6 +125,13 @@ check("an older store gains the columns it is missing",
 check("what it already recorded survives", state["note_written"], True)
 check("a column added by the migration reads as not done", state["paged_fallback"], False)
 check("and the migrated store still works", migrated.claim_ticket(99), False)
+# A ticket claimed before the column existed. It cannot be resumed on a decision
+# nobody kept, so it has to read as undecided and be classified again.
+check("a ticket from before the migration has no stored decision",
+      migrated.stored_classification(99), None)
+migrated.save_classification(99, decision)
+check("and the migrated store can hold one",
+      migrated.stored_classification(99), decision)
 
 print()
 if failed:

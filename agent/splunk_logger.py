@@ -54,6 +54,21 @@ def log_request_rejected(reason, source_ip, ticket_id=None):
         "source_ip": source_ip,
     })
 
+def log_resumed(ticket_id, outstanding):
+    """A ticket the agent accepted before and did not finish.
+
+    Repeated deliveries of one ticket are normal and mostly refused as
+    duplicates. This is the subset that was not, so the index shows which
+    tickets were interrupted and at which action, rather than showing a second
+    round of writes with nothing accounting for them.
+    """
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "triage_resumed",
+        "outstanding": outstanding,
+        "outstanding_count": len(outstanding),
+    })
+
 def log_classification(ticket_id, subject, classification, requester_verified):
     return _send_audit_event({
         "ticket_id": ticket_id,

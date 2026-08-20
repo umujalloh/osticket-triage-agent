@@ -21,9 +21,11 @@ if len(sys.argv) != 2 or not sys.argv[1].isdigit():
         "Exercises the gate on the endpoint osTicket calls, against a running\n"
         "agent. Every case here is refused before the agent does any work, so\n"
         "nothing is classified, written or alerted.\n\n"
-        "Name a ticket the agent has already processed. It is used to prove\n"
-        "duplicate suppression, which needs an ID the store has seen. Passing\n"
-        "an unprocessed one would claim it and queue real work.\n\n"
+        "Name a ticket the agent finished. It is used to prove duplicate\n"
+        "suppression, which needs an ID the store has seen. An ID it has never\n"
+        "seen would be claimed and queue real work, and one the agent was\n"
+        "interrupted partway through would be resumed rather than refused,\n"
+        "which queues the actions that ticket is still owed.\n\n"
         "Set TRIAGE_WEBHOOK_URL if the agent is not on 127.0.0.1:8000. It has\n"
         "to match the address the agent bound to, not the one osTicket uses.\n\n"
         "Reproduces the table in docs/TESTING.md."
@@ -132,12 +134,19 @@ check("  an object ticket id is rejected",
 
 print("replay")
 first = send(fresh())
-check("  a ticket already processed is refused", first.status_code, 200)
+check("  a ticket already finished is refused", first.status_code, 200)
 check_value("  and says why", first.json().get("status"), "duplicate")
 # Signed correctly and inside the freshness window, which is what makes this a
 # replay rather than a forgery. Only the store separates it from a real request.
 again = send(fresh())
 check("  refused every time, not just once", again.status_code, 200)
+
+if first.status_code == 202:
+    print()
+    print(f"  Ticket {PROCESSED_TICKET_ID} was resumed, not refused, so the agent")
+    print("  never finished it and has now been handed the rest of its actions.")
+    print("  That is the agent behaving correctly and the verifier being pointed")
+    print("  at the wrong ticket. Name one the agent finished.")
 
 print()
 if failed:

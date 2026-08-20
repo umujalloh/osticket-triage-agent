@@ -122,6 +122,10 @@ Fixing it means moving the store to something shared, which is a real
 dependency rather than a file, so it is deliberately not done while the agent
 runs as one process.
 
+The same assumption is what lets the agent track in-flight tickets in memory
+rather than in the store. Two processes would each have their own set, and a
+retry reaching the second one would act alongside the first.
+
 ### Retries have no jitter and no circuit breaker
 
 Every retry uses the same fixed backoff. If an upstream is down, every ticket

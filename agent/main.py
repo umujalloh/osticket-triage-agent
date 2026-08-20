@@ -1,6 +1,7 @@
 import hmac
 import hashlib
 import os
+import threading
 from datetime import datetime, timezone
 from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
@@ -10,7 +11,10 @@ load_dotenv()
 
 from action_table import actions_for, PRIORITY_FOR_SEVERITY, REVIEW, WAKE
 from classifier import classify_ticket, ClassificationError
-from idempotency import claim_ticket, completed_actions, mark_done
+from idempotency import (
+    claim_ticket, completed_actions, mark_done, save_classification,
+    stored_classification, ticket_key,
+)
 from note_builder import build_note
 from osticket_client import (
     write_note, set_priority, route_to_security, OsTicketWriteError, SKIPPED,
@@ -28,7 +32,7 @@ from slack_client import (
 from writes import writes_enabled
 from splunk_enrichment import build_enrichment_query, enrich_ticket, EnrichmentError
 from splunk_logger import (
-    log_request_rejected,
+    log_request_rejected, log_resumed,
     log_classification, log_classification_failure,
     log_enrichment, log_enrichment_failure, log_enrichment_skipped,
     log_note_written, log_note_skipped, log_note_failure,
@@ -71,27 +75,106 @@ def is_fresh(created_at) -> bool:
     age = (datetime.now(timezone.utc) - ts).total_seconds()
     return -CLOCK_SKEW_TOLERANCE_SECONDS <= age <= REPLAY_WINDOW_SECONDS
 
+_in_flight = set()
+_in_flight_lock = threading.Lock()
+
+def begin_processing(ticket_id) -> bool:
+    """Marks a ticket as being worked on now. False means it already was.
+
+    The plugin retries a send that failed, and a send can fail after the agent
+    has already accepted the ticket and started on it, so a retry can arrive
+    mid-run. Without this, both runs read the same action columns as incomplete
+    and both act on them.
+
+    Held in memory rather than in the store, because the store is a file beside
+    a single process and KNOWN_LIMITATIONS.md already says so. A restart empties
+    this, which is correct: whatever it was tracking died with the process, and
+    that ticket genuinely does need resuming.
+    """
+    with _in_flight_lock:
+        key = ticket_key(ticket_id)
+        if key in _in_flight:
+            return False
+        _in_flight.add(key)
+        return True
+
+def end_processing(ticket_id):
+    with _in_flight_lock:
+        _in_flight.discard(ticket_key(ticket_id))
+
+# Named the way the action columns are, since it appears in the same list. A
+# ticket carrying no decision has classification outstanding and nothing else,
+# because nothing downstream of it can have run.
+UNDECIDED = "classified"
+
+def outstanding_actions(ticket_id) -> list:
+    """What a ticket the store already holds still has left to do.
+
+    This is what separates a ticket the agent finished from one it was
+    interrupted partway through. A delivery the plugin repeats reaches the first
+    as a duplicate and the second as work to pick up. Empty means finished.
+
+    paged_fallback is not consulted. Nothing selects it, it happens only when a
+    channel post fails, so a ticket without one is the ordinary case rather than
+    an unfinished one.
+    """
+    classification = stored_classification(ticket_id)
+    if classification is None:
+        # Claimed, and nothing decided, so nothing was done either.
+        return [UNDECIDED]
+
+    actions = actions_for(classification.category, classification.severity,
+                          classification.confidence)
+    done = completed_actions(ticket_id)
+    expected = {
+        "classification_audited": True,
+        "note_written": actions.write_note,
+        "priority_set": actions.set_priority,
+        "slack_posted": actions.channel is not None,
+        "paged": actions.page is not None,
+        "routed": actions.route_security_queue,
+    }
+    return [column for column, needed in expected.items()
+            if needed and not done[column]]
+
 def process_ticket(payload: dict):
+    try:
+        _process_ticket(payload)
+    finally:
+        end_processing(payload.get("ticket_id"))
+
+def _process_ticket(payload: dict):
     ticket_id = payload.get("ticket_id")
 
-    try:
-        classification = classify_ticket(
-            subject=payload.get("subject", ""),
-            message=payload.get("message", "")
-        )
-    except ClassificationError as e:
-        _handle_classification_failure(ticket_id, payload, e.failure_type, str(e))
-        return
-    except Exception as e:
-        _handle_classification_failure(ticket_id, payload, "unknown",
-                                       f"{type(e).__name__}: {e}")
-        return
+    # A ticket already carrying a decision is being resumed, and it finishes on
+    # the decision it was given. Asking Claude a second time invites a second
+    # answer, and an alert may already have described this ticket in the words
+    # of the first one.
+    classification = stored_classification(ticket_id)
+    resumed = classification is not None
+
+    if not resumed:
+        try:
+            classification = classify_ticket(
+                subject=payload.get("subject", ""),
+                message=payload.get("message", "")
+            )
+        except ClassificationError as e:
+            _handle_classification_failure(ticket_id, payload, e.failure_type, str(e))
+            return
+        except Exception as e:
+            _handle_classification_failure(ticket_id, payload, "unknown",
+                                           f"{type(e).__name__}: {e}")
+            return
+        # Stored before anything acts on it, so an attempt that dies partway
+        # through leaves the decision behind for the next one.
+        save_classification(ticket_id, classification)
 
     # Normalised once here so the audit log records exactly what the enrichment
     # gate will act on, rather than the raw payload value.
     requester_verified = payload.get("requester_verified") is True
 
-    print(f"Ticket {ticket_id}: classified "
+    print(f"Ticket {ticket_id}: {'resuming on the stored' if resumed else 'classified'} "
           f"{classification.category.value}/{classification.severity.value}/"
           f"{classification.confidence.value}, "
           f"requester_verified={requester_verified}")
@@ -113,19 +196,13 @@ def process_ticket(payload: dict):
               build_page(ticket_id, payload.get("ticket_number"), classification),
               fallback=False)
 
-    audit_ok = log_classification(
-        ticket_id=ticket_id,
-        subject=payload.get("subject", ""),
-        classification=classification,
-        requester_verified=requester_verified
-    )
     # The actions still run when this write fails: a note and a channel post are
     # themselves records, so acting leaves evidence in osTicket and Slack even
     # when Splunk has none, where returning here would leave a critical incident
     # unhandled and unannounced. The note carries the gap, since nothing outside
     # the ticket would otherwise explain how it was classified.
-    if not audit_ok:
-        _audit_failed(ticket_id, "classification_complete")
+    audit_ok = _audit_classification(ticket_id, payload, classification,
+                                     requester_verified)
 
     # Enrichment adds context; alerting is the point. Every path below records
     # what happened and carries on, so neither a Splunk outage nor a ticket with
@@ -145,6 +222,30 @@ def process_ticket(payload: dict):
 
     _take_actions(ticket_id, classification, actions, payload, outcome, events,
                   query, audit_ok)
+
+def _audit_classification(ticket_id, payload, classification, requester_verified) -> bool:
+    """Records the decision in the audit index. Returns whether it is recorded.
+
+    A ticket resumed after the first attempt already wrote this does not write
+    it again, which would enter one decision twice. A ticket resumed after that
+    write failed does, which is the only chance the record gets. The return
+    value is also what the note reports, so a note written on either attempt
+    says the same thing about whether the decision reached Splunk.
+    """
+    if completed_actions(ticket_id)["classification_audited"]:
+        return True
+
+    if not log_classification(
+        ticket_id=ticket_id,
+        subject=payload.get("subject", ""),
+        classification=classification,
+        requester_verified=requester_verified,
+    ):
+        _audit_failed(ticket_id, "classification_complete")
+        return False
+
+    mark_done(ticket_id, "classification_audited")
+    return True
 
 def _handle_classification_failure(ticket_id, payload, failure_type, error):
     """A ticket Claude never classified.
@@ -532,12 +633,54 @@ async def receive_ticket(request: Request, background_tasks: BackgroundTasks):
             status_code=400, content={"detail": "ticket_id must be a number or string"}
         )
 
-    if not claim_ticket(ticket_id):
+    # Claiming and starting are separate. The claim is the store's record that
+    # this ticket was accepted once; starting is this process saying it is
+    # working on it now. A first delivery does both. A repeat delivery fails the
+    # claim and has to be told apart from it.
+    claimed = claim_ticket(ticket_id)
+
+    # A repeat delivery of a ticket the agent finished is the duplicate the
+    # store was built to refuse. One the agent was interrupted partway through
+    # is not, and refusing it leaves a ticket half acted on with nothing left to
+    # finish it. The stored decision is what lets a second run pick up where the
+    # first stopped rather than start the ticket over.
+    outstanding = [] if claimed else outstanding_actions(ticket_id)
+
+    if not claimed and not outstanding:
         background_tasks.add_task(
             log_request_rejected, reason="duplicate", source_ip=source_ip,
             ticket_id=ticket_id
         )
-        return JSONResponse(status_code=200, content={"status": "duplicate", "ticket_id": ticket_id})
+        return JSONResponse(status_code=200,
+                            content={"status": "duplicate", "ticket_id": ticket_id})
+
+    # Last gate, and the only one that sees the other runs in this process. A
+    # ticket still being worked on has actions outstanding and would read as
+    # resumable, so without this a retry arriving mid-run would act alongside
+    # the run it is retrying. Nothing may fail between here and the handover, or
+    # the mark is never released. process_ticket releases it in a finally.
+    if not begin_processing(ticket_id):
+        background_tasks.add_task(
+            log_request_rejected, reason="in_flight", source_ip=source_ip,
+            ticket_id=ticket_id
+        )
+        return JSONResponse(status_code=200,
+                            content={"status": "in_flight", "ticket_id": ticket_id})
+
+    if not claimed:
+        # Queued ahead of the work rather than after it. Background tasks run in
+        # the order they were added, so recording the resume last would mean a
+        # run that hangs or dies leaves nothing saying it was ever resumed,
+        # which is the run most worth having a record of. The classification was
+        # recorded on the first attempt and is not recorded again, so this is
+        # the one audit event a resumed ticket is certain to produce.
+        background_tasks.add_task(
+            log_resumed, ticket_id=ticket_id, outstanding=outstanding
+        )
+        print(f"Ticket {ticket_id}: resuming, {', '.join(outstanding)} outstanding")
+        background_tasks.add_task(process_ticket, payload)
+        return JSONResponse(status_code=202,
+                            content={"status": "resumed", "ticket_id": ticket_id})
 
     background_tasks.add_task(process_ticket, payload)
 
