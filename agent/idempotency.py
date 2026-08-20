@@ -13,7 +13,8 @@ DB_PATH = os.getenv(
 # The two pages are separate columns because one ticket can receive both. A
 # critical at low confidence pages NOTIFY at once, and pages WAKE afterwards if
 # its channel post fails. A single column would let the first refuse the second.
-ACTIONS = ("note_written", "priority_set", "slack_posted", "paged", "paged_fallback")
+ACTIONS = ("note_written", "priority_set", "slack_posted", "paged",
+           "paged_fallback", "routed")
 
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS processed_tickets (

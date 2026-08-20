@@ -252,6 +252,12 @@ Measured 2026-08-19 against the running stack.
 | Signed, ticket 99999 | 404 |
 | Signed, valid, ticket 11 | 200 |
 | Signed, valid, a second note on the same ticket | 200, `status: note_exists` |
+| Unsigned, department | 401 |
+| Stale timestamp, department | 401 |
+| Unknown ticket, department | 404 |
+| Signed, valid, department | 200, `status: routed` |
+| Signed, valid, department again | 200, `status: already_routed` |
+| Signed, department named in the body | 200, moved where the config says |
 
 The successful write was confirmed in the database rather than from the response
 code: an internal thread entry on ticket 11, type N, poster `Triage Agent`.
@@ -387,14 +393,15 @@ is the key itself and why the response body is truncated before it is logged.
 Reproduce with `./venv/bin/python verification/verify_pagerduty.py` from `agent/`. The
 delivery case needs `PAGERDUTY_ROUTING_KEY_TEST` and skips without it.
 
-A PagerDuty developer account cannot deliver SMS or voice notifications, and
-this cannot be enabled for any reason. Push and email work. Anyone reproducing
-the delivery case on a developer account will see the incident created and no
-call, which is the plan rather than a fault in the agent.
+Reproducing the delivery case on a PagerDuty developer account creates the
+incident and produces no call, which is the plan rather than a fault in the
+agent. What this lab can and cannot show about paging is in
+[KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md), and what the design needs from
+the two destinations is in architecture.md, Section 10.
 
 ## Action wiring verification
 
-Measured 2026-08-19, thirty-four checks, all passing. Covers whether the actions
+Measured 2026-08-19, thirty-nine checks, all passing. Covers whether the actions
 obey the kill switch and whether a retry can repeat one. Each case runs in its
 own process, because `ENABLE_WRITES` is read at import and patching it in place
 would not test what happens at boot.
@@ -410,6 +417,9 @@ would not test what happens at boot.
 | A failed classification reaches review | `classify_ticket` forced to raise | posted to review |
 | It writes no note and sets no priority | the same case | neither recorded |
 | A retried failure posts once | a second run against the same store | refused |
+| Writes off skips the routing | kill switch off | skipped, nothing recorded |
+| Writes on routes the ticket | kill switch on | moved and recorded |
+| A second move is refused | a third run against the same store | refused |
 | A refused page leaves the fallback available | the retry case | `paged_fallback` still false |
 | The page precedes the classification audit write | HEC pointed at a dead port | paged first |
 | The page precedes enrichment | the same case | paged first |

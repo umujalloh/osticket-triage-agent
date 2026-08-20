@@ -2,6 +2,7 @@
 require_once(INCLUDE_DIR . 'class.ticket.php');
 require_once(INCLUDE_DIR . 'class.thread.php');
 require_once(INCLUDE_DIR . 'class.priority.php');
+require_once(INCLUDE_DIR . 'class.dept.php');
 require_once(INCLUDE_DIR . 'class.dynamic_forms.php');
 require_once(INCLUDE_DIR . 'class.http.php');
 
@@ -109,6 +110,62 @@ class TriageWriteController {
             'status' => 'priority_set',
             'ticket_id' => $ticket_id,
             'from' => $before ? $before->getTag() : null,
+            'to' => $name,
+        ));
+    }
+
+    function postDepartment() {
+        $payload = $this->authenticatedPayload();
+        list($ticket_id, $ticket) = $this->requireTicket($payload);
+
+        // The target is configured here rather than sent by the agent, so this
+        // endpoint can only ever move a ticket to one department. A request
+        // body naming the target would let anyone holding the write secret
+        // move a critical incident somewhere nobody watches, which is the one
+        // thing this operation could otherwise be used to do. A note or a
+        // priority stays visible on the ticket; a ticket in the wrong
+        // department does not.
+        // 500 rather than a more specific code because Http::response knows a
+        // fixed set and maps the rest to 500 anyway, and because this is the
+        // same class of problem as the unconfigured secret above: the endpoint
+        // cannot do its job for a reason on this side.
+        $name = trim((string) $this->config->get('triage-security-department'));
+        if ($name === '')
+            Http::response(500, 'No security department is configured');
+
+        if (!($dept = Dept::lookup(array('name' => $name))))
+            Http::response(500, "This osTicket has no department named '$name'");
+
+        $before = $ticket->getDept();
+        $from = $before ? $before->getName() : null;
+
+        // Safe to repeat, and reported as such. setDeptId returns false both
+        // for an unknown department and for one the ticket is already in, so
+        // the second case is answered here rather than left to look like a
+        // failure.
+        if ($before && $before->getId() == $dept->getId()) {
+            $this->respond(array(
+                'status' => 'already_routed',
+                'ticket_id' => $ticket_id,
+                'from' => $from,
+                'to' => $name,
+            ));
+            return;
+        }
+
+        if (!$ticket->setDeptId($dept->getId()))
+            Http::response(500, 'Could not move the ticket');
+
+        // osTicket's own transfer() records this, and it is unreachable here
+        // because it checks a staff permission and there is no staff session on
+        // an API request. Logging the event keeps the move visible in the
+        // ticket's history rather than only in the Splunk audit log.
+        $ticket->logEvent('transferred', array('dept' => $dept->getName()));
+
+        $this->respond(array(
+            'status' => 'routed',
+            'ticket_id' => $ticket_id,
+            'from' => $from,
             'to' => $name,
         ));
     }

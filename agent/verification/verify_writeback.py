@@ -99,6 +99,40 @@ else:
     failed.append("and reports that the note was already there")
     print("FAIL    and reports that the note was already there")
 
+print("department endpoint")
+def dept_payload(**overrides):
+    payload = {"ticket_id": TICKET_ID, "created_at": now()}
+    payload.update(overrides)
+    return payload
+
+check("  unsigned is rejected", post("/department", dept_payload(), sign=False).status_code, 401)
+check("  stale timestamp is rejected",
+      post("/department", dept_payload(created_at=STALE)).status_code, 401)
+check("  unknown ticket is rejected",
+      post("/department", dept_payload(ticket_id=ABSENT_TICKET_ID)).status_code, 404)
+
+# The target is not in the request. It comes from the plugin's own config, so a
+# body naming a department cannot redirect the move.
+extra = post("/department", dept_payload(department="Sales"))
+check("  a department named in the body is ignored", extra.status_code, 200)
+ran += 1
+if extra.status_code == 200 and extra.json().get("to") != "Sales":
+    print("PASS    and the ticket goes where the config says")
+else:
+    failed.append("and the ticket goes where the config says")
+    print("FAIL    and the ticket goes where the config says")
+
+response = post("/department", dept_payload())
+check("  valid signed write succeeds", response.status_code, 200)
+repeat = post("/department", dept_payload())
+check("  a repeat is accepted rather than refused", repeat.status_code, 200)
+ran += 1
+if repeat.status_code == 200 and repeat.json().get("status") == "already_routed":
+    print("PASS    and reports the ticket was already there")
+else:
+    failed.append("and reports the ticket was already there")
+    print("FAIL    and reports the ticket was already there")
+
 print("priority endpoint")
 check("  unsigned is rejected", post("/priority", priority_payload(), sign=False).status_code, 401)
 check("  stale timestamp is rejected",

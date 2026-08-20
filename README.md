@@ -309,8 +309,12 @@ agent's output and in Splunk under `index=osticket_triage`.
 Four things the agent cannot enforce and the design depends on. Reasoning in
 [docs/architecture.md, Section 10](docs/architecture.md#10-deployment-preconditions).
 
-- **A security-tagged queue in osTicket.** Without it, `security_question`
-  tickets have nowhere to route.
+- **A department in osTicket for security work**, named in the plugin's
+  settings, that an agent can actually see. Without the first two,
+  `security_question` tickets have nowhere to route and the endpoint refuses
+  the move rather than guessing. Without the third they route into a
+  department nobody has access to, which removes them from every view while
+  the agent reports success.
 - **Notifications enabled on the urgent Slack channel**, by whatever mechanism
   your workspace provides. The agent cannot set them and cannot detect that
   they are unset, so a critical alert can arrive in a channel nobody is

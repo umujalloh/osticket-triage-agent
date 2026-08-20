@@ -33,8 +33,8 @@ could not place reaches PagerDuty at low urgency rather than not at all.
 | security_incident | high | any | incidents | none | Write note, set priority high |
 | security_incident | medium | any | incidents | none | Write note, set priority medium |
 | security_incident | low | any | incidents | none | Write note, set priority low |
-| security_question | any | high | none | none | Write note, route to security queue, set priority from severity |
-| security_question | any | low | review | none | Write note, route to security queue, set priority from severity |
+| security_question | any | high | none | none | Write note, route to the security department, set priority from severity |
+| security_question | any | low | review | none | Write note, route to the security department, set priority from severity |
 | it_support | any | high | none | none | Write note, set priority from severity |
 | it_support | any | low | review | none | Write note, set priority from severity |
 | unclear | any | any | review | none | Write note, set priority from severity |
@@ -117,7 +117,7 @@ ticket writes, for reasons in
 Category changes who should review the ticket, not just how urgent it
 is. A security question needs someone with security context, even at
 low urgency. General helpdesk queues don't guarantee that. The
-security-tagged queue this depends on is one of the deployment
+security department this depends on is one of the deployment
 preconditions in
 [architecture.md, Section 10](architecture.md#10-deployment-preconditions).
 

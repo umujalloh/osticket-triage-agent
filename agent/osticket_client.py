@@ -21,6 +21,9 @@ DONE = "done"
 # write a second one. Reached by a retry after a timeout, where the reply was
 # lost rather than the write failing.
 ALREADY_WRITTEN = "already_written"
+# The ticket was already in the security department, so nothing moved. Same
+# shape as ALREADY_WRITTEN and reached the same way, by a retry after a timeout.
+ALREADY_ROUTED = "already_routed"
 SKIPPED = "skipped_writes_disabled"
 
 class OsTicketWriteError(Exception):
@@ -104,3 +107,22 @@ def set_priority(ticket_id: int, priority: str) -> dict:
         return {"outcome": SKIPPED, "from": None, "to": priority}
     result = _post("/priority", {"ticket_id": ticket_id, "priority": priority})
     return {"outcome": DONE, "from": result.get("from"), "to": result.get("to")}
+
+def route_to_security(ticket_id: int) -> dict:
+    """Moves the ticket to the security department.
+
+    The department is named in the plugin's own configuration rather than sent
+    from here, so this endpoint can only ever move a ticket to that one place.
+    A body naming the target would let a leaked write secret move a critical
+    incident somewhere nobody watches.
+
+    Returns the outcome with the department it left, so the audit trail records
+    where the ticket was rather than only where it ended up. ALREADY_ROUTED
+    means it was already there, which a retry after a timeout produces and
+    which is not a failure.
+    """
+    if not writes_enabled():
+        return {"outcome": SKIPPED, "from": None, "to": None}
+    result = _post("/department", {"ticket_id": ticket_id})
+    outcome = ALREADY_ROUTED if result.get("status") == "already_routed" else DONE
+    return {"outcome": outcome, "from": result.get("from"), "to": result.get("to")}

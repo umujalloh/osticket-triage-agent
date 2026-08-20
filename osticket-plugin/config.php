@@ -29,6 +29,14 @@ class TriagePluginConfig extends PluginConfig {
                     'length' => 100
                 )
             )),
+            'triage-security-department' => new TextboxField(array(
+                'label' => __('Security Department'),
+                'hint' => __('Where security questions are routed. Named here rather than sent by the agent, so the write endpoint can only ever move a ticket to this one department and a leaked write secret cannot move a ticket somewhere nobody watches. Leave blank to disable routing.'),
+                'configuration' => array(
+                    'size' => 40,
+                    'length' => 100
+                )
+            )),
         );
     }
 }

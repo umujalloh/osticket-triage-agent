@@ -53,6 +53,13 @@ class TriagePlugin extends Plugin {
                 return $controller->postPriority();
             })
         );
+        $dispatcher->append(
+            url_post('^/triage/department$', function () use ($plugin, $instance) {
+                require_once(__DIR__ . '/class.TriageWriteController.php');
+                $controller = new TriageWriteController($plugin, $instance);
+                return $controller->postDepartment();
+            })
+        );
     }
 
     /**

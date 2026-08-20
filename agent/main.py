@@ -13,7 +13,8 @@ from classifier import classify_ticket, ClassificationError
 from idempotency import claim_ticket, completed_actions, mark_done
 from note_builder import build_note
 from osticket_client import (
-    write_note, set_priority, OsTicketWriteError, SKIPPED, ALREADY_WRITTEN,
+    write_note, set_priority, route_to_security, OsTicketWriteError, SKIPPED,
+    ALREADY_WRITTEN, ALREADY_ROUTED,
 )
 from pagerduty_client import (
     build_page, build_fallback_page, send_page, PagerDutyError,
@@ -34,6 +35,7 @@ from splunk_logger import (
     log_priority_set, log_priority_skipped, log_priority_failure,
     log_slack_posted, log_slack_skipped, log_slack_failure,
     log_paged, log_page_skipped, log_page_failure,
+    log_routed, log_routing_skipped, log_routing_failure,
     log_human_review,
 )
 
@@ -224,6 +226,12 @@ def _take_actions(ticket_id, classification, actions, payload, outcome, events,
     if actions.set_priority:
         _set_ticket_priority(ticket_id, classification)
 
+    # After the ticket is annotated and ordered, before anyone is invited to
+    # open it, so a reader following the channel link finds it already in the
+    # department that owns it.
+    if actions.route_security_queue:
+        _route_to_security(ticket_id)
+
     if actions.channel:
         _post_alert(ticket_id, classification, actions, payload, outcome, events)
 
@@ -361,6 +369,46 @@ def _post(ticket_id, channel, text, mention) -> bool:
     if not audit_ok:
         _audit_failed(ticket_id, "slack_posted")
     return True
+
+def _route_to_security(ticket_id):
+    """Moves the ticket to the department that owns security questions.
+
+    The category exists because a security question needs someone with security
+    context at any urgency, which a general helpdesk queue does not guarantee.
+    Nothing about it alerts at high confidence, so without this the ticket sits
+    wherever it was filed.
+    """
+    if completed_actions(ticket_id)["routed"]:
+        print(f"Ticket {ticket_id}: already routed, skipping")
+        return
+
+    try:
+        result = route_to_security(ticket_id=int(ticket_id))
+    except OsTicketWriteError as e:
+        audit_ok = log_routing_failure(ticket_id, e.failure_type, str(e))
+        print(f"Ticket {ticket_id}: routing failed ({e.failure_type})")
+        if not audit_ok:
+            _audit_failed(ticket_id, "routing_failed")
+        return
+    except Exception as e:
+        audit_ok = log_routing_failure(ticket_id, "unknown", f"{type(e).__name__}: {e}")
+        print(f"Ticket {ticket_id}: routing failed (unknown)")
+        if not audit_ok:
+            _audit_failed(ticket_id, "routing_failed")
+        return
+
+    if result["outcome"] == SKIPPED:
+        log_routing_skipped(ticket_id=ticket_id, reason="writes_disabled")
+        print(f"Ticket {ticket_id}: routing skipped (writes disabled)")
+        return
+
+    mark_done(ticket_id, "routed")
+    already = result["outcome"] == ALREADY_ROUTED
+    audit_ok = log_routed(ticket_id, result["from"], result["to"], already_routed=already)
+    print(f"Ticket {ticket_id}: "
+          f"{'already in' if already else 'routed to'} {result['to']}")
+    if not audit_ok:
+        _audit_failed(ticket_id, "routed")
 
 def _set_ticket_priority(ticket_id, classification):
     if completed_actions(ticket_id)["priority_set"]:

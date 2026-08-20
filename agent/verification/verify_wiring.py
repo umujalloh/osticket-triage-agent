@@ -67,6 +67,13 @@ if os.environ.get("WIRING_CASE"):
         })
         sys.exit(0)
 
+    # The routing row. security_question is the only category that routes, and
+    # it neither enriches nor pages, so it exercises the move on its own.
+    if os.environ["WIRING_CASE"].startswith("routing"):
+        main._route_to_security(TICKET_ID)
+        print(f"STORE_ROUTED={completed_actions(TICKET_ID)['routed']}")
+        sys.exit(0)
+
     # The paging row, kept apart from the case below because the table pages on
     # critical alone and the row below is deliberately a high that does not.
     if os.environ["WIRING_CASE"].startswith("paging"):
@@ -252,26 +259,45 @@ check("the refusal leaves the record intact", "STORE_PAGED=True" in out)
 check("and leaves the fallback still available",
       "STORE_PAGED_FALLBACK=False" in out)
 
+# Its own store again, so the routing checks start from a ticket the store has
+# not seen move.
+ROUTE_STORE = os.path.join(tempfile.mkdtemp(prefix="triage-routing-"), "state.db")
+
+out = run_case("routing_off", "false", TRIAGE_STATE_DB=ROUTE_STORE)
+check("kill switch off skips the routing", "routing skipped (writes disabled)" in out)
+check("kill switch off records no move", "STORE_ROUTED=False" in out)
+
+out = run_case("routing_on", "true", TRIAGE_STATE_DB=ROUTE_STORE)
+check("kill switch on routes the ticket",
+      "routed to" in out or "already in" in out)
+check("the move is recorded", "STORE_ROUTED=True" in out)
+
+out = run_case("routing_retry", "true", TRIAGE_STATE_DB=ROUTE_STORE)
+check("a second move is refused", "already routed, skipping" in out)
+
 # The finding this ordering exists for. Splunk holds the audit log and the
 # enrichment data, so a page sitting behind either is a page that waits out
 # Splunk's retries, and Splunk can be unwell for the same reason the ticket was
 # filed. Asserting the order rather than the elapsed time, since the retry
 # constants are free to change and the ordering is not.
 ORDER_STORE = os.path.join(tempfile.mkdtemp(prefix="triage-order-"), "state.db")
-out = run_case("page_before_audit", "true", TRIAGE_STATE_DB=ORDER_STORE,
-               SPLUNK_HEC_URL="https://127.0.0.1:1/services/collector/event")
+# Its own name rather than the shared out, because the checks below read it at a
+# distance and anything inserted between would silently retarget them.
+ordered = run_case("page_before_audit", "true", TRIAGE_STATE_DB=ORDER_STORE,
+                   SPLUNK_HEC_URL="https://127.0.0.1:1/services/collector/event")
+
 # Named events rather than the raw "Splunk logging failed" line, which appears
 # once per audit write and cannot be told apart. The page writes an audit event
 # of its own, and that one is allowed to fail behind the page.
-paged_at = out.find(f"Ticket {TICKET_ID}: paged")
-classification_audit_at = out.find("audit write failed (classification_complete)")
+paged_at = ordered.find(f"Ticket {TICKET_ID}: paged")
+classification_audit_at = ordered.find("audit write failed (classification_complete)")
 check("a dead audit endpoint still fails the classification write",
       classification_audit_at != -1)
 check("the page goes out anyway", paged_at != -1)
 check("and it goes out before the classification audit write",
       paged_at != -1 and classification_audit_at > paged_at)
 check("the page does not wait for enrichment either",
-      paged_at < out.find("enrichment") if "enrichment" in out else True)
+      paged_at < ordered.find("enrichment") if "enrichment" in ordered else True)
 
 print()
 if failed:

@@ -216,6 +216,32 @@ def log_page_failure(ticket_id, destination, failure_type, error):
         "error": error,
     })
 
+# from and to are both recorded for the same reason priority records them, so
+# a move the agent made is visible as a move rather than only as a destination.
+def log_routed(ticket_id, before, after, already_routed=False):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "routed",
+        "from": before,
+        "to": after,
+        "already_routed": already_routed,
+    })
+
+def log_routing_skipped(ticket_id, reason):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "routing_skipped",
+        "reason": reason,
+    })
+
+def log_routing_failure(ticket_id, failure_type, error):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "routing_failed",
+        "failure_type": failure_type,
+        "error": error,
+    })
+
 def log_human_review(ticket_id, reason):
     return _send_audit_event({
         "ticket_id": ticket_id,

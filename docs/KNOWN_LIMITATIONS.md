@@ -169,6 +169,38 @@ a third way, with a deduplication key the Events API honours.
 Setting a priority twice is harmless, since the second write produces the same
 value as the first.
 
+### This lab cannot demonstrate an interrupting page
+
+PagerDuty is on a developer account, which cannot deliver SMS or voice
+notifications. There is no setting for it and no way to request it, so the only
+route to either is a paid plan.
+
+The design needs WAKE to reach a responder who is not looking. Here the only
+method available for that is a mobile push, so WAKE arrives as a push and an
+email while NOTIFY arrives as an email alone, and the push is the whole of the
+difference. That is enough to show the two destinations behaving differently,
+and it is not what a real deployment would use, where a critical page is
+normally a phone call.
+
+Nothing in the agent changes on a paid plan. The routing key, the payload and
+the service are identical, and what a person receives is decided by their
+notification rules and their plan.
+
+### Routing can hide a ticket, and the agent cannot tell
+
+Moving a ticket to the security department is the one action that changes who
+can see it. osTicket shows an agent only the departments they have access to, so
+a ticket routed into a department nobody is granted disappears from every view.
+The agent gets a 200, the audit log records the move, and nothing anywhere
+reports a problem.
+
+That is why the target lives in the plugin's configuration rather than in a
+request body: a leaked write secret can push tickets into security, which is
+noise, but cannot move a critical incident into a department where nobody would
+find it. What it does not protect against is the deployment granting access to
+nobody in the first place, which is a precondition rather than something code
+can check.
+
 ### A quiet page can sit unacknowledged
 
 A critical security incident the classifier could not place pages the NOTIFY
