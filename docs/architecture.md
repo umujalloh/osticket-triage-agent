@@ -454,9 +454,11 @@ A Slack alert carries only values the agent generated. In full, an alert on a cr
 http://helpdesk.example.com/scp/tickets.php?id=15
 ```
 
-Severity, category, ticket number, confidence, the page destination where there was one, an enrichment count, and a link. Nothing else crosses, and that is a rule rather than a per-field judgement, so adding a field later is a decision about the rule instead of an argument about one field.
+Severity, category, ticket number, confidence, the page destination and whether it was sent, an enrichment count, and a link. Nothing else crosses, and that is a rule rather than a per-field judgement, so adding a field later is a decision about the rule instead of an argument about one field.
 
 Confidence and the page destination are the two fields added under that rule. Both are values the agent generated, confidence from the classification and the destination from the action table, so neither widens what a submitter can put in a channel. They earn their place because the urgent channel carries two rows that read alike and escalate differently, and without them a reader tells the confident critical from the unconfident one only by noticing that an `@here` is missing. Confidence is stated on every alert rather than only the low one, for the same reason: an absence is the weakest way to carry a meaning.
+
+The page field reports the outcome as well as the destination. If PagerDuty refuses the event, `paged WAKE` becomes `WAKE PAGE FAILED, escalate manually`. A reader who sees a page in the alert assumes the on-call is awake and does not escalate, so the alert has to distinguish a page that was sent from one that was only attempted.
 
 There is one other message shape, and it is that decision made once. A ticket Claude never classified has no severity, category, or enrichment count, so its post to the review channel carries the ticket number, a link, and which of the six failure types occurred:
 

@@ -118,6 +118,26 @@ check("  and the quiet one names its own", "paged NOTIFY" in quiet, True)
 check("  an alert that did not page says nothing about paging",
       "paged" in slack.build_message(15, "465581", high, slack.INCIDENTS), False)
 
+# The case the old message got wrong. It named the table's destination whether
+# or not the page was sent, so a reader was told the on-call was awake when
+# nobody had been reached.
+lost_page = slack.build_message(15, "465581", critical, slack.URGENT,
+                                page="wake", paged=False)
+check("  a page that failed says so", "WAKE PAGE FAILED" in lost_page, True)
+check("  and does not claim it paged", "paged WAKE" in lost_page, False)
+check("  it tells the reader what to do instead",
+      "escalate manually" in lost_page, True)
+check("  the quiet destination reports its own failure",
+      "NOTIFY PAGE FAILED" in slack.build_message(
+          15, "465581",
+          classification("security_incident", "critical", "low_confidence"),
+          slack.URGENT, page="notify", paged=False), True)
+# A row that pages nowhere has no page to report, so paged=False must not add a
+# failure line to it.
+check("  a row that pages nowhere stays silent about paging",
+      "PAGE FAILED" in slack.build_message(15, "465581", high, slack.INCIDENTS,
+                                           paged=False), False)
+
 print("the four enrichment states")
 for outcome, count, expected in [
     (EnrichmentOutcome.not_eligible, None, None),

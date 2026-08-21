@@ -53,7 +53,7 @@ class SlackError(Exception):
 
 def build_message(ticket_id, ticket_number, classification, channel, mention=False,
                   outcome=EnrichmentOutcome.not_eligible, event_count=None,
-                  page=None) -> str:
+                  page=None, paged=True) -> str:
     """Assembles the alert from values the agent generated, and nothing a user
     typed.
 
@@ -69,6 +69,10 @@ def build_message(ticket_id, ticket_number, classification, channel, mention=Fal
     only the low-confidence case would leave a reader inferring the other from
     an absence, and the urgent channel now carries two rows that read alike and
     escalate differently.
+
+    paged reports what happened to the page. Someone reading that a page was
+    sent assumes the on-call is awake and does not escalate, so when PagerDuty
+    refuses the event the alert has to say so.
     """
     category = classification.category.value
 
@@ -86,7 +90,8 @@ def build_message(ticket_id, ticket_number, classification, channel, mention=Fal
         # The destination rather than the fact of a page, because both rows in
         # the urgent channel page and only the destination separates them. These
         # are the names on the PagerDuty services a responder is paged from.
-        head += f"  ·  paged {page.upper()}"
+        head += (f"  ·  paged {page.upper()}" if paged
+                 else f"  ·  {page.upper()} PAGE FAILED, escalate manually")
 
     lines = ["<!here>", head] if mention else [head]
 

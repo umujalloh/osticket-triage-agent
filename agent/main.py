@@ -241,10 +241,16 @@ def _process_ticket(payload: dict):
     # is the page's only dependency now. The cost is that the page cannot carry
     # an enrichment count, since nothing has searched yet. architecture.md,
     # Section 7.
+
+    # Kept because the channel post reports it. If the alert says a page was
+    # sent when it failed, the reader assumes the on-call is awake and does not
+    # escalate.
+    paged = True
     if actions.page:
-        _page(ticket_id, actions.page,
-              build_page(ticket_id, payload.get("ticket_number"), classification),
-              fallback=False)
+        paged = _page(
+            ticket_id, actions.page,
+            build_page(ticket_id, payload.get("ticket_number"), classification),
+            fallback=False)
 
     # The actions still run when this write fails: a note and a channel post are
     # themselves records, so acting leaves evidence in osTicket and Slack even
@@ -271,7 +277,7 @@ def _process_ticket(payload: dict):
         outcome, events = _enrich(ticket_id, payload, requester_verified)
 
     _take_actions(ticket_id, classification, actions, payload, outcome, events,
-                  query, audit_ok)
+                  query, audit_ok, paged)
 
 def _audit_classification(ticket_id, payload, classification, requester_verified) -> bool:
     """Records the decision in the audit index. Returns whether it is recorded.
@@ -358,7 +364,7 @@ def _enrich(ticket_id, payload, requester_verified):
     return EnrichmentOutcome.completed, events
 
 def _take_actions(ticket_id, classification, actions, payload, outcome, events,
-                  query, audited):
+                  query, audited, paged):
     """Runs the actions the table selected, after enrichment has settled.
 
     Ordered so the ticket is ready before anyone is told. The note and priority
@@ -384,7 +390,8 @@ def _take_actions(ticket_id, classification, actions, payload, outcome, events,
         _route_to_security(ticket_id)
 
     if actions.channel:
-        _post_alert(ticket_id, classification, actions, payload, outcome, events)
+        _post_alert(ticket_id, classification, actions, payload, outcome, events,
+                    paged)
 
 def _flag_human_review(ticket_id, reason):
     """Records that a ticket needs a person, and why.
@@ -397,7 +404,8 @@ def _flag_human_review(ticket_id, reason):
     if not audit_ok:
         _audit_failed(ticket_id, "human_review")
 
-def _post_alert(ticket_id, classification, actions, payload, outcome, events):
+def _post_alert(ticket_id, classification, actions, payload, outcome, events,
+                paged):
     text = build_message(
         ticket_id=ticket_id,
         ticket_number=payload.get("ticket_number"),
@@ -407,6 +415,7 @@ def _post_alert(ticket_id, classification, actions, payload, outcome, events):
         outcome=outcome,
         event_count=len(events) if events else None,
         page=actions.page,
+        paged=paged,
     )
     if not _post(ticket_id, actions.channel, text, actions.mention):
         # A failed alert means nobody has been told, which is the one failure

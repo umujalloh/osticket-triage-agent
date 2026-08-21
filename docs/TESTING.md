@@ -587,7 +587,7 @@ is written and no network call is made.
 
 ## Alert delivery verification
 
-Measured 2026-08-19, forty checks, all passing.
+Measured 2026-08-21, forty-five checks, all passing.
 
 | Property | How it was checked | Result |
 |---|---|---|
@@ -597,6 +597,7 @@ Measured 2026-08-19, forty checks, all passing.
 | Every alert states its confidence | all three channels, both confidences | stated, never inferred |
 | A paged alert names its destination | urgent, both rows | `paged WAKE`, `paged NOTIFY` |
 | An alert that did not page says nothing about paging | the incidents channel | no marker |
+| A page that failed says so | urgent, both destinations, page not sent | `WAKE PAGE FAILED`, never `paged WAKE` |
 | All four enrichment states read differently | each outcome built in turn | four distinct lines |
 | The failure notice names the failure | `build_failure_message` | "classification failed", the type |
 | It carries no severity icon | every icon except the review one | none present |
@@ -615,8 +616,7 @@ process output.
 Reproduce with `./venv/bin/python verification/verify_slack.py` from `agent/`. One case takes
 about 17 seconds because it exhausts three retries against an unreachable host.
 The delivery case needs `SLACK_WEBHOOK_TEST` set and skips without it, so a run
-reporting fewer than thirty-three checks skipped delivery rather than proving
-it.
+reporting forty-four checks skipped delivery rather than proving it.
 
 ## Paging verification
 
@@ -651,6 +651,29 @@ incident and produces no call, which is the plan rather than a fault in the
 agent. What this lab can and cannot show about paging is in
 [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md), and what the design needs from
 the two destinations is in architecture.md, Section 10.
+
+## Page reporting verification
+
+Measured 2026-08-21, ten checks, all passing. Run offline. Claude is skipped by
+storing a decision so the ticket takes the resume path, and every outbound
+client is replaced, so nothing reaches PagerDuty, Slack, osTicket or Splunk.
+
+This covers wiring rather than rendering. `verify_slack.py` already checks what
+`build_message` produces. The defect was upstream of it: `_page` returned
+whether the page was sent and both callers discarded that, so the alert named
+the destination the table had chosen whether or not anyone was reached.
+
+| Case | Alert says | Store |
+|---|---|---|
+| PagerDuty refuses the event | `WAKE PAGE FAILED, escalate manually` | `paged` not recorded |
+| PagerDuty accepts it | `paged WAKE` | `paged` recorded |
+| Resumed after the page, before the alert | `paged WAKE` | unchanged |
+
+The third row runs with `send_page` rigged to raise, so a regression that called
+PagerDuty for a page already sent fails here rather than passing quietly.
+
+Reproduce with `./venv/bin/python verification/verify_page_reporting.py` from
+`agent/`.
 
 ## Action wiring verification
 
