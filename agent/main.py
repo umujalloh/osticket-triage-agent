@@ -1,7 +1,10 @@
+import asyncio
 import hmac
 import hashlib
 import os
 import threading
+import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from fastapi import FastAPI, Request, BackgroundTasks
 from fastapi.responses import JSONResponse
@@ -32,7 +35,7 @@ from slack_client import (
 from writes import writes_enabled
 from splunk_enrichment import build_enrichment_query, enrich_ticket, EnrichmentError
 from splunk_logger import (
-    log_request_rejected, log_resumed,
+    log_request_rejected, log_resumed, log_heartbeat,
     log_classification, log_classification_failure,
     log_enrichment, log_enrichment_failure, log_enrichment_skipped,
     log_note_written, log_note_skipped, log_note_failure,
@@ -43,7 +46,54 @@ from splunk_logger import (
     log_human_review,
 )
 
-app = FastAPI()
+HEARTBEAT_INTERVAL_SECONDS = int(os.getenv("HEARTBEAT_INTERVAL_SECONDS", "60"))
+
+async def _heartbeat_loop():
+    """Writes a liveness event to Splunk on a fixed interval, forever.
+
+    The agent cannot report its own death. Everything else it writes is
+    triggered by a ticket arriving, so an index that has gone quiet says
+    nothing on its own: an idle night and a dead process look identical. These
+    events are what tell them apart, and what a deployment alerts on is their
+    absence. architecture.md, Section 9.
+
+    Each beat is sent from a worker thread, because the Splunk client blocks
+    and this loop runs on the event loop serving webhooks.
+    """
+    started = time.monotonic()
+    while True:
+        try:
+            ok = await asyncio.to_thread(
+                log_heartbeat,
+                uptime_seconds=int(time.monotonic() - started),
+                writes_enabled=writes_enabled(),
+            )
+            if not ok:
+                print("Heartbeat: Splunk did not accept it")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # A heartbeat that raises must not take down the loop that proves
+            # the agent is alive.
+            print(f"Heartbeat failed: {type(e).__name__}: {e}")
+        await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Starts the heartbeat with the app, not with the module.
+
+    Importing main must stay free of side effects, because the verifiers do it
+    to exercise the decision logic and would otherwise beat against the real
+    Splunk index while they ran.
+    """
+    beat = asyncio.create_task(_heartbeat_loop())
+    print(f"Heartbeat every {HEARTBEAT_INTERVAL_SECONDS}s")
+    try:
+        yield
+    finally:
+        beat.cancel()
+
+app = FastAPI(lifespan=lifespan)
 
 print(f"Effectful writes are {'ENABLED' if writes_enabled() else 'DISABLED'}")
 

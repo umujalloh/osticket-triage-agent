@@ -278,6 +278,28 @@ agent sends events with sourcetype `osticket:triage:audit`. Splunk shows the
 token value once, at creation, save it now, this value goes into `agent/.env`
 in Section 4.
 
+Give Splunk a way to send mail, or the alert that tells you the agent has died
+will fire into an empty room. Under Settings → Server settings → Email
+settings, set the mail host, TLS, an account and its password, and the address
+to send as. With Gmail that is `smtp.gmail.com:587`, TLS on, and an app
+password rather than the account password.
+
+Use the Server settings page rather than the alert-actions page reached from
+Settings → Alert actions. The latter saves into whichever app you happened to
+be in, and settings written there may not resolve for an alert owned by a
+different app.
+
+Then set who receives it, in
+`docker/splunk-provisioning/triage_alerts/local/savedsearches.conf`:
+
+```
+[Triage agent is not reporting]
+action.email.to = you@example.com
+```
+
+The repo does not track any `local` directory, so the address stays yours.
+Everything else about the alert ships in that app's `default`.
+
 Enrichment queries run as a separate read-only user, not as admin. Set
 `SPLUNK_AGENT_PASSWORD` in `docker/.env`, then run
 `docker/provision-splunk-user.sh`. It creates a `triage_agent` user in a

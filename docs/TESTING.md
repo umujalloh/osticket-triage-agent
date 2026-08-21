@@ -327,6 +327,67 @@ Whether a retried webhook actually avoids writing a second note is not verified
 here, because this file only exercises the store. It is covered under action
 wiring below, where the note write is driven through the store three times.
 
+## Heartbeat and the agent-down alert
+
+Measured 2026-08-21 against `agent/main.py` and
+`docker/splunk-provisioning/triage_alerts`. Run with the interval set to 20
+seconds instead of the default 60, so a loop that only worked once would be
+obvious inside a minute.
+
+The agent was started and twelve consecutive beats were read back out of
+Splunk:
+
+| Property | How it was checked | Result |
+|---|---|---|
+| A beat is sent at startup | first event after boot | uptime 0, immediate |
+| The loop keeps going | events over four minutes | 12 beats, none missed |
+| The interval holds | gaps between events | 20.0s, drift under 30ms |
+| Uptime counts up | `uptime_seconds` per beat | 0, 20, 40 through 220 |
+| The kill switch state rides along | `writes_enabled` | true, matching the boot line |
+| Importing the agent sends nothing | verifiers import `main` | no beats during their runs |
+
+The last row is the one that would have gone wrong quietly. Three verifiers
+import `main` to exercise decision logic, and a heartbeat started at import
+rather than at application startup would have written to the real index every
+time one ran.
+
+The alert is the other half and is verified separately, because a heartbeat
+nothing watches is not detection, and an alert nobody receives is not much
+better. Its search was first run by hand over two windows:
+
+| Window | Beats | Condition `beats=0` |
+|---|---|---|
+| The last ten minutes, agent running | 28 | false, stays quiet |
+| A window predating the heartbeat | 0 | true, would fire |
+
+Then end to end, against a real outage. The agent was stopped at 02:33 and left
+down. The scheduled search evaluated true from then on, and once Splunk had
+working SMTP the alert delivered:
+
+```
+sendemail:292 - Sending email. subject="Triage agent is not reporting",
+recipients="['...']", server="smtp.gmail.com:587"
+```
+
+with no error line following it, against the failed attempt earlier the same
+day which logged three:
+
+```
+sendemail_auth:56 - Unable to create SMTP Object. Error=[Errno 111]
+Connection refused ... server="localhost"
+```
+
+That contrast is the useful part of the record. Both runs logged `Sending
+email` at INFO, because that line is written before the transaction rather than
+after it, so the INFO line alone proves nothing. Only the absence of the
+`sendemail_auth` error separates a delivered alert from one that went nowhere.
+
+A second thing worth writing down. Splunk's `fired_alerts` endpoint reported
+zero triggers throughout, including for runs that demonstrably sent mail. It is
+not a reliable signal of whether an alert fired, and reading it as one sent this
+investigation after a trigger that was never broken. The scheduler log and
+`python.log` are what actually answer the question.
+
 ## Resume verification
 
 Measured 2026-08-20, sixteen checks, all passing, against a temporary database.

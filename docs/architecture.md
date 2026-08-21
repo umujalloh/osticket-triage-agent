@@ -517,6 +517,14 @@ Only the classification case is written into the note, because the note is writt
 
 Carrying on is deliberate. Stopping would leave a critical incident unhandled and unannounced with only a console line to show for it. Splunk being briefly unavailable, during a restart or an upgrade, must not mean the agent quietly stops alerting.
  
+Heartbeat. Every other event in the index is written because a ticket arrived, which makes the index silent whenever the helpdesk is. That silence carries no information: an idle night and a dead process produce exactly the same nothing. So the agent also writes one small event every sixty seconds, carrying its uptime and the kill switch state, and what a deployment watches for is the absence of those.
+
+It is sent once with no retry, unlike every other audit write. A missed beat is covered by the one a minute later, and a Splunk that will not accept the beat cannot deliver an alarm about it either, so retrying only delays the next beat. Uptime rides along because a process crash-looping produces an unbroken stream of beats and would otherwise look healthy; a counter that keeps resetting is what gives it away.
+
+The heartbeat starts with the web application rather than with the module, which keeps importing the agent free of side effects. The verifiers import it to exercise the decision logic and would otherwise beat against the real index while they ran.
+
+What this does not cover is an agent that is alive and heartbeating but unreachable from osTicket, which is a real failure mode: a wrong bind address looks perfectly healthy from inside the process. That case is caught on the osTicket side instead, where a failed send is written to osTicket's system log and raises an admin alert.
+
 Always on. Audit logging is exempt from the kill switch. When the kill switch disables effectful writes, audit writes keep running, because visibility matters most during the incidents that make you flip the switch.
  
 Separate system. The audit log lives in Splunk, on a separate credential from osTicket. A compromised osTicket key can tamper with tickets but cannot reach the Splunk audit record, so the agent's original decisions survive in a place the tampered system can't touch.
@@ -541,7 +549,9 @@ The urgency setting is only half of it. What a responder actually receives comes
 
 What the design needs is that WAKE reaches someone who is not looking, and that NOTIFY does not. Any method that interrupts will do, a call, an SMS, a push. Which one is a property of the plan and the responder, not of the agent, and none of it is visible from here.
  
-Something outside the agent must watch for the audit index going quiet. When Splunk is unreachable the agent keeps working and keeps alerting, by design, and records the gap on the ticket, but it cannot raise the alarm that its own audit trail has stopped. Alerting on the absence of data requires a system that is not the one that is absent, so this has to be an external check on the age of the newest event in `osticket_triage`. Without it a Splunk outage is invisible until someone goes looking for a record that was never written.
+Splunk must be able to send mail, because the alert that says the agent is gone is delivered by email. The agent cannot raise that alarm itself: it owns Slack and PagerDuty, so whatever kills it takes those with it. The search and its email action both ship, in `docker/splunk-provisioning/triage_alerts`, scheduled every five minutes over a ten minute window. What does not ship is an SMTP server and a recipient. Splunk's mail settings are a deployment credential, and the recipient is set in that app's `local/savedsearches.conf`, which no repo should carry.
+
+The same alert covers a Splunk outage from the other direction, since a heartbeat that cannot be written looks identical to one that was never sent.
 
 osTicket's cron must run on a schedule, from `api/cron.php` rather than from autocron alone. The retry queue drains on cron and on ticket creation, and during an outage only the first of those happens: an agent accepting nothing gives nobody a reason to file the ticket that would trigger the other. Autocron is not a substitute, because it is a 1x1 image on staff pages and fires only while an agent is browsing, which is not the hour a queue most needs draining. Without a real schedule, a ticket that fails to deliver waits for the next unrelated submission, and if none comes it is never retried and never given up on, so no note ever appears saying triage did not run.
 

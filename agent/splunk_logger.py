@@ -15,7 +15,7 @@ SPLUNK_CACERT_PATH = os.path.join(
     "custom_tls", "default", "certs", "cacert.pem"
 )
 
-def _send_audit_event(event_content):
+def _send_audit_event(event_content, attempts=3):
     payload = {
         "time": datetime.now(timezone.utc).timestamp(),
         "sourcetype": "osticket:triage:audit",
@@ -24,7 +24,7 @@ def _send_audit_event(event_content):
     }
     headers = {"Authorization": f"Splunk {SPLUNK_HEC_TOKEN}"}
     last_error = None
-    for attempt in range(3):
+    for attempt in range(attempts):
         try:
             response = requests.post(
                 SPLUNK_HEC_URL, headers=headers, json=payload, verify=SPLUNK_CACERT_PATH, timeout=5
@@ -39,9 +39,9 @@ def _send_audit_event(event_content):
             return True
         except requests.exceptions.RequestException as e:
             last_error = e
-            if attempt < 2:
+            if attempt < attempts - 1:
                 time.sleep([1, 3][attempt])
-    print(f"Splunk logging failed after 3 attempts: {last_error}")
+    print(f"Splunk logging failed after {attempts} attempt(s): {last_error}")
     return False
 
 # ticket_id is passed only where the HMAC signature already verified. On a
@@ -53,6 +53,27 @@ def log_request_rejected(reason, source_ip, ticket_id=None):
         "reason": reason,
         "source_ip": source_ip,
     })
+
+def log_heartbeat(uptime_seconds, writes_enabled):
+    """Proof the agent is alive, written on a fixed interval.
+
+    Everything else in this index is written because a ticket arrived, which
+    makes silence ambiguous: an index with no events overnight looks the same
+    whether the agent is idle or gone. This is the one event that separates
+    them, so the thing to alert on is its absence.
+
+    Sent once with no retry. A missed beat is covered by the next one, and a
+    Splunk that will not take this event cannot raise the alarm about it
+    either.
+    """
+    return _send_audit_event({
+        "status": "heartbeat",
+        "uptime_seconds": uptime_seconds,
+        # Carried so a restart loop is visible even while beats keep arriving,
+        # and so the kill switch state can be read without shelling into the
+        # host.
+        "writes_enabled": writes_enabled,
+    }, attempts=1)
 
 def log_resumed(ticket_id, outstanding):
     """A ticket the agent accepted before and did not finish.
