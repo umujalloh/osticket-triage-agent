@@ -239,11 +239,13 @@ deployment precondition rather than code.
 
 ### Delivery failures are visible only in Splunk
 
-Every failed post writes an audit event, and a saved search shipped with the
-stack alerts on them. The agent does not count failures or trip a breaker,
-because a component that monitors itself is unreliable exactly when it is
-broken. If that saved search is removed or never enabled, a revoked webhook
-fails silently on every ticket afterwards.
+Every failed post writes an audit event, and nothing acts on those events. The
+agent does not count failures or trip a breaker, because a component that
+monitors itself is unreliable exactly when it is broken, so noticing a run of
+failures is left to a search over the audit index. No such search ships with
+this repo, which means a revoked webhook currently fails silently on every
+ticket afterwards and the only record is in Splunk for someone who goes
+looking.
 
 ### Nothing knows whether an alert was acted on
 

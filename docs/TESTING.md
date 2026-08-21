@@ -400,7 +400,108 @@ what was outstanding, so a ticket that was interrupted is visible as one rather
 than as a second round of writes with nothing accounting for them.
 
 Both repeat deliveries were sent by hand, which is how the interruption was
-staged.
+staged. What re-sends them in the deployment is the retry queue below.
+
+## Retry queue verification
+
+Measured 2026-08-20 and 21 against `osticket-plugin/class.TriagePlugin.php`.
+Run against the live stack rather than a harness, because the thing under test
+is what the plugin does when the agent is not there, and that is not something
+a mock can be wrong about convincingly.
+
+The agent was stopped with `pkill`, tickets were submitted through the real
+osTicket form as a confirmed user, and cron was fired by sending osTicket's own
+`cron` signal. Firing the signal rather than running `api/cron.php` keeps the
+test to the plugin, since `Cron::run()` would also start osTicket's dormant
+maintenance cycle and mark every older test ticket overdue.
+
+| Path | Ticket | What was checked | Result |
+|---|---|---|---|
+| A failed send queues the ticket | 24, 25, 26, 29, 30 | agent stopped, ticket submitted | queued, `requester_verified` 1 |
+| Cron drains the queue | 24, 29 | agent restarted, cron signal sent | delivered and classified |
+| The window expires during the outage | 25, 30 | aged to 61 minutes, agent still down | note says triage never ran, row deleted |
+| A drain stops at the first failure | 26 | same cron run as ticket 25 | still queued, attempts 1 to 2 |
+| Creating a ticket drains one | 26 | ticket 27 submitted with agent up | 27 delivered, 26 drained after it |
+| The queue empties | all | after each drain | no rows left |
+
+The third and fourth rows are the ones worth reading together. They ran in a
+single cron pass with the agent unreachable, and they are what the design is
+for. Expiry is local work, so it completed and put a note on ticket 25 while
+the agent was still down, which is the only time that note is any use. The
+drain in the same pass tried ticket 26, failed, and stopped rather than working
+through the rest at a timeout each.
+
+The value that matters most is `requester_verified`. Ticket 24 was submitted by
+a confirmed user, queued, and delivered minutes later by cron, and the agent
+logged `requester_verified=True` on the retry. Nothing in a retry can observe
+that, since it reads the submitter's browser session, so it is stored at
+failure time and replayed. Had it been recomputed it would have been false, the
+enrichment query would have dropped its email clause, and nothing would have
+reported the difference.
+
+The note is posted as `Triage Plugin`, confirmed in the thread on tickets 25
+and 29. The write endpoint decides a note is a repeat by looking for its own
+poster, `Triage Agent`, so the two names have to differ or the plugin's note
+would make a later triage note bounce as already present and be recorded as
+written. Both were present on ticket 29 under their own names.
+
+### One note, rewritten, 2026-08-21, tickets 29 and 30
+
+The plugin writes its note on the first failed send and edits that same note in
+place as the ticket's state changes. The note has three bodies, and a ticket
+reaches the second or the third but never both. Two tickets cover all three.
+
+**Ticket 29, delivery recovers.**
+
+| Entry | Poster | Body |
+|---|---|---|
+| 92 | Triage Plugin | written 00:21:54, triage has not run, retrying until about 01:21 |
+| 92 | Triage Plugin | rewritten, delivery delayed 1 minute, accepted at 00:23 |
+| 93 | Triage Agent | written 00:23:37, `it_support / medium / high_confidence` |
+
+**Ticket 30, delivery never recovers.** The agent was stopped for all of it.
+
+| Entry | Poster | Body |
+|---|---|---|
+| 95 | Triage Plugin | written 00:48:04, triage has not run, retrying until about 01:48 |
+| 95 | Triage Plugin | rewritten after the row was aged past the window, triage never ran |
+
+In both runs the entry keeps its id across the rewrite, so neither ticket ever
+carries two plugin notes disagreeing about whether triage ran. On ticket 29 the
+agent's own note is a separate entry under its own poster, which is what the
+two-poster rule is for. On ticket 30 the queue row was deleted at the same
+time, and the whole sequence ran during the outage rather than after it.
+
+The rewrite has no timestamp of its own because `setBody()` does not touch the
+`updated` column, so the row still reads its original created time afterwards.
+The body is what a reader sees and it is current; when the edit happened is not
+recorded.
+
+Ticket 25 earlier in the table reached the same end state as ticket 30 by a
+different route. It expired before the note became rewrite-in-place, so it
+wrote its note rather than editing one.
+
+The first attempt at ticket 29 failed, and the reason is worth recording because
+nothing about it is visible from the code. `Thread::getEntries()` caches its
+result on the thread, and `getMessages()` does `clone $this->getEntries()` and
+then filters the clone by type. The clone is shallow, so that filter reaches
+back into the shared cache and narrows it to messages for the rest of the
+request. `buildPayload` calls `getMessages()` immediately before the note
+lookup, which left the lookup seeing one entry where the thread had four. The
+note was invisible rather than absent, and the plugin wrote a second one.
+
+The lookup now queries `ost_thread_entry` directly. Confirmed by reproducing
+the sequence: after `getMessages()`, walking `getEntries()` returns 1 entry
+while the direct query returns the note. `agentNoteExists` in the write
+endpoint was changed the same way. Nothing on its path calls `getMessages()`
+today, so it was not broken, but a dedup that silently stops deduping when
+someone adds one is not worth leaving in place, and this is the same defect
+that let ticket 18 collect 35 notes.
+
+Not covered here: whether a real cron schedule fires the signal. This exercised
+the handler and the signal wiring by sending the signal directly. Running
+`api/cron.php` on a schedule is a deployment step, in
+[architecture.md, Section 10](architecture.md#10-deployment-preconditions).
 
 ## Action table verification
 

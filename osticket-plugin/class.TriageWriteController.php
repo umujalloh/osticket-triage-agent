@@ -209,11 +209,20 @@ class TriageWriteController {
     private function agentNoteExists($ticket) {
         if (!($thread = $ticket->getThread()))
             return false;
-        foreach ($thread->getEntries() as $entry) {
-            if ($entry->getType() === 'N' && $entry->getPoster() === self::POSTER)
-                return true;
-        }
-        return false;
+
+        // Queried directly rather than walked through Thread::getEntries().
+        // That set is cached on the thread, and getMessages() clones it
+        // shallowly, so its type filter leaks back and hides every note for the
+        // rest of the request. Nothing on this path calls getMessages() today,
+        // and a dedup that silently stops deduping the moment one is added is
+        // not worth relying on.
+        $res = db_query(
+            "SELECT id FROM " . TABLE_PREFIX . "thread_entry "
+            . "WHERE thread_id = " . (int) $thread->getId() . " AND type = 'N' "
+            . "AND poster = " . db_input(self::POSTER) . " LIMIT 1",
+            false
+        );
+        return (bool) ($res && db_fetch_array($res));
     }
 
     private function requireTicket($payload) {

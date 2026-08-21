@@ -9,8 +9,15 @@ right place. Real security incidents stop getting buried in helpdesk noise.
 All three phases built. Tickets are received over an authenticated webhook,
 classified, enriched with Splunk context when the gate matches, and written to a
 Splunk audit log. The agent writes an internal note back to osTicket, sets the
-ticket priority, posts to one of three Slack channels, and pages PagerDuty on a
-confident critical.
+ticket priority, routes security questions to a security department, posts to
+one of three Slack channels, and pages PagerDuty on a confident critical.
+
+Delivery survives the agent being down. A send osTicket cannot complete is
+queued and retried on cron and on the next ticket created, and a run the agent
+was interrupted partway through is resumed on the decision it already made
+rather than reclassified. After an hour of failing to deliver, the plugin gives
+up and says so on the ticket, so nothing waits silently on something that is
+not coming.
 
 See [docs/architecture.md](docs/architecture.md) for the design and threat
 model, [docs/TESTING.md](docs/TESTING.md) for how the agent is tested and what
@@ -195,11 +202,42 @@ a name, set its status to Active, and on the Config tab set:
 
 - FastAPI Webhook URL: `http://host.docker.internal:8000/webhook/ticket`
 - HMAC Shared Secret: the value you just generated
+- HMAC Write-Back Secret: a second value from the same command, not the same
+  one. This authenticates the agent writing into tickets, so a leak of one
+  secret does not grant the other.
+- Security Department: the osTicket department that owns security questions.
+  It must already exist and somebody must have access to it, or routed tickets
+  land where nobody can see them. Leave blank to disable routing.
+- Retry Window (minutes): how long a ticket the agent never accepted keeps
+  being retried before the plugin gives up and notes that on the ticket.
+  Defaults to 60 when blank.
 
 The container reaches the agent through `host.docker.internal`, which resolves
 via the `extra_hosts` entry in
 [docker-compose.yml](docker/docker-compose.yml). The agent must be listening
 on port 8000 on the host.
+
+Finally, give osTicket a real cron schedule. The retry queue drains on cron and
+on the next ticket created, and during an outage only cron happens, since an
+agent accepting nothing gives nobody a reason to file the ticket that would
+trigger the other. On the host:
+
+```bash
+crontab -e
+```
+
+```
+*/5 * * * * docker exec osticket-triage-osticket-1 php /var/www/html/api/cron.php
+```
+
+osTicket's autocron setting is not a substitute. It fires from a 1x1 image on
+staff pages, so it only runs while an agent is browsing, which is not the hour
+a queue most needs draining.
+
+Note that this also starts osTicket's own maintenance cycle, which has been
+dormant. If the helpdesk has tickets older than the SLA grace period, the first
+run marks them overdue and tries to alert on them. Turn off overdue alerts
+under Admin Panel → Settings → Alerts and Notices first if that is not wanted.
 
 ### 3. Splunk
 
