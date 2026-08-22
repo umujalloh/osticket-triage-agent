@@ -239,6 +239,11 @@ dormant. If the helpdesk has tickets older than the SLA grace period, the first
 run marks them overdue and tries to alert on them. Turn off overdue alerts
 under Admin Panel → Settings → Alerts and Notices first if that is not wanted.
 
+Those notices, along with staff alerts and auto-replies, send from the address
+in `default_email_id`. Configure SMTP on it unless the deployment has no real
+submitters. Unconfigured, they fail silently into the container log, and
+nothing in the interface says so.
+
 ### 3. Splunk
 
 Splunk runs as part of the same Docker Compose stack and already started in

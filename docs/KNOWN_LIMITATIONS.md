@@ -137,6 +137,24 @@ marked down.
 Neither matters at the ticket volume this is built for. Both would matter at a
 volume where the retries themselves become load.
 
+### osTicket's own email is not configured in this lab
+
+osTicket sends staff alerts, auto-replies and overdue notices from the address
+in `default_email_id`. In this deployment that address has no SMTP, so those
+messages fail into `sendmail: not found` in the container log and reach nobody.
+Nothing in the interface reports it.
+
+Two paths are unaffected and both matter more. The plugin's alert when a send to
+the agent fails goes through `alert_email_id`, which is configured, so that
+detector works. Splunk's alerts are a separate system and never touch osTicket's
+mail.
+
+This is left unconfigured because every submitter in this lab is fictional. An
+auto-reply to `bgist@froth.ly` has no inbox to arrive in, and staff alerts are
+moot on a helpdesk with one account. A real deployment must configure it, and
+would notice immediately, because those notifications are what a helpdesk runs
+on.
+
 ### Secrets live in environment files
 
 Every credential is read from `agent/.env` and the plugin's stored settings.

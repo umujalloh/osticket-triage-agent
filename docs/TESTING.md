@@ -87,6 +87,58 @@ any ticket in the set, so those paths are unexercised:
 - `security_question` at `low` confidence
 - `it_support` at `low` confidence
 
+## Comparison against the previous rubric
+
+The severity and confidence rubric was rewritten on 2026-08-06. Both versions
+were run against the same 36 tickets, with the same labels, in the same
+session, so the difference is attributable to the rubric rather than to a
+changed test set or model drift. Two runs each.
+
+| | previous rubric | current rubric |
+|---|---|---|
+| Full label | 31 of 36 | 34 of 36 |
+| Category | 35 of 36 | 36 of 36 |
+| Danger criterion failures | 1 | 0 |
+
+The danger failure under the previous rubric was a wire transfer request
+impersonating a company executive. It classified as `security_question` with
+`high_confidence` in both runs, a path that raises no alert. The category
+definition covered security events that had already occurred but not an attack
+in progress that nobody had acted on yet. Extending the definition fixed it.
+
+Two further defects were found and closed in the same rewrite:
+
+- **Severity was defined only for security incidents**, leaving the other three
+  categories with no rule to sit on. Two tickets alternated between `low` and
+  `medium`, landing on `low` in four runs of six. Defining severity separately
+  for each category removed the ambiguity.
+- **Confidence was defined in three places that disagreed.** The enum
+  descriptions and one guidance paragraph described it as how strongly the text
+  supported the classification, while a later paragraph said behaviour a user
+  could not account for should be `low_confidence`. The model followed the first
+  reading, so tickets describing something unexplained were not reaching human
+  review. Confidence is now defined once.
+
+## How prompt changes are validated
+
+Prompt changes are not applied and then measured. Both versions run in the same
+session against the same ticket set, and the comparison is per ticket rather
+than on the aggregate score, because an aggregate can stay flat while one
+ticket improves and another regresses.
+
+A change is accepted only if it holds across at least three runs, does not
+introduce an unstable ticket, and does not introduce a danger criterion failure.
+
+Two rubric drafts were rejected under this rule before the current one was
+applied. The first fixed the unstable tickets but regressed two others, and
+contained a contradiction of its own: its `high` definition said an incident of
+unknown extent belonged there, while its `critical` definition said not knowing
+what an intruder did does not lower severity. The second removed that
+contradiction but still gave different severities to two structurally identical
+tickets, both reporting a successful unauthorized login with nothing stated to
+have ended it. The third added an explicit rule that access persists until the
+ticket says otherwise, which resolved it.
+
 ## End-to-end verification
 
 The eval harness above tests the classifier directly. It scores classifier
@@ -327,155 +379,6 @@ Whether a retried webhook actually avoids writing a second note is not verified
 here, because this file only exercises the store. It is covered under action
 wiring below, where the note write is driven through the store three times.
 
-## Heartbeat and the agent-down alert
-
-Measured 2026-08-21 against `agent/main.py` and
-`docker/splunk-provisioning/triage_alerts`. Run with the interval set to 20
-seconds instead of the default 60, so a loop that only worked once would be
-obvious inside a minute.
-
-The agent was started and twelve consecutive beats were read back out of
-Splunk:
-
-| Property | How it was checked | Result |
-|---|---|---|
-| A beat is sent at startup | first event after boot | uptime 0, immediate |
-| The loop keeps going | events over four minutes | 12 beats, none missed |
-| The interval holds | gaps between events | 20.0s, drift under 30ms |
-| Uptime counts up | `uptime_seconds` per beat | 0, 20, 40 through 220 |
-| The kill switch state rides along | `writes_enabled` | true, matching the boot line |
-| Importing the agent sends nothing | verifiers import `main` | no beats during their runs |
-
-The last row is the one that would have gone wrong quietly. Three verifiers
-import `main` to exercise decision logic, and a heartbeat started at import
-rather than at application startup would have written to the real index every
-time one ran.
-
-The alert is the other half and is verified separately, because a heartbeat
-nothing watches is not detection, and an alert nobody receives is not much
-better. Its search was first run by hand over two windows:
-
-| Window | Beats | Condition `beats=0` |
-|---|---|---|
-| The last ten minutes, agent running | 28 | false, stays quiet |
-| A window predating the heartbeat | 0 | true, would fire |
-
-Then against a real outage. The agent was stopped at 02:33 and left
-down. The scheduled search evaluated true from then on, and the alert invoked
-its email action:
-
-```
-sendemail:292 - Sending email. subject="Triage agent is not reporting",
-recipients="['...']", server="smtp.gmail.com:587"
-```
-
-with no error line following it, against the failed attempt earlier the same
-day which logged three:
-
-```
-sendemail_auth:56 - Unable to create SMTP Object. Error=[Errno 111]
-Connection refused ... server="localhost"
-```
-
-Both runs logged `Sending email` at INFO, because that line is written before
-the transaction rather than after it, so the INFO line alone proves nothing.
-Neither does the absence of an error. Six of those sends reached nobody with
-nothing logged at all: `sendemail` reports a connection failure loudly, as the
-`localhost` attempt above shows, and reports an authentication rejection not at
-all. It connected to Gmail with no credentials, was refused with `530
-Authentication Required`, and recorded success.
-
-The cause was where the password lived. Splunk's Settings UI writes in the
-launcher app context, so the credential landed in
-`apps/launcher/local/alert_actions.conf` while `sendemail` reads the global
-configuration and found none there. Copying the encrypted value into
-`etc/system/local/alert_actions.conf` and restarting fixed it, and
-`auth_password` then read as set through the REST API where it had read empty.
-
-Delivery is confirmed as of 2026-08-22, in two overlapping halves rather than
-one continuous run. The scheduled search fired against a real outage and
-invoked the email action at 20:15, and a send through that same `sendemail`
-path arrived in the recipient's inbox at 00:29. Both halves run through
-`sendemail`, so together they cover the path from the agent dying to a person
-being told.
-
-Splunk's `fired_alerts` endpoint is worth a separate warning. It reported zero
-triggers throughout, including for runs that provably invoked the email action,
-so it does not answer whether an alert fired. `scheduler.log` and `python.log`
-do.
-
-## Recovery verification
-
-Measured 2026-08-22, sixteen checks offline plus one live run. The offline
-checks replace every outbound client and skip Claude through the resume path,
-so nothing leaves the machine.
-
-| Property | How it was checked | Result |
-|---|---|---|
-| An accepted ticket is unfinished | body stored, not yet complete | listed for recovery |
-| A finished one is not | body dropped | not listed |
-| A completed run drops its own body | full run through `process_ticket` | body gone |
-| Recovery completes what was interrupted | note done, everything else not | priority set, alert posted |
-| It does not repeat what was done | the same run | note not rewritten |
-| A ticket past the window is not completed | backdated two hours | no actions, no alert |
-| And says so on the ticket | the same ticket | note, "did not finish" |
-| And tells the review channel | the same ticket | posted to review |
-| And records the abandonment | the same ticket | `interrupted_past_recovery_window` |
-| And is not rescanned | after abandoning | body cleared |
-| An unreadable body is dropped | column set to invalid JSON | not acted on |
-
-### A real interrupted ticket, 2026-08-22, ticket 32
-
-Submitted through the osTicket form as a confirmed user. A watcher polling the
-store killed the agent with `SIGKILL` the moment the ticket was claimed, before
-classification. osTicket had its 202 and queued no retry, so nothing in the
-deployment would have delivered that ticket again.
-
-The agent was restarted with no delivery of any kind, and on boot:
-
-```
-Ticket 32: interrupted, finishing classified
-Ticket 32: classified it_support/high/high_confidence, requester_verified=True
-Ticket 32: note written
-Ticket 32: priority normal to high
-Recovery: 1 ticket(s) finished, 0 too old to finish
-```
-
-Confirmed outside the store: ticket 32 carries priority High and a note posted
-as `Triage Agent`. No Slack post and no page, which is correct for that row.
-`requester_verified` survived the kill and the restart, which matters because it
-reads the submitter's live session and cannot be rebuilt.
-
-Reproduce the offline checks with
-`./venv/bin/python verification/verify_recovery.py` from `agent/`.
-
-## Delivery failure alert verification
-
-Measured 2026-08-22 against `docker/splunk-provisioning/triage_alerts`. Two
-alerts, one for pages and one for Slack posts. Exercised with synthetic events
-written to the audit index and tagged `synthetic: true`, because producing real
-failures means breaking a live credential.
-
-| Property | How it was checked | Result |
-|---|---|---|
-| A broken destination is detected | 3 failures, nothing succeeding after | selected |
-| Below the threshold stays quiet | 2 page failures against 3 Slack | only Slack selected |
-| Destinations stay independent | both kinds failing at once | grouped separately, not pooled |
-| A recovered destination clears | one success written after the failures | not selected, no timer involved |
-| The subject names the destination | fired with actions enabled | `Action needed: triage Slack posts failing to incidents` |
-| The body names the failure type | the same email | `The Slack posts are failing with auth_failure.` |
-
-The last two rows are the ones that needed a real send. Every earlier attempt
-rendered as `Splunk Alert: Triage paging is failing`, Splunk's default template,
-because the custom text was set as `action.email.subject.alert` while Splunk
-reads `action.email.subject`. Both keys were present and the API reported the
-custom one, so the configuration looked correct and the email was not. Only
-firing it with actions enabled showed the difference.
-
-Two alerts did not fire during that run, both correctly. The heartbeat alert
-declined because the agent was up and beating. The paging alert was inside its
-one hour suppression window from a firing nine minutes earlier.
-
 ## Resume verification
 
 Measured 2026-08-20, sixteen checks, all passing, against a temporary database.
@@ -550,6 +453,51 @@ than as a second round of writes with nothing accounting for them.
 
 Both repeat deliveries were sent by hand, which is how the interruption was
 staged. What re-sends them in the deployment is the retry queue below.
+
+## Recovery verification
+
+Measured 2026-08-22, sixteen checks offline plus one live run. The offline
+checks replace every outbound client and skip Claude through the resume path,
+so nothing leaves the machine.
+
+| Property | How it was checked | Result |
+|---|---|---|
+| An accepted ticket is unfinished | body stored, not yet complete | listed for recovery |
+| A finished one is not | body dropped | not listed |
+| A completed run drops its own body | full run through `process_ticket` | body gone |
+| Recovery completes what was interrupted | note done, everything else not | priority set, alert posted |
+| It does not repeat what was done | the same run | note not rewritten |
+| A ticket past the window is not completed | backdated two hours | no actions, no alert |
+| And says so on the ticket | the same ticket | note, "did not finish" |
+| And tells the review channel | the same ticket | posted to review |
+| And records the abandonment | the same ticket | `interrupted_past_recovery_window` |
+| And is not rescanned | after abandoning | body cleared |
+| An unreadable body is dropped | column set to invalid JSON | not acted on |
+
+### A real interrupted ticket, 2026-08-22, ticket 32
+
+Submitted through the osTicket form as a confirmed user. A watcher polling the
+store killed the agent with `SIGKILL` the moment the ticket was claimed, before
+classification. osTicket had its 202 and queued no retry, so nothing in the
+deployment would have delivered that ticket again.
+
+The agent was restarted with no delivery of any kind, and on boot:
+
+```
+Ticket 32: interrupted, finishing classified
+Ticket 32: classified it_support/high/high_confidence, requester_verified=True
+Ticket 32: note written
+Ticket 32: priority normal to high
+Recovery: 1 ticket(s) finished, 0 too old to finish
+```
+
+Confirmed outside the store: ticket 32 carries priority High and a note posted
+as `Triage Agent`. No Slack post and no page, which is correct for that row.
+`requester_verified` survived the kill and the restart, which matters because it
+reads the submitter's live session and cannot be rebuilt.
+
+Reproduce the offline checks with
+`./venv/bin/python verification/verify_recovery.py` from `agent/`.
 
 ## Retry queue verification
 
@@ -854,6 +802,110 @@ for the duplicate cases, and an unprocessed one would be claimed and queue real
 work. Set `TRIAGE_WEBHOOK_URL` if the agent is not on `127.0.0.1:8000`, and note
 that this is the address the agent bound to rather than the one osTicket uses.
 
+## Heartbeat and the agent-down alert
+
+Measured 2026-08-21 against `agent/main.py` and
+`docker/splunk-provisioning/triage_alerts`. Run with the interval set to 20
+seconds instead of the default 60, so a loop that only worked once would be
+obvious inside a minute.
+
+The agent was started and twelve consecutive beats were read back out of
+Splunk:
+
+| Property | How it was checked | Result |
+|---|---|---|
+| A beat is sent at startup | first event after boot | uptime 0, immediate |
+| The loop keeps going | events over four minutes | 12 beats, none missed |
+| The interval holds | gaps between events | 20.0s, drift under 30ms |
+| Uptime counts up | `uptime_seconds` per beat | 0, 20, 40 through 220 |
+| The kill switch state rides along | `writes_enabled` | true, matching the boot line |
+| Importing the agent sends nothing | verifiers import `main` | no beats during their runs |
+
+The last row is the one that would have gone wrong quietly. Three verifiers
+import `main` to exercise decision logic, and a heartbeat started at import
+rather than at application startup would have written to the real index every
+time one ran.
+
+The alert is the other half and is verified separately, because a heartbeat
+nothing watches is not detection, and an alert nobody receives is not much
+better. Its search was first run by hand over two windows:
+
+| Window | Beats | Condition `beats=0` |
+|---|---|---|
+| The last ten minutes, agent running | 28 | false, stays quiet |
+| A window predating the heartbeat | 0 | true, would fire |
+
+Then against a real outage. The agent was stopped at 02:33 and left
+down. The scheduled search evaluated true from then on, and the alert invoked
+its email action:
+
+```
+sendemail:292 - Sending email. subject="Triage agent is not reporting",
+recipients="['...']", server="smtp.gmail.com:587"
+```
+
+with no error line following it, against the failed attempt earlier the same
+day which logged three:
+
+```
+sendemail_auth:56 - Unable to create SMTP Object. Error=[Errno 111]
+Connection refused ... server="localhost"
+```
+
+Both runs logged `Sending email` at INFO, because that line is written before
+the transaction rather than after it, so the INFO line alone proves nothing.
+Neither does the absence of an error. Six of those sends reached nobody with
+nothing logged at all: `sendemail` reports a connection failure loudly, as the
+`localhost` attempt above shows, and reports an authentication rejection not at
+all. It connected to Gmail with no credentials, was refused with `530
+Authentication Required`, and recorded success.
+
+The cause was where the password lived. Splunk's Settings UI writes in the
+launcher app context, so the credential landed in
+`apps/launcher/local/alert_actions.conf` while `sendemail` reads the global
+configuration and found none there. Copying the encrypted value into
+`etc/system/local/alert_actions.conf` and restarting fixed it, and
+`auth_password` then read as set through the REST API where it had read empty.
+
+Delivery is confirmed as of 2026-08-22, in two overlapping halves rather than
+one continuous run. The scheduled search fired against a real outage and
+invoked the email action at 20:15, and a send through that same `sendemail`
+path arrived in the recipient's inbox at 00:29. Both halves run through
+`sendemail`, so together they cover the path from the agent dying to a person
+being told.
+
+Splunk's `fired_alerts` endpoint is worth a separate warning. It reported zero
+triggers throughout, including for runs that provably invoked the email action,
+so it does not answer whether an alert fired. `scheduler.log` and `python.log`
+do.
+
+## Delivery failure alert verification
+
+Measured 2026-08-22 against `docker/splunk-provisioning/triage_alerts`. Two
+alerts, one for pages and one for Slack posts. Exercised with synthetic events
+written to the audit index and tagged `synthetic: true`, because producing real
+failures means breaking a live credential.
+
+| Property | How it was checked | Result |
+|---|---|---|
+| A broken destination is detected | 3 failures, nothing succeeding after | selected |
+| Below the threshold stays quiet | 2 page failures against 3 Slack | only Slack selected |
+| Destinations stay independent | both kinds failing at once | grouped separately, not pooled |
+| A recovered destination clears | one success written after the failures | not selected, no timer involved |
+| The subject names the destination | fired with actions enabled | `Action needed: triage Slack posts failing to incidents` |
+| The body names the failure type | the same email | `The Slack posts are failing with auth_failure.` |
+
+The last two rows are the ones that needed a real send. Every earlier attempt
+rendered as `Splunk Alert: Triage paging is failing`, Splunk's default template,
+because the custom text was set as `action.email.subject.alert` while Splunk
+reads `action.email.subject`. Both keys were present and the API reported the
+custom one, so the configuration looked correct and the email was not. Only
+firing it with actions enabled showed the difference.
+
+Two alerts did not fire during that run, both correctly. The heartbeat alert
+declined because the agent was up and beating. The paging alert was inside its
+one hour suppression window from a firing nine minutes earlier.
+
 ## Not yet verified
 
 Four things this file does not cover, listed so the sections above are not read
@@ -877,54 +929,3 @@ constants rather than measurements.
 An end-to-end run on the current ordering. The ticket 20 table above records the
 old one.
 
-## Comparison against the previous rubric
-
-The severity and confidence rubric was rewritten on 2026-08-06. Both versions
-were run against the same 36 tickets, with the same labels, in the same
-session, so the difference is attributable to the rubric rather than to a
-changed test set or model drift. Two runs each.
-
-| | previous rubric | current rubric |
-|---|---|---|
-| Full label | 31 of 36 | 34 of 36 |
-| Category | 35 of 36 | 36 of 36 |
-| Danger criterion failures | 1 | 0 |
-
-The danger failure under the previous rubric was a wire transfer request
-impersonating a company executive. It classified as `security_question` with
-`high_confidence` in both runs, a path that raises no alert. The category
-definition covered security events that had already occurred but not an attack
-in progress that nobody had acted on yet. Extending the definition fixed it.
-
-Two further defects were found and closed in the same rewrite:
-
-- **Severity was defined only for security incidents**, leaving the other three
-  categories with no rule to sit on. Two tickets alternated between `low` and
-  `medium`, landing on `low` in four runs of six. Defining severity separately
-  for each category removed the ambiguity.
-- **Confidence was defined in three places that disagreed.** The enum
-  descriptions and one guidance paragraph described it as how strongly the text
-  supported the classification, while a later paragraph said behaviour a user
-  could not account for should be `low_confidence`. The model followed the first
-  reading, so tickets describing something unexplained were not reaching human
-  review. Confidence is now defined once.
-
-## How prompt changes are validated
-
-Prompt changes are not applied and then measured. Both versions run in the same
-session against the same ticket set, and the comparison is per ticket rather
-than on the aggregate score, because an aggregate can stay flat while one
-ticket improves and another regresses.
-
-A change is accepted only if it holds across at least three runs, does not
-introduce an unstable ticket, and does not introduce a danger criterion failure.
-
-Two rubric drafts were rejected under this rule before the current one was
-applied. The first fixed the unstable tickets but regressed two others, and
-contained a contradiction of its own: its `high` definition said an incident of
-unknown extent belonged there, while its `critical` definition said not knowing
-what an intruder did does not lower severity. The second removed that
-contradiction but still gave different severities to two structurally identical
-tickets, both reporting a successful unauthorized login with nothing stated to
-have ended it. The third added an explicit rule that access persists until the
-ticket says otherwise, which resolved it.
