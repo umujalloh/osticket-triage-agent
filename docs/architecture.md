@@ -438,8 +438,6 @@ One write sits outside it, and it is not a triage action. The plugin's status no
  
 Latency tradeoff. Low-confidence tickets route to a human instead of paging automatically. This is safer but slower because a genuinely urgent but ambiguously worded incident waits for a human rather than paging immediately. It is a deliberate choice, since acting on an uncertain classification is the worse risk.
  
-Future hardening. Once the build is complete, a mismatch detection step can compare a ticket's current severity against the agent's decision in the Splunk audit log and alert on any disagreement. This would catch tampering or drift. Noted as a next step, not part of the current build.
- 
 ---
  
 ## 8. Trust Boundaries and Least Privilege
@@ -511,13 +509,13 @@ Audit logging. Every request the agent accepts or rejects, every classification,
  
 What is logged. For a ticket the agent processed, each entry captures the ticket ID, the agent's decision (category, severity, confidence), the action taken, and a timestamp. The classification entry also records whether osTicket authenticated the submitter as the requester address, since that is what decides whether the email was eligible to be searched. This is enough to reconstruct what the agent did to any ticket and why.
  
-This record is also what makes the future mismatch-detection hardening (Section 7) possible. That check compares a ticket's current state against what the agent decided, which only works if the decision was logged in the first place.
+This record is also what makes reconciliation possible. After an incident the audit index answers what the agent decided about any ticket and when, from a system the tampered one could not write to. Alerting continuously on a disagreement was considered and not built: the page and the channel post go out at classification time, so a priority changed afterwards hides nothing from anyone, and osTicket does not log priority changes at all, so a difference carries no actor and would fire on ordinary work.
  
 Rejected requests. A request that fails the signature check, carries a body that is not a JSON object, arrives outside the freshness window, names no usable ticket ID, or repeats an accepted ticket ID is logged with its reason and the requesting IP, so probing and replay leave a trace rather than a silent rejection. Nothing from the body is recorded when the signature check is what failed, since at that point it is unverified. These writes are queued rather than made inline, so a slow write cannot delay the response and forged requests cannot be used to stall the rejection path.
  
 Audit write failure. If a write to Splunk fails, the agent does not treat what it did as recorded, and carries on with the actions the table selected regardless. There are two cases and they do not carry the same weight.
 
-A failed classification audit write means the decision itself is unrecorded. Nothing anywhere explains why the ticket was called what it was called, which is the case Section 7's mismatch detection depends on and cannot recover from. The agent writes that fact into the ticket note, so whoever opens the ticket sees that its reasoning was never captured. osTicket is reachable when Splunk is not, and the note is written on every row of the table, so it is the one carrier available in every case.
+A failed classification audit write means the decision itself is unrecorded. Nothing anywhere explains why the ticket was called what it was called, which is what reconciliation depends on and cannot recover from. The agent writes that fact into the ticket note, so whoever opens the ticket sees that its reasoning was never captured. osTicket is reachable when Splunk is not, and the note is written on every row of the table, so it is the one carrier available in every case.
 
 A failed action audit write means Splunk has no record of an action that left its own artifact. The note is on the ticket, the priority is set, the message is in the channel. The evidence exists, only not in the audit index, so this goes to the console and no further.
 
