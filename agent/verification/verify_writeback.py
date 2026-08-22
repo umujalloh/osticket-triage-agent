@@ -21,7 +21,7 @@ if len(sys.argv) != 2 or not sys.argv[1].isdigit():
         "Exercises the plugin's write endpoints against a running stack. Two\n"
         "cases change the ticket you name, writing a real note and setting its\n"
         "priority, and the endpoints have no undo, so pick a ticket you don't\n"
-        "mind marking. Reproduces the table in docs/TESTING.md."
+        "mind marking. Reproduces the table in docs/verification.md."
     )
 
 TICKET_ID = int(sys.argv[1])

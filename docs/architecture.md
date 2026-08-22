@@ -330,7 +330,7 @@ deciding what an unresolved ticket is, and a ticket the classifier
 never labelled is the strongest form of that. If that post fails
 there is nothing behind it: the fallback page belongs to critical
 incidents, and a ticket with no classification has no severity to
-qualify. That boundary is recorded in KNOWN_LIMITATIONS.md.
+qualify. That boundary is recorded in known-limitations.md.
 
 ---
 
@@ -384,7 +384,7 @@ That second state is a direct consequence of the requester email gate in Attack 
 
 Alert delivery failure. Connection errors, timeouts, 429 and 5xx are retried three times with backoff. 400, 403, 404 and 410 are terminal, because a malformed payload, a disabled app, a revoked webhook and an archived channel are not fixed by trying again.
 
-When the retries are exhausted on a critical security incident and nothing has paged, the agent pages as a fallback, and the page says that is why. Severity alone does not qualify, since the classifier can rate an it_support ticket critical and a major outage is not what the security on-call exists for. The interruption is justified by the delivery failure rather than by confidence in the classification, and the responder is told which it is rather than being woken for what looks like a confident critical. Below critical there is no fallback: the note and the priority are still on the ticket, so it sits correctly ordered in the queue even though nobody was pushed. If both Slack and PagerDuty fail, the agent has no path left and only the audit event records it, which is stated as a boundary in KNOWN_LIMITATIONS.md rather than papered over.
+When the retries are exhausted on a critical security incident and nothing has paged, the agent pages as a fallback, and the page says that is why. Severity alone does not qualify, since the classifier can rate an it_support ticket critical and a major outage is not what the security on-call exists for. The interruption is justified by the delivery failure rather than by confidence in the classification, and the responder is told which it is rather than being woken for what looks like a confident critical. Below critical there is no fallback: the note and the priority are still on the ticket, so it sits correctly ordered in the queue even though nobody was pushed. If both Slack and PagerDuty fail, the agent has no path left and only the audit event records it, which is stated as a boundary in known-limitations.md rather than papered over.
 
 A page failing on its own is the smaller case, and it degrades rather than disappears. The page runs first, so a failure there still leaves the note, the priority and the channel post to follow, and a confident critical ends up announced in the urgent channel with a mention instead of waking someone. The reverse does not hold, which is why the fallback exists at all.
 
@@ -493,7 +493,7 @@ Splunk service account: read-only, scoped to only the index(es) enrichment queri
  
 osTicket write-back: the agent holds no osTicket API key. osTicket's own API exposes ticket creation and a cron trigger, neither of which touches an existing ticket, so notes go through an endpoint the triage plugin registers on osTicket's api signal. That endpoint implements three operations, writing an internal note, setting priority, and moving a ticket into the security department, so its scope is set by what it implements rather than by a permission list. The third takes no target, which is what keeps it from being a general transfer. It authenticates with its own HMAC secret, separate from the inbound one, so a leak of the secret that submits tickets does not also grant writing into them.
 
-All three are safe to repeat. The agent retries a write that times out, and a timeout says the reply was lost rather than that the write failed, so a retry can arrive after osTicket already committed. Setting a priority twice produces the same value, and so does moving a ticket to the department it is already in, which the endpoint reports rather than treating as a failure. Writing a note twice would not, so the endpoint answers a repeat instead of acting on it, recognising a note already posted under the agent's name. Keying that on the poster rather than on the note body avoids comparing what was sent against whatever osTicket stored. Slack has no equivalent, which is recorded in KNOWN_LIMITATIONS.md rather than solved.
+All three are safe to repeat. The agent retries a write that times out, and a timeout says the reply was lost rather than that the write failed, so a retry can arrive after osTicket already committed. Setting a priority twice produces the same value, and so does moving a ticket to the department it is already in, which the endpoint reports rather than treating as a failure. Writing a note twice would not, so the endpoint answers a repeat instead of acting on it, recognising a note already posted under the agent's name. Keying that on the poster rather than on the note body avoids comparing what was sent against whatever osTicket stored. Slack has no equivalent, which is recorded in known-limitations.md rather than solved.
  
 Claude API key: not scoped in code. Spend is capped by a limit set in the Anthropic Console, outside the agent. The agent backs off when the API rejects a call, but never limits how often it calls.
 

@@ -208,7 +208,7 @@ def begin_processing(ticket_id) -> bool:
     and both act on them.
 
     Held in memory rather than in the store, because the store is a file beside
-    a single process and KNOWN_LIMITATIONS.md already says so. A restart empties
+    a single process and known-limitations.md already says so. A restart empties
     this, which is correct: whatever it was tracking died with the process, and
     that ticket genuinely does need resuming.
     """
@@ -502,7 +502,7 @@ def _post_alert(ticket_id, classification, actions, payload, outcome, events,
         # delivery at all, so the page becomes the fallback and says so. Where
         # the table did page, the page already ran ahead of this and a second
         # one would repeat it. Both failing is the boundary in
-        # KNOWN_LIMITATIONS.md.
+        # known-limitations.md.
         if needs_fallback_page(classification, actions):
             _page(
                 ticket_id, WAKE,

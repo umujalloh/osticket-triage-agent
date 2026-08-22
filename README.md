@@ -20,9 +20,11 @@ up and says so on the ticket, so nothing waits silently on something that is
 not coming.
 
 See [docs/architecture.md](docs/architecture.md) for the design and threat
-model, [docs/TESTING.md](docs/TESTING.md) for how the agent is tested and what
-it currently scores, and
-[docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md) for what it cannot do.
+model, [docs/evaluation.md](docs/evaluation.md) for how the classifier is
+measured and what it currently scores,
+[docs/verification.md](docs/verification.md) for what the built system was
+checked to do, and [docs/known-limitations.md](docs/known-limitations.md) for
+what it cannot do.
 
 ## Why this exists
 
@@ -101,7 +103,7 @@ what that difference produced:
 
 Method and full results for that pair, including why an account-status check
 would not have been enough, are in
-[docs/TESTING.md](docs/TESTING.md#authentication-gate-verification).
+[docs/verification.md](docs/verification.md#authentication-gate-verification).
 
 ## Repository layout
 
@@ -413,5 +415,5 @@ scored separately so a regression in one cannot be hidden by the other.
 
 Current results, the method behind them, and a second pass criterion that
 measures only the failures which would leave a real incident unalerted are in
-[docs/TESTING.md](docs/TESTING.md). What the evaluation cannot tell you is in
-[docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md).
+[docs/evaluation.md](docs/evaluation.md). What the evaluation cannot tell you is in
+[docs/known-limitations.md](docs/known-limitations.md).

@@ -28,7 +28,7 @@ if len(sys.argv) != 2 or not sys.argv[1].isdigit():
         "which queues the actions that ticket is still owed.\n\n"
         "Set TRIAGE_WEBHOOK_URL if the agent is not on 127.0.0.1:8000. It has\n"
         "to match the address the agent bound to, not the one osTicket uses.\n\n"
-        "Reproduces the table in docs/TESTING.md."
+        "Reproduces the table in docs/verification.md."
     )
 
 PROCESSED_TICKET_ID = int(sys.argv[1])
@@ -153,5 +153,5 @@ if failed:
     print(f"FAILED: {', '.join(failed)}")
     sys.exit(1)
 print(f"All {ran} checks passed. Nothing was classified, written or alerted.")
-print("The accepted path is covered by the end-to-end runs in docs/TESTING.md,")
+print("The accepted path is covered by the end-to-end runs in docs/verification.md,")
 print("because a 202 queues real work against a real ticket.")

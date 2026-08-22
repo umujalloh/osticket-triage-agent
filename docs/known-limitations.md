@@ -2,9 +2,11 @@
 
 What this build cannot do, in two groups: what the classifier gets wrong and
 what the evaluation cannot tell us, then what the lab environment constrains.
-Measurements and the method behind them are in [TESTING.md](TESTING.md). Design
-rationale, including the threat model and the residual risk left after each
-defense, lives in [architecture.md](architecture.md).
+How the classifier is measured is in [evaluation.md](evaluation.md), and what
+the built system was checked to do is in
+[verification.md](verification.md). Design rationale, including the threat model
+and the residual risk left after each defense, lives in
+[architecture.md](architecture.md).
 
 ## Classifier and evaluation
 
@@ -56,7 +58,7 @@ most recently on 2026-08-06.
 
 Four of the ten rows in [action-table.md](action-table.md) are not produced by
 any ticket in the set, so those paths are unexercised. They are listed with
-current results in [TESTING.md](TESTING.md).
+current results in [evaluation.md](evaluation.md).
 
 The score is a regression detector, not an estimate of real-world accuracy.
 
