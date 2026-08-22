@@ -360,9 +360,9 @@ better. Its search was first run by hand over two windows:
 | The last ten minutes, agent running | 28 | false, stays quiet |
 | A window predating the heartbeat | 0 | true, would fire |
 
-Then end to end, against a real outage. The agent was stopped at 02:33 and left
-down. The scheduled search evaluated true from then on, and once Splunk had
-working SMTP the alert delivered:
+Then against a real outage. The agent was stopped at 02:33 and left
+down. The scheduled search evaluated true from then on, and the alert invoked
+its email action:
 
 ```
 sendemail:292 - Sending email. subject="Triage agent is not reporting",
@@ -377,16 +377,32 @@ sendemail_auth:56 - Unable to create SMTP Object. Error=[Errno 111]
 Connection refused ... server="localhost"
 ```
 
-That contrast is the useful part of the record. Both runs logged `Sending
-email` at INFO, because that line is written before the transaction rather than
-after it, so the INFO line alone proves nothing. Only the absence of the
-`sendemail_auth` error separates a delivered alert from one that went nowhere.
+Both runs logged `Sending email` at INFO, because that line is written before
+the transaction rather than after it, so the INFO line alone proves nothing.
+Neither does the absence of an error. Six of those sends reached nobody with
+nothing logged at all: `sendemail` reports a connection failure loudly, as the
+`localhost` attempt above shows, and reports an authentication rejection not at
+all. It connected to Gmail with no credentials, was refused with `530
+Authentication Required`, and recorded success.
 
-A second thing worth writing down. Splunk's `fired_alerts` endpoint reported
-zero triggers throughout, including for runs that demonstrably sent mail. It is
-not a reliable signal of whether an alert fired, and reading it as one sent this
-investigation after a trigger that was never broken. The scheduler log and
-`python.log` are what actually answer the question.
+The cause was where the password lived. Splunk's Settings UI writes in the
+launcher app context, so the credential landed in
+`apps/launcher/local/alert_actions.conf` while `sendemail` reads the global
+configuration and found none there. Copying the encrypted value into
+`etc/system/local/alert_actions.conf` and restarting fixed it, and
+`auth_password` then read as set through the REST API where it had read empty.
+
+Delivery is confirmed as of 2026-08-22, in two overlapping halves rather than
+one continuous run. The scheduled search fired against a real outage and
+invoked the email action at 20:15, and a send through that same `sendemail`
+path arrived in the recipient's inbox at 00:29. Both halves run through
+`sendemail`, so together they cover the path from the agent dying to a person
+being told.
+
+Splunk's `fired_alerts` endpoint is worth a separate warning. It reported zero
+triggers throughout, including for runs that provably invoked the email action,
+so it does not answer whether an alert fired. `scheduler.log` and `python.log`
+do.
 
 ## Resume verification
 
