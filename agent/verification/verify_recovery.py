@@ -13,7 +13,11 @@ Nothing leaves the machine. Claude is skipped by storing a decision, every
 outbound client is replaced, and the store is a throwaway file.
 """
 import asyncio
+import hashlib
+import hmac
+import json
 import os
+import sqlite3
 import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -22,6 +26,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 TEST_DB = os.path.join(tempfile.mkdtemp(prefix="triage-verify-recovery-"), "state.db")
 os.environ["TRIAGE_STATE_DB"] = TEST_DB
+
+from fastapi.testclient import TestClient
 
 import main
 import idempotency as store
@@ -157,6 +163,48 @@ with store._connect() as conn:
                  "WHERE ticket_id = '5'")
 fresh, stale = store.unfinished_payloads(3600)
 check("is dropped rather than acted on", fresh + stale, [])
+
+print()
+print("a store that fails does not strand the ticket")
+print()
+
+client = TestClient(main.app, raise_server_exceptions=False)
+
+handed_over = []
+main.process_ticket = lambda payload: handed_over.append(payload.get("ticket_id"))
+
+def deliver(ticket_id):
+    """Sends one signed webhook the way osTicket does."""
+    body = json.dumps({**payload_for(ticket_id),
+                       "created_at": datetime.now(timezone.utc).isoformat()}).encode()
+    return client.post(
+        "/webhook/ticket", content=body,
+        headers={"X-Triage-Signature": "sha256=" + hmac.new(
+            main.HMAC_SECRET.encode(), body, hashlib.sha256).hexdigest(),
+            "Content-Type": "application/json"})
+
+def store_is_down(*args, **kwargs):
+    raise sqlite3.OperationalError("database is locked")
+
+# Storing the body is the one step between the in-flight mark and the handover
+# that touches the store, so it is the one that can fail with the mark still
+# set. A mark that is never released refuses the ticket for the life of the
+# process.
+working = main.save_payload
+main.save_payload = store_is_down
+
+check("a delivery whose store write fails is not reported as delivered",
+      deliver(20).status_code, 500)
+check("  and the ticket is not left marked in flight",
+      store.ticket_key(20) in main._in_flight, False)
+
+main.save_payload = working
+
+# The plugin reads every 2xx as delivered. An in_flight answer here would take
+# the ticket out of its retry queue and nothing would ever send it again.
+check("  so the retry is accepted once the store recovers",
+      deliver(20).status_code, 202)
+check("  and the work is handed over", handed_over, [20])
 
 print()
 if failed:

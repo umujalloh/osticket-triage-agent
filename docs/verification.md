@@ -325,9 +325,11 @@ staged. What re-sends them in the deployment is the retry queue below.
 
 ## Recovery verification
 
-Measured 2026-08-22, sixteen checks offline plus one live run. The offline
+Measured 2026-08-22, twenty checks offline plus one live run. The offline
 checks replace every outbound client and skip Claude through the resume path,
-so nothing leaves the machine.
+so nothing leaves the machine. Four of them cover a store that fails while the
+agent is accepting a ticket, since a mark left set there refuses that ticket
+for the life of the process.
 
 | Property | How it was checked | Result |
 |---|---|---|

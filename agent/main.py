@@ -808,7 +808,17 @@ async def receive_ticket(request: Request, background_tasks: BackgroundTasks):
     # leaves osTicket believing the ticket was delivered and nothing willing to
     # send it again. The body is what lets the next start finish it, and it is
     # dropped as soon as the ticket completes.
-    save_payload(ticket_id, payload)
+    #
+    # This is the one step between the mark and the handover that talks to the
+    # store, so it is the one that can fail. Releasing the mark here is what
+    # keeps a locked or full database from stranding the ticket: the 500 that
+    # follows puts it back in the plugin's retry queue, where an in_flight 200
+    # would have been read as delivered and dropped it.
+    try:
+        save_payload(ticket_id, payload)
+    except Exception:
+        end_processing(ticket_id)
+        raise
 
     if not claimed:
         # Queued ahead of the work rather than after it. Background tasks run in
