@@ -95,11 +95,20 @@ async def _finish_interrupted():
     fresh, stale = await asyncio.to_thread(unfinished_payloads,
                                            RECOVERY_WINDOW_SECONDS)
 
+    # Each ticket is guarded on its own. These are the tickets nothing else will
+    # retry, so one that fails must not take the rest of the backlog with it.
+    # A guard around the loop would stop at the first failure just as surely.
+    finished = 0
+
     for payload in stale:
         # Too old to act on. A page now would be about something that happened
         # hours ago, so the ticket is handed to a person instead.
-        await asyncio.to_thread(_abandon_interrupted, payload.get("ticket_id"),
-                                payload.get("ticket_number"))
+        try:
+            await asyncio.to_thread(_abandon_interrupted, payload.get("ticket_id"),
+                                    payload.get("ticket_number"))
+        except Exception as e:
+            print(f"Ticket {payload.get('ticket_id')}: could not be handed over "
+                  f"({type(e).__name__}: {e})")
 
     for payload in fresh:
         ticket_id = payload.get("ticket_id")
@@ -108,12 +117,26 @@ async def _finish_interrupted():
         outstanding = outstanding_actions(ticket_id)
         print(f"Ticket {ticket_id}: interrupted, finishing "
               f"{', '.join(outstanding) or 'nothing'}")
-        await asyncio.to_thread(log_resumed, ticket_id=ticket_id,
-                                outstanding=outstanding)
-        await asyncio.to_thread(process_ticket, payload)
+        try:
+            await asyncio.to_thread(log_resumed, ticket_id=ticket_id,
+                                    outstanding=outstanding)
+            await asyncio.to_thread(process_ticket, payload)
+        except Exception as e:
+            # log_resumed raising would leave the mark set, since process_ticket
+            # never reached its finally. discard makes a second release harmless
+            # when process_ticket did run. The stored body survives either way,
+            # so the next start tries this ticket again.
+            end_processing(ticket_id)
+            print(f"Ticket {ticket_id}: recovery failed "
+                  f"({type(e).__name__}: {e})")
+            continue
+        # Returning without raising is not the same as being done, since every
+        # action records its own failure and carries on. The store is what knows.
+        if not outstanding_actions(ticket_id):
+            finished += 1
 
     if fresh or stale:
-        print(f"Recovery: {len(fresh)} ticket(s) finished, "
+        print(f"Recovery: {finished} ticket(s) finished, "
               f"{len(stale)} too old to finish")
 
 def _abandon_interrupted(ticket_id, ticket_number=None):
@@ -147,6 +170,21 @@ def _abandon_interrupted(ticket_id, ticket_number=None):
     _post(ticket_id, REVIEW,
           build_abandoned_message(ticket_id, ticket_number), mention=False)
 
+def _report_recovery(task):
+    """Says so when recovery dies rather than finishes.
+
+    Nothing awaits the recovery task, so an exception that escapes it is held
+    on the task and mentioned only if the object is collected. The task is
+    cancelled at shutdown before that happens, which turns a recovery that
+    never ran into silence.
+    """
+    if task.cancelled():
+        return
+    error = task.exception()
+    if error:
+        print(f"Recovery did not run to completion: "
+              f"{type(error).__name__}: {error}")
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Starts the heartbeat with the app, not with the module.
@@ -158,6 +196,7 @@ async def lifespan(app: FastAPI):
     beat = asyncio.create_task(_heartbeat_loop())
     print(f"Heartbeat every {HEARTBEAT_INTERVAL_SECONDS}s")
     recover = asyncio.create_task(_finish_interrupted())
+    recover.add_done_callback(_report_recovery)
     try:
         yield
     finally:
