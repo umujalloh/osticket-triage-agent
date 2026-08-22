@@ -19,6 +19,16 @@ rather than reclassified. After an hour of failing to deliver, the plugin gives
 up and says so on the ticket, so nothing waits silently on something that is
 not coming.
 
+A ticket the agent accepted and then crashed on is finished on restart. The
+webhook answers before the work runs, so osTicket counts that ticket as
+delivered and never sends it again. Nothing outside the agent can recover it.
+Tickets older than an hour are handed to a person instead of acted on late.
+
+The agent reports liveness to Splunk every minute. Saved searches in the repo
+alert by email when those reports stop, and when pages or Slack posts keep
+failing to the same destination. Splunk has to be running for either, which is
+why watching the audit index is still a deployment precondition.
+
 See [docs/architecture.md](docs/architecture.md) for the design and threat
 model, [docs/evaluation.md](docs/evaluation.md) for how the classifier is
 measured and what it currently scores,
@@ -110,7 +120,7 @@ would not have been enough, are in
 ```
 agent/              FastAPI service: webhook receiver, classifier, enrichment, audit logger
 docker/             Dockerfile, compose file, and Splunk provisioning for the environment
-docs/               Architecture, action table, testing, known limitations
+docs/               Architecture, action table, evaluation, verification, known limitations
 osticket-plugin/    osTicket plugin that fires the webhook
 tests/              Evaluation ticket set
 ```
@@ -336,11 +346,25 @@ SPLUNK_HEC_URL=https://localhost:8088/services/collector/event
 SPLUNK_HEC_TOKEN=the-token-you-created-in-section-3
 SPLUNK_SEARCH_URL=https://localhost:8089
 SPLUNK_AGENT_PASSWORD=the-password-you-set-in-section-3
+OSTICKET_WRITE_URL=http://localhost:8080/api/triage
+TRIAGE_WRITE_SECRET=the-write-back-secret-you-generated-in-section-2
+OSTICKET_BASE_URL=http://localhost:8080
+ENABLE_WRITES=false
 ```
 
-The first four are asserted at import time. A missing one refuses to boot rather
-than starting in a degraded state. The two search variables are read by the
-enrichment module.
+All ten are asserted at import time. A missing one refuses to boot rather than
+starting in a degraded state.
+
+`ENABLE_WRITES` has no default and must be exactly `true` or `false`. Both
+defaults would be wrong. One writes to real tickets by accident, the other
+silently does nothing.
+
+Leave it `false` for a first run. The agent still classifies, enriches and
+audits. Notes, priority changes, routing, Slack posts and pages are skipped, and
+the console says so at boot. Turning it on requires all three Slack webhooks and
+both PagerDuty routing keys, listed in
+[`agent/.env.example`](agent/.env.example), and the agent refuses to boot
+without them.
 
 `SPLUNK_ENRICHMENT_EARLIEST` defaults to `-7d`, which is the sensible window
 against live telemetry. BOTSv3 is frozen in 2018 and 2019, so a relative window
