@@ -107,6 +107,18 @@ def _ticket_url(ticket_id) -> str:
     # before clicking. Anyone holding a webhook can post a convincing fake.
     return f"{OSTICKET_BASE_URL.rstrip('/')}/scp/tickets.php?id={ticket_id}"
 
+def build_abandoned_message(ticket_id, ticket_number) -> str:
+    """The notice for a ticket the agent started and never finished.
+
+    Same situation as a classification failure, so it goes to the same channel
+    and carries as little. The agent stopped before it decided anything, so
+    there is no severity or category to state and no basis for a louder icon.
+    """
+    head = (f"{REVIEW_ICON} *triage did not finish*"
+            f"  ·  Ticket #{ticket_number or ticket_id}"
+            f"  ·  interrupted")
+    return "\n".join([head, _ticket_url(ticket_id)])
+
 def build_failure_message(ticket_id, ticket_number, failure_type) -> str:
     """The notice for a ticket Claude never classified.
 

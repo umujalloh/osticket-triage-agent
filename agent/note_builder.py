@@ -58,6 +58,19 @@ def _finish(lines, audited):
         lines += ["", "No audit record."]
     return "\n".join(lines)
 
+def build_abandoned_note() -> str:
+    """The note for a ticket the agent started and never finished.
+
+    Written when a ticket sat unfinished past the recovery window. Whatever the
+    agent managed before it stopped is on the ticket already, which is the
+    problem: a note with no priority beside it reads as a completed triage.
+    """
+    return ("Automated triage started on this ticket and did not finish.\n\n"
+            "The agent stopped partway through, and by the time it came back "
+            "the ticket was too old to act on. Anything already on the ticket "
+            "is incomplete, and no alert was raised for it.\n\n"
+            "Treat the priority as unknown and work it as an ordinary ticket.")
+
 def build_note(classification, outcome=EnrichmentOutcome.not_eligible,
                events=None, query=None, audited=True) -> str:
     """Assembles the internal note body from enrichment results.

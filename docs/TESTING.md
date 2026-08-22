@@ -404,6 +404,51 @@ triggers throughout, including for runs that provably invoked the email action,
 so it does not answer whether an alert fired. `scheduler.log` and `python.log`
 do.
 
+## Recovery verification
+
+Measured 2026-08-22, sixteen checks offline plus one live run. The offline
+checks replace every outbound client and skip Claude through the resume path,
+so nothing leaves the machine.
+
+| Property | How it was checked | Result |
+|---|---|---|
+| An accepted ticket is unfinished | body stored, not yet complete | listed for recovery |
+| A finished one is not | body dropped | not listed |
+| A completed run drops its own body | full run through `process_ticket` | body gone |
+| Recovery completes what was interrupted | note done, everything else not | priority set, alert posted |
+| It does not repeat what was done | the same run | note not rewritten |
+| A ticket past the window is not completed | backdated two hours | no actions, no alert |
+| And says so on the ticket | the same ticket | note, "did not finish" |
+| And tells the review channel | the same ticket | posted to review |
+| And records the abandonment | the same ticket | `interrupted_past_recovery_window` |
+| And is not rescanned | after abandoning | body cleared |
+| An unreadable body is dropped | column set to invalid JSON | not acted on |
+
+### A real interrupted ticket, 2026-08-22, ticket 32
+
+Submitted through the osTicket form as a confirmed user. A watcher polling the
+store killed the agent with `SIGKILL` the moment the ticket was claimed, before
+classification. osTicket had its 202 and queued no retry, so nothing in the
+deployment would have delivered that ticket again.
+
+The agent was restarted with no delivery of any kind, and on boot:
+
+```
+Ticket 32: interrupted, finishing classified
+Ticket 32: classified it_support/high/high_confidence, requester_verified=True
+Ticket 32: note written
+Ticket 32: priority normal to high
+Recovery: 1 ticket(s) finished, 0 too old to finish
+```
+
+Confirmed outside the store: ticket 32 carries priority High and a note posted
+as `Triage Agent`. No Slack post and no page, which is correct for that row.
+`requester_verified` survived the kill and the restart, which matters because it
+reads the submitter's live session and cannot be rebuilt.
+
+Reproduce the offline checks with
+`./venv/bin/python verification/verify_recovery.py` from `agent/`.
+
 ## Resume verification
 
 Measured 2026-08-20, sixteen checks, all passing, against a temporary database.

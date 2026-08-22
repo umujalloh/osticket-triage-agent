@@ -15,10 +15,10 @@ load_dotenv()
 from action_table import actions_for, PRIORITY_FOR_SEVERITY, REVIEW, WAKE
 from classifier import classify_ticket, ClassificationError
 from idempotency import (
-    claim_ticket, completed_actions, mark_done, save_classification,
-    stored_classification, ticket_key,
+    claim_ticket, clear_payload, completed_actions, mark_done, save_classification,
+    save_payload, stored_classification, ticket_key, unfinished_payloads,
 )
-from note_builder import build_note
+from note_builder import build_abandoned_note, build_note
 from osticket_client import (
     write_note, set_priority, route_to_security, OsTicketWriteError, SKIPPED,
     ALREADY_WRITTEN, ALREADY_ROUTED,
@@ -29,8 +29,8 @@ from pagerduty_client import (
 )
 from schemas import Category, EnrichmentOutcome, Severity
 from slack_client import (
-    build_message, build_failure_message, post_alert, SlackError,
-    SKIPPED as SLACK_SKIPPED,
+    build_abandoned_message, build_message, build_failure_message, post_alert,
+    SlackError, SKIPPED as SLACK_SKIPPED,
 )
 from writes import writes_enabled
 from splunk_enrichment import build_enrichment_query, enrich_ticket, EnrichmentError
@@ -78,6 +78,75 @@ async def _heartbeat_loop():
             print(f"Heartbeat failed: {type(e).__name__}: {e}")
         await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
 
+RECOVERY_WINDOW_SECONDS = int(os.getenv("RECOVERY_WINDOW_SECONDS", "3600"))
+
+async def _finish_interrupted():
+    """Finishes tickets the agent accepted and never completed.
+
+    The webhook answers 202 before the work runs, so a crash between the two
+    leaves a ticket osTicket believes was delivered. The plugin will not resend
+    it, because from its side nothing failed, and the resume needs a delivery to
+    react to. Recovery has to start here or it does not start at all.
+
+    Each ticket goes through the ordinary path, which skips the actions already
+    done and reuses the decision already made. Runs as a task rather than inline
+    so the webhook is answering while this works through the backlog.
+    """
+    fresh, stale = await asyncio.to_thread(unfinished_payloads,
+                                           RECOVERY_WINDOW_SECONDS)
+
+    for payload in stale:
+        # Too old to act on. A page now would be about something that happened
+        # hours ago, so the ticket is handed to a person instead.
+        await asyncio.to_thread(_abandon_interrupted, payload.get("ticket_id"),
+                                payload.get("ticket_number"))
+
+    for payload in fresh:
+        ticket_id = payload.get("ticket_id")
+        if not begin_processing(ticket_id):
+            continue
+        outstanding = outstanding_actions(ticket_id)
+        print(f"Ticket {ticket_id}: interrupted, finishing "
+              f"{', '.join(outstanding) or 'nothing'}")
+        await asyncio.to_thread(log_resumed, ticket_id=ticket_id,
+                                outstanding=outstanding)
+        await asyncio.to_thread(process_ticket, payload)
+
+    if fresh or stale:
+        print(f"Recovery: {len(fresh)} ticket(s) finished, "
+              f"{len(stale)} too old to finish")
+
+def _abandon_interrupted(ticket_id, ticket_number=None):
+    """Gives up on a ticket that sat unfinished past the window.
+
+    Its stored body is dropped so later starts do not rescan it, a note goes on
+    the ticket, and the review channel is told. A ticket carrying a note and no
+    priority reads as triaged when it was not, and nothing else would explain
+    the difference.
+
+    The channel post is the same answer a classification failure gets, because
+    it is the same situation: the agent never decided anything, so it cannot
+    know whether this was a critical incident, and a note nobody opens is not
+    enough on a ticket that might have been one.
+    """
+    clear_payload(ticket_id)
+    print(f"Ticket {ticket_id}: interrupted and too old to finish, "
+          f"handing it to a person")
+    _flag_human_review(ticket_id, "interrupted_past_recovery_window")
+
+    # The note lands before the post, so a reader following the link finds the
+    # ticket already carrying its explanation.
+    if not completed_actions(ticket_id)["note_written"]:
+        try:
+            write_note(ticket_id=int(ticket_id), note=build_abandoned_note(),
+                       title="Triage did not finish")
+        except Exception as e:
+            print(f"Ticket {ticket_id}: could not write the abandoned note "
+                  f"({type(e).__name__}: {e})")
+
+    _post(ticket_id, REVIEW,
+          build_abandoned_message(ticket_id, ticket_number), mention=False)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Starts the heartbeat with the app, not with the module.
@@ -88,10 +157,12 @@ async def lifespan(app: FastAPI):
     """
     beat = asyncio.create_task(_heartbeat_loop())
     print(f"Heartbeat every {HEARTBEAT_INTERVAL_SECONDS}s")
+    recover = asyncio.create_task(_finish_interrupted())
     try:
         yield
     finally:
         beat.cancel()
+        recover.cancel()
 
 app = FastAPI(lifespan=lifespan)
 
@@ -188,10 +259,16 @@ def outstanding_actions(ticket_id) -> list:
             if needed and not done[column]]
 
 def process_ticket(payload: dict):
+    ticket_id = payload.get("ticket_id")
     try:
         _process_ticket(payload)
+        # The stored body is what puts a ticket in the recovery set, so dropping
+        # it is how the ticket leaves. A run that raises keeps it and is picked
+        # up on the next start.
+        if not outstanding_actions(ticket_id):
+            clear_payload(ticket_id)
     finally:
-        end_processing(payload.get("ticket_id"))
+        end_processing(ticket_id)
 
 def _process_ticket(payload: dict):
     ticket_id = payload.get("ticket_id")
@@ -725,6 +802,13 @@ async def receive_ticket(request: Request, background_tasks: BackgroundTasks):
         )
         return JSONResponse(status_code=200,
                             content={"status": "in_flight", "ticket_id": ticket_id})
+
+    # Stored before the work starts, because the work is what might not happen.
+    # This reply is a 202 and the actions run after it, so a crash in between
+    # leaves osTicket believing the ticket was delivered and nothing willing to
+    # send it again. The body is what lets the next start finish it, and it is
+    # dropped as soon as the ticket completes.
+    save_payload(ticket_id, payload)
 
     if not claimed:
         # Queued ahead of the work rather than after it. Background tasks run in

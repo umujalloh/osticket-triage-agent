@@ -1,6 +1,7 @@
+import json
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from pydantic import ValidationError
 
@@ -28,9 +29,17 @@ ACTIONS = ("classification_audited", "note_written", "priority_set",
 # Every column beyond the two the table is created with. Actions are flags; the
 # classification is the decision itself, held so a resumed ticket finishes on
 # the decision it was already given rather than asking Claude a second question.
+#
+# payload is the webhook body, kept only while the ticket is unfinished. The
+# agent answers 202 before it does the work, so a crash between the two leaves a
+# ticket osTicket believes was delivered and nothing will send again. Holding
+# the body lets the agent finish it on the next start without another delivery.
+# It is deleted the moment the ticket completes, so ticket text is at rest only
+# for tickets actually in flight.
 COLUMNS = {
     **{a: "INTEGER NOT NULL DEFAULT 0" for a in ACTIONS},
     "classification": "TEXT",
+    "payload": "TEXT",
 }
 
 _SCHEMA = f"""
@@ -58,6 +67,26 @@ def ticket_key(ticket_id) -> str:
     """
     return str(ticket_id)
 
+def _restrict_file_mode():
+    """Keeps the store readable only by the user the agent runs as.
+
+    SQLite creates its files with the process umask, which on most hosts leaves
+    them world readable. This file holds hostnames, usernames and source
+    addresses extracted from tickets, and the body of any ticket still in
+    flight, so a mode every local account can read is wider than it needs.
+
+    The WAL and shared-memory files carry the same data before a checkpoint, so
+    they are narrowed too. A missing file is not an error, since WAL files come
+    and go.
+    """
+    for path in (DB_PATH, f"{DB_PATH}-wal", f"{DB_PATH}-shm"):
+        try:
+            os.chmod(path, 0o600)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            print(f"Could not restrict permissions on {path}: {e}")
+
 def init_db():
     """Creates the store, and adds any column an older one is missing.
 
@@ -79,6 +108,8 @@ def init_db():
                     f"ALTER TABLE processed_tickets ADD COLUMN {name} {decl}"
                 )
                 print(f"Idempotency store: added the {name} column")
+
+    _restrict_file_mode()
 
 # A store that cannot be opened means duplicate protection is not in force,
 # and writes are not safe without it.
@@ -147,6 +178,62 @@ def completed_actions(ticket_id) -> dict:
     if row is None:
         return {a: False for a in ACTIONS}
     return {a: bool(row[a]) for a in ACTIONS}
+
+def save_payload(ticket_id, payload):
+    """Keeps the webhook body while the ticket is unfinished."""
+    with _connect() as conn:
+        _ensure_row(conn, ticket_id)
+        conn.execute(
+            "UPDATE processed_tickets SET payload = ? WHERE ticket_id = ?",
+            (json.dumps(payload), ticket_key(ticket_id)),
+        )
+
+def clear_payload(ticket_id):
+    """Drops the stored body once the ticket needs it no longer.
+
+    This is also what takes the ticket out of the recovery set, so the delete
+    and the ticket being finished are the same event and cannot disagree.
+    """
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE processed_tickets SET payload = NULL WHERE ticket_id = ?",
+            (ticket_key(ticket_id),),
+        )
+
+def unfinished_payloads(within_seconds):
+    """Bodies of tickets that were accepted and never finished.
+
+    Anything older than the window is left alone and reported separately. A
+    ticket old enough that a page would no longer be the right answer should not
+    be picked up and acted on at the next restart.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=within_seconds)
+    fresh, stale = [], []
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT ticket_id, accepted_at, payload FROM processed_tickets "
+            "WHERE payload IS NOT NULL"
+        ).fetchall()
+
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"])
+            if not isinstance(payload, dict):
+                raise ValueError("payload is not a JSON object")
+        except (TypeError, ValueError) as e:
+            print(f"Ticket {row['ticket_id']}: stored payload is unreadable, "
+                  f"dropping it ({e})")
+            clear_payload(row["ticket_id"])
+            continue
+
+        try:
+            accepted = datetime.fromisoformat(row["accepted_at"])
+        except (TypeError, ValueError):
+            accepted = cutoff  # unreadable timestamp counts as too old
+
+        (fresh if accepted > cutoff else stale).append(payload)
+
+    return fresh, stale
 
 def save_classification(ticket_id, classification):
     """Keeps the decision made for a ticket, before any action acts on it.
