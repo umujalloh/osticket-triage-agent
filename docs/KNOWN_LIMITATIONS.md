@@ -237,15 +237,20 @@ incident inside a digest, and duplicate suppression is defeated by varying the
 tickets. The defence is CAPTCHA and registration on the ticket form, which is a
 deployment precondition rather than code.
 
-### Delivery failures are visible only in Splunk
+### The alerts that watch the agent have one delivery path
 
-Every failed post writes an audit event, and nothing acts on those events. The
-agent does not count failures or trip a breaker, because a component that
-monitors itself is unreliable exactly when it is broken, so noticing a run of
-failures is left to a search over the audit index. No such search ships with
-this repo, which means a revoked webhook currently fails silently on every
-ticket afterwards and the only record is in Splunk for someone who goes
-looking.
+All three Splunk alerts reach a person by email, through one SMTP account. If
+that credential is revoked, if the scheduler is disabled, or if the searches are
+deleted, no alert is sent and nothing records that.
+
+Adding a second path would mean giving Splunk a Slack webhook. That puts an
+alerting credential in another component, and it does not help with the alert
+about Slack failing. The alerts are left on one path.
+
+The cost is that a broken SMTP credential looks the same as a healthy system. On
+2026-08-21 the SMTP settings were wrong for several hours and no alert was
+delivered. The logs recorded success, and the problem was found by inspecting
+them.
 
 ### Nothing knows whether an alert was acted on
 

@@ -449,6 +449,33 @@ reads the submitter's live session and cannot be rebuilt.
 Reproduce the offline checks with
 `./venv/bin/python verification/verify_recovery.py` from `agent/`.
 
+## Delivery failure alert verification
+
+Measured 2026-08-22 against `docker/splunk-provisioning/triage_alerts`. Two
+alerts, one for pages and one for Slack posts. Exercised with synthetic events
+written to the audit index and tagged `synthetic: true`, because producing real
+failures means breaking a live credential.
+
+| Property | How it was checked | Result |
+|---|---|---|
+| A broken destination is detected | 3 failures, nothing succeeding after | selected |
+| Below the threshold stays quiet | 2 page failures against 3 Slack | only Slack selected |
+| Destinations stay independent | both kinds failing at once | grouped separately, not pooled |
+| A recovered destination clears | one success written after the failures | not selected, no timer involved |
+| The subject names the destination | fired with actions enabled | `Action needed: triage Slack posts failing to incidents` |
+| The body names the failure type | the same email | `The Slack posts are failing with auth_failure.` |
+
+The last two rows are the ones that needed a real send. Every earlier attempt
+rendered as `Splunk Alert: Triage paging is failing`, Splunk's default template,
+because the custom text was set as `action.email.subject.alert` while Splunk
+reads `action.email.subject`. Both keys were present and the API reported the
+custom one, so the configuration looked correct and the email was not. Only
+firing it with actions enabled showed the difference.
+
+Two alerts did not fire during that run, both correctly. The heartbeat alert
+declined because the agent was up and beating. The paging alert was inside its
+one hour suppression window from a firing nine minutes earlier.
+
 ## Resume verification
 
 Measured 2026-08-20, sixteen checks, all passing, against a temporary database.

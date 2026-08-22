@@ -289,16 +289,14 @@ Settings → Alert actions. The latter saves into whichever app you happened to
 be in, and settings written there may not resolve for an alert owned by a
 different app.
 
-Then set who receives it, in
-`docker/splunk-provisioning/triage_alerts/local/savedsearches.conf`:
+Then set who receives the alerts. Add `SPLUNK_ALERT_EMAIL` to `docker/.env` and
+run `docker/provision-splunk-alerts.sh`. It writes the recipient into the app's
+`local/savedsearches.conf`, which this repo does not track, then loads it into
+the running Splunk.
 
-```
-[Triage agent is not reporting]
-action.email.to = you@example.com
-```
-
-The repo does not track any `local` directory, so the address stays yours.
-Everything else about the alert ships in that app's `default`.
+The searches, their schedules and their wording all ship in `default/`. Only the
+address is deployment-specific, and it lives in `.env` alongside the other
+credentials rather than in the Splunk config.
 
 Enrichment queries run as a separate read-only user, not as admin. Set
 `SPLUNK_AGENT_PASSWORD` in `docker/.env`, then run
