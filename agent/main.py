@@ -215,6 +215,16 @@ def verify_signature(raw_body: bytes, signature_header: str) -> bool:
     if not signature_header or not signature_header.startswith("sha256="):
         return False
     received_signature = signature_header.split("=", 1)[1]
+    # compare_digest refuses text outside ASCII and raises rather than
+    # returning False. Header bytes arrive here decoded as latin-1, so without
+    # this an unsigned caller can raise inside the check itself, which answers
+    # 500 and skips the rejection log the audit trail depends on. A real
+    # signature is always 64 hex characters, so anything else is refused before
+    # the compare. Testing the length and the alphabet leaks nothing, since
+    # both are fixed by the format rather than by the secret.
+    if len(received_signature) != 64 or not all(
+            c in "0123456789abcdefABCDEF" for c in received_signature):
+        return False
     expected_signature = hmac.new(
         HMAC_SECRET.encode(), raw_body, hashlib.sha256
     ).hexdigest()

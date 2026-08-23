@@ -95,6 +95,14 @@ check("  a signature over the wrong secret is rejected",
       send(fresh(), secret="not-the-secret").status_code, 401)
 check("  a signature missing its prefix is rejected",
       send(fresh(), signature="0" * 64).status_code, 401)
+# Sent as raw bytes because the header has to reach the agent undecoded. An
+# ASCII-only client cannot produce this case, and the timing-safe comparison
+# raises on text outside ASCII rather than returning False, so before the
+# length and alphabet check this answered 500 and recorded no rejection.
+check("  a signature carrying a non-ASCII byte is rejected",
+      send(fresh(), signature="sha256=\xe9".encode("latin-1")).status_code, 401)
+check("  a signature of the wrong length is rejected",
+      send(fresh(), signature="sha256=abc").status_code, 401)
 
 print("body")
 check("  a body that is not JSON is rejected",
