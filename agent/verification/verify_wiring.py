@@ -111,7 +111,11 @@ if os.environ.get("WIRING_CASE"):
 
     main._write_ticket_note(TICKET_ID, classification, outcome, None, None, audited)
     main._set_ticket_priority(TICKET_ID, classification)
-    main._post_alert(TICKET_ID, classification, actions, payload, outcome, None)
+    # This row does not page, so nothing was owed and nothing failed. paged
+    # only changes the message when the row pages, and it carries no default
+    # so a caller cannot quietly claim a page that never happened.
+    main._post_alert(TICKET_ID, classification, actions, payload, outcome, None,
+                     paged=True)
 
     state = completed_actions(TICKET_ID)
     print(f"STORE_NOTE_WRITTEN={state['note_written']}")

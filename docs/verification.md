@@ -161,7 +161,7 @@ bytes across 20 events.
 
 ## Write-back endpoint verification
 
-Measured 2026-08-19 against the running stack.
+Measured 2026-08-23 against the running stack, twenty-five checks, all passing.
 
 | Request | Result |
 |---|---|
@@ -373,7 +373,7 @@ Reproduce the offline checks with
 
 ## Retry queue verification
 
-Measured 2026-08-20 and 21 against `osticket-plugin/class.TriagePlugin.php`.
+Measured 2026-08-20, 21 and 23 against `osticket-plugin/class.TriagePlugin.php`.
 Run against the live stack rather than a harness, because the thing under test
 is what the plugin does when the agent is not there, and that is not something
 a mock can be wrong about convincingly.
@@ -392,6 +392,15 @@ maintenance cycle and mark every older test ticket overdue.
 | A drain stops at the first failure | 26 | same cron run as ticket 25 | still queued, attempts 1 to 2 |
 | Creating a ticket drains one | 26 | ticket 27 submitted with agent up | 27 delivered, 26 drained after it |
 | The queue empties | all | after each drain | no rows left |
+| A store failure queues the ticket | 33 | store made read-only, agent up, ticket submitted | agent 500, queued, `requester_verified` 1 |
+
+Ticket 33 is the one case where the agent was running and still refused. The
+store was made unwritable, so the claim failed and the webhook answered 500
+rather than accepting a ticket it could not record. The plugin queued it,
+`api/cron.php` drained it once the store was writable again, and the agent
+classified it with `requester_verified` still true. That value is the reason the
+queue stores it rather than rebuilding it, and a retry an hour later would still
+have carried it.
 
 The third and fourth rows are the ones worth reading together. They ran in a
 single cron pass with the agent unreachable, and they are what the design is
@@ -585,8 +594,12 @@ Reproduce with `./venv/bin/python verification/verify_page_reporting.py` from
 
 ## Action wiring verification
 
-Measured 2026-08-19, thirty-nine checks, all passing. Covers whether the actions
-obey the kill switch and whether a retry can repeat one. Each case runs in its
+Measured 2026-08-23, thirty-nine checks, all passing. It did not run between
+2026-08-19 and that date, because a required argument was added to the alert
+builder and this file was not updated with it. Nothing was wrong with the agent,
+but the file this section describes had stopped running while this section said
+it passed. Covers whether the actions obey the kill switch and whether a retry
+can repeat one. Each case runs in its
 own process, because `ENABLE_WRITES` is read at import and patching it in place
 would not test what happens at boot.
 
@@ -627,7 +640,7 @@ destinations when those are configured.
 
 ## Webhook gate verification
 
-Measured 2026-08-19, eighteen checks across seventeen requests, all passing. The
+Measured 2026-08-23, twenty checks across nineteen requests, all passing. The
 duplicate request is asserted twice, on its status code and on the reason it
 gives. The endpoint osTicket calls is the only part of the agent an outsider can
 reach, and a request that fails any check here is refused before the agent does
@@ -639,6 +652,8 @@ any work.
 | Wrong signature | 401 |
 | Signed with the wrong secret | 401 |
 | Signature missing its `sha256=` prefix | 401 |
+| Signature carrying a byte outside ASCII | 401 |
+| Signature of the wrong length | 401 |
 | Body that is not JSON | 400 |
 | Body that is a JSON array | 400 |
 | Body that is a JSON string | 400 |
