@@ -9,6 +9,11 @@ ost-config.php
 # Local working files
 local/
 
+# Runtime state
+*.db
+*.db-wal
+*.db-shm
+
 # Python
 __pycache__/
 *.pyc

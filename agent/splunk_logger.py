@@ -15,7 +15,7 @@ SPLUNK_CACERT_PATH = os.path.join(
     "custom_tls", "default", "certs", "cacert.pem"
 )
 
-def _send_audit_event(event_content):
+def _send_audit_event(event_content, attempts=3):
     payload = {
         "time": datetime.now(timezone.utc).timestamp(),
         "sourcetype": "osticket:triage:audit",
@@ -24,7 +24,7 @@ def _send_audit_event(event_content):
     }
     headers = {"Authorization": f"Splunk {SPLUNK_HEC_TOKEN}"}
     last_error = None
-    for attempt in range(3):
+    for attempt in range(attempts):
         try:
             response = requests.post(
                 SPLUNK_HEC_URL, headers=headers, json=payload, verify=SPLUNK_CACERT_PATH, timeout=5
@@ -39,9 +39,9 @@ def _send_audit_event(event_content):
             return True
         except requests.exceptions.RequestException as e:
             last_error = e
-            if attempt < 2:
+            if attempt < attempts - 1:
                 time.sleep([1, 3][attempt])
-    print(f"Splunk logging failed after 3 attempts: {last_error}")
+    print(f"Splunk logging failed after {attempts} attempt(s): {last_error}")
     return False
 
 # ticket_id is passed only where the HMAC signature already verified. On a
@@ -52,6 +52,42 @@ def log_request_rejected(reason, source_ip, ticket_id=None):
         "status": "request_rejected",
         "reason": reason,
         "source_ip": source_ip,
+    })
+
+def log_heartbeat(uptime_seconds, writes_enabled):
+    """Proof the agent is alive, written on a fixed interval.
+
+    Everything else in this index is written because a ticket arrived, which
+    makes silence ambiguous: an index with no events overnight looks the same
+    whether the agent is idle or gone. This is the one event that separates
+    them, so the thing to alert on is its absence.
+
+    Sent once with no retry. A missed beat is covered by the next one, and a
+    Splunk that will not take this event cannot raise the alarm about it
+    either.
+    """
+    return _send_audit_event({
+        "status": "heartbeat",
+        "uptime_seconds": uptime_seconds,
+        # Carried so a restart loop is visible even while beats keep arriving,
+        # and so the kill switch state can be read without shelling into the
+        # host.
+        "writes_enabled": writes_enabled,
+    }, attempts=1)
+
+def log_resumed(ticket_id, outstanding):
+    """A ticket the agent accepted before and did not finish.
+
+    Repeated deliveries of one ticket are normal and mostly refused as
+    duplicates. This is the subset that was not, so the index shows which
+    tickets were interrupted and at which action, rather than showing a second
+    round of writes with nothing accounting for them.
+    """
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "triage_resumed",
+        "outstanding": outstanding,
+        "outstanding_count": len(outstanding),
     })
 
 def log_classification(ticket_id, subject, classification, requester_verified):
@@ -101,4 +137,150 @@ def log_enrichment_failure(ticket_id, failure_type, error):
         "status": "enrichment_failed",
         "failure_type": failure_type,
         "error": error,
+    })
+
+# The note body is not recorded. It is assembled from the enrichment events
+# already in the event above, and osTicket holds the note itself, so storing it
+# here would be a third copy that can disagree with the other two.
+# already_written means the endpoint found a note from the agent already there
+# and did not write a second one, which is what a retry after a timeout looks
+# like. Recorded because it is the only trace that the first write landed.
+def log_note_written(ticket_id, already_written=False):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "note_written",
+        "already_written": already_written,
+    })
+
+def log_note_skipped(ticket_id, reason):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "note_skipped",
+        "reason": reason,
+    })
+
+def log_note_failure(ticket_id, failure_type, error):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "note_failed",
+        "failure_type": failure_type,
+        "error": error,
+    })
+
+# from and to are both recorded because the agent sets priority unconditionally.
+# If it ever overwrites a value a person chose, this is where that shows up.
+def log_priority_set(ticket_id, before, after):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "priority_set",
+        "from": before,
+        "to": after,
+    })
+
+def log_priority_skipped(ticket_id, reason):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "priority_skipped",
+        "reason": reason,
+    })
+
+def log_priority_failure(ticket_id, failure_type, error):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "priority_failed",
+        "failure_type": failure_type,
+        "error": error,
+    })
+
+# The message text is not recorded. It is built from the classification and the
+# enrichment count already in the events above, so a copy here could disagree
+# with them. The channel and the mention are recorded because they are what the
+# action table produced at the time, which a later table change would otherwise
+# make unrecoverable.
+def log_slack_posted(ticket_id, channel, mentioned):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "slack_posted",
+        "channel": channel,
+        "mentioned": mentioned,
+    })
+
+def log_slack_skipped(ticket_id, channel, reason):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "slack_skipped",
+        "channel": channel,
+        "reason": reason,
+    })
+
+def log_slack_failure(ticket_id, channel, failure_type, error):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "slack_failed",
+        "channel": channel,
+        "failure_type": failure_type,
+        "error": error,
+    })
+
+# The summary is not recorded, for the same reason the Slack message text is
+# not. It is assembled from the classification and the enrichment count already
+# in the events above. Whether the page was a fallback is recorded, because that
+# is the difference between waking someone for a confident critical and waking
+# them because nothing else could reach them.
+def log_paged(ticket_id, destination, fallback):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "paged",
+        "destination": destination,
+        "fallback": fallback,
+    })
+
+def log_page_skipped(ticket_id, destination, reason):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "page_skipped",
+        "destination": destination,
+        "reason": reason,
+    })
+
+def log_page_failure(ticket_id, destination, failure_type, error):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "page_failed",
+        "destination": destination,
+        "failure_type": failure_type,
+        "error": error,
+    })
+
+# from and to are both recorded for the same reason priority records them, so
+# a move the agent made is visible as a move rather than only as a destination.
+def log_routed(ticket_id, before, after, already_routed=False):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "routed",
+        "from": before,
+        "to": after,
+        "already_routed": already_routed,
+    })
+
+def log_routing_skipped(ticket_id, reason):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "routing_skipped",
+        "reason": reason,
+    })
+
+def log_routing_failure(ticket_id, failure_type, error):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "routing_failed",
+        "failure_type": failure_type,
+        "error": error,
+    })
+
+def log_human_review(ticket_id, reason):
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "human_review",
+        "reason": reason,
     })

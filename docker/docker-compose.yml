@@ -45,6 +45,7 @@ services:
       - ./splunk-apps/botsv3_data_set:/opt/splunk/etc/apps/botsv3_data_set
       - ./splunk-provisioning/triage_agent_role:/opt/splunk/etc/apps/triage_agent_role
       - ./splunk-provisioning/custom_tls:/opt/splunk/etc/apps/custom_tls
+      - ./splunk-provisioning/triage_alerts:/opt/splunk/etc/apps/triage_alerts
 volumes:
   db_data:
   splunk_data:

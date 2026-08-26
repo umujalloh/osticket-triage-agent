@@ -28,7 +28,7 @@ EMAIL_PATTERN = re.compile(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$")
 # _raw is excluded because a raw event carries whatever its source logged,
 # credentials included, and every event returned here lands in the audit index.
 # The vendor-specific names are the ones BOTSv3 populates without CIM add-ons.
-# See docs/KNOWN_LIMITATIONS.md.
+# See docs/known-limitations.md.
 ENRICHMENT_FIELDS = (
     "_time, host, sourcetype, src_ip, dest_ip, user, action, "
     "userPrincipalName, ipAddress, loginStatus, signinErrorCode, "
