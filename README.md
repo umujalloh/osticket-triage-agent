@@ -10,7 +10,7 @@ All three phases built. Tickets are received over an authenticated webhook,
 classified, enriched with Splunk context when the gate matches, and written to a
 Splunk audit log. The agent writes an internal note back to osTicket, sets the
 ticket priority, routes security questions to a security department, posts to
-one of three Slack channels, and pages PagerDuty on a confident critical.
+one of three Slack channels, and pages PagerDuty on every critical incident.
 
 Delivery survives the agent being down. A send osTicket cannot complete is
 queued and retried on cron and on the next ticket created, and a run the agent
@@ -79,6 +79,44 @@ user scoped to a single index, and return a named field list rather than raw
 events, so credentials sitting in raw log text never enter the audit index. The
 result, or the reason there wasn't one, goes to the audit log either way.
 
+Claude only ever produces a label. Every action the agent takes comes from
+[`action_table.py`](agent/action_table.py), a fixed table of ten rows documented
+in [docs/action-table.md](docs/action-table.md), so a manipulated classification
+cannot trigger an action that was not pre-approved.
+
+[`note_builder.py`](agent/note_builder.py) builds the internal note, carrying the
+enrichment result when there was one.
+[`osticket_client.py`](agent/osticket_client.py) writes it back, sets the ticket
+priority from the severity, and moves security questions to the security
+department. It writes through
+[`class.TriageWriteController.php`](osticket-plugin/class.TriageWriteController.php),
+an endpoint the plugin registers, because osTicket's stock API can create a
+ticket and trigger cron and nothing else. The note is an internal thread entry,
+so the person who filed the ticket never sees it.
+
+[`slack_client.py`](agent/slack_client.py) posts the alert to one of three
+channels, `urgent` for critical security incidents, `incidents` for the high,
+medium and low ones, and `review` for `unclear` tickets and the security
+questions and IT requests it was not confident about.
+[`pagerduty_client.py`](agent/pagerduty_client.py) pages one of two services,
+WAKE to interrupt someone and NOTIFY to create an incident somebody owns without
+waking them. Neither module chooses where its message goes. The channel and the
+page destination are columns of the action table, selected the same way the note
+and the priority are.
+
+On a critical security incident the page goes out immediately, ahead of
+enrichment and any audit write. Both of those talk to Splunk, and a Splunk that
+hangs rather than refuses would otherwise hold the page for around two and a half
+minutes.
+
+Two modules sit between a decision and a write.
+[`idempotency.py`](agent/idempotency.py) records every completed action in a
+SQLite store that survives a restart, so a retried webhook cannot write a second
+note or send a second page. [`writes.py`](agent/writes.py) reads `ENABLE_WRITES`
+once at import and exposes the single check every write path calls. It has no
+default and accepts only `true` or `false`, so a misspelled value stops the agent
+at boot instead of reading as off. Audit logging is never disabled by it.
+
 If Claude fails to return a classification, rate limited, unreachable, a bad
 credential, or an invalid response, the agent flags the ticket for human review
 and logs the specific failure type to Splunk instead of guessing at a
@@ -89,39 +127,40 @@ outside Splunk records how it was reached, so the agent writes that gap onto
 the ticket note. The full breakdown is in
 [docs/architecture.md](docs/architecture.md#6-failure-modes-for-the-claude-dependency).
 
-Claude only ever produces a label. Every action the agent takes comes from a
-fixed table in code ([docs/action-table.md](docs/action-table.md)), so a
-manipulated classification cannot trigger an action that was not pre-approved.
-
 ## Example
 
-Two tickets submitted through osTicket, a reported phishing click and a printer
-out of paper, classified and audited:
+One ticket, submitted through the osTicket form by a signed-in user reporting an
+account they could not lock an intruder out of. It classified
+`security_incident / critical / high_confidence`, which writes a note, sets
+priority, alerts the urgent channel with a mention, and pages someone awake.
 
-![Agent output](docs/images/classification-output.png)
+The internal note it wrote on the ticket, invisible to the person who filed it,
+carries twenty related events and the query that produced them. That query is
+built only from values the server could verify, never from the ticket text.
 
-![Splunk audit events](docs/images/splunk-audit.png)
+![The agent's note on the ticket](docs/images/ticket-note.png)
 
-The same ticket filed twice with the same requester address, once as a guest and
-once signed in as that address. The classification is identical both times. The
-only difference is whether the agent was allowed to search that address, and
-what that difference produced:
+The alert to the urgent Slack channel carries no ticket subject, no requester
+address and no enrichment detail, because none of those may leave the trust zone.
 
-![Authentication gate, agent output](docs/images/auth-gate-console.png)
+![The Slack alert](docs/images/slack-alert.png)
 
-![Authentication gate, audit record](docs/images/auth-gate.png)
+The audit index records every step, with the page landing first, ahead of
+enrichment and ahead of the audit writes.
 
-Method and full results for that pair, including why an account-status check
-would not have been enough, are in
-[docs/verification.md](docs/verification.md#authentication-gate-verification).
+![The audit sequence in Splunk](docs/images/audit-sequence.png)
+
+Method and full results for the runs behind these, including the authentication
+gate pair, are in [docs/verification.md](docs/verification.md).
 
 ## Repository layout
 
 ```
-agent/              FastAPI service: webhook receiver, classifier, enrichment, audit logger
+agent/              FastAPI service: webhook receiver, classifier, enrichment, actions, audit logger
+agent/verification/ 10 verifiers, 265 checks, each reproducible from one command
 docker/             Dockerfile, compose file, and Splunk provisioning for the environment
 docs/               Architecture, action table, evaluation, verification, known limitations
-osticket-plugin/    osTicket plugin that fires the webhook
+osticket-plugin/    osTicket plugin that fires the webhook and receives write-backs
 tests/              Evaluation ticket set
 ```
 

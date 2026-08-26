@@ -64,7 +64,7 @@ check("a claim on its own is still undecided",
       main.outstanding_actions(2), [main.UNDECIDED])
 
 print()
-print("A confident critical, the row that reaches every action")
+print("A confident critical, which selects all five actions")
 print()
 
 CRITICAL = ["classification_audited", "note_written", "paged", "priority_set",

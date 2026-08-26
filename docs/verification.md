@@ -49,9 +49,10 @@ are the ones that exercise Phase 3.
 
 ### The full path, 2026-08-19, ticket 20
 
-A confident critical, the only row that reaches every action the agent has.
-Submitted through the osTicket form as a confirmed user, with text describing an
-account the submitter could not lock an intruder out of.
+A confident critical. It writes a note, sets priority, posts to the urgent
+channel with a mention, and pages WAKE. Submitted through the osTicket form as a
+confirmed user, with text describing an account the submitter could not lock an
+intruder out of.
 
 | Time | Event | Value |
 |---|---|---|
@@ -71,12 +72,40 @@ earlier run had produced. A push notification arrived on the responder's phone.
 The ordering in this run has since been changed and no longer describes the
 agent. The page ran after enrichment here, which meant it also ran after two
 audit writes, so a Splunk that hung rather than refused would have held it for
-around 133 seconds. The page now goes out before both. A fresh run is needed to
-record the new order, and until it exists this table is a record of the old
-one.
+around 133 seconds. The page now goes out before both. Ticket 36 below records
+the new order, and this table is a record of the old one.
 
 What the run still shows is every action reaching its destination on a confident
 critical, and the enrichment content that lands on the ticket.
+
+### The full path on the current ordering, 2026-08-25, ticket 36
+
+Submitted through the osTicket form as a confirmed user, reporting an account the
+submitter could not lock an intruder out of. A confident critical, which writes a
+note, sets priority, posts to the urgent channel with a mention, and pages WAKE.
+
+| Time | Event | Value |
+|---|---|---|
+| 23:58:35.791 | paged | WAKE |
+| 23:58:35.802 | classification_complete | security_incident / critical / high_confidence, `requester_verified` true |
+| 23:58:37.430 | enrichment_complete | 20 events |
+| 23:58:37.486 | note_written | |
+| 23:58:37.530 | priority_set | normal to emergency |
+| 23:58:37.786 | slack_posted | urgent, mentioned true |
+
+This is the run the ticket 20 section was waiting for. The page is first, 11ms
+ahead of the classification audit write and 1.6 seconds ahead of enrichment. That
+is the order the agent was changed to on 2026-08-19, hours after the ticket 20
+run, and no live run had recorded it until now.
+
+Confirmed outside Splunk. Ticket 36, number 114404, priority Emergency, and one
+internal note posted as `Triage Agent`, type N. The note holds 20 events spanning
+2018-08-20 13:10:25 to 15:07:39, grouped into sign-in outcomes, source and
+destination addresses, accounts and applications. Its last line is the query that
+produced them, `index=botsv3 ("bgist@froth.ly" OR "172.21.0.1") earliest=0`,
+which names only the verified requester address and the IP the server observed.
+
+The three screenshots in [the README](../README.md#example) are this run.
 
 ### Acting through a Splunk outage, 2026-08-18, ticket 18
 
