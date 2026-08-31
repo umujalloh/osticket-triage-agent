@@ -105,7 +105,7 @@ destination addresses, accounts and applications. Its last line is the query tha
 produced them, `index=botsv3 ("bgist@froth.ly" OR "172.21.0.1") earliest=0`,
 which names only the verified requester address and the IP the server observed.
 
-The three screenshots in [the README](../README.md#example) are this run.
+The three screenshots in [the README](../README.md#a-triaged-ticket) are this run.
 
 ### Acting through a Splunk outage, 2026-08-18, ticket 18
 

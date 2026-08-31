@@ -1,48 +1,55 @@
 # osTicket AI Triage Agent
 
-An AI triage layer for osTicket helpdesk tickets. Classifies incoming tickets
-for security relevance, enriches them with Splunk data, and routes them to the
-right place. Real security incidents stop getting buried in helpdesk noise.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
+[![Verifiers](https://github.com/umujalloh/osticket-triage-agent/actions/workflows/verify.yml/badge.svg?branch=main)](https://github.com/umujalloh/osticket-triage-agent/actions/workflows/verify.yml)
 
-## Status
+**An AI triage layer for osTicket. Claude classifies incoming tickets, a fixed
+action table decides what happens, and every decision is logged to Splunk. Real
+security incidents stop getting buried in helpdesk noise.**
 
-All three phases built. Tickets are received over an authenticated webhook,
-classified, enriched with Splunk context when the gate matches, and written to a
-Splunk audit log. The agent writes an internal note back to osTicket, sets the
-ticket priority, routes security questions to a security department, posts to
-one of three Slack channels, and pages PagerDuty on every critical incident.
+Built by Umu Jalloh · CompTIA Security+, Network+, AWS Solutions Architect – Associate · Cybersecurity and Computer Forensics, Stark State College
 
-Delivery survives the agent being down. A send osTicket cannot complete is
-queued and retried on cron and on the next ticket created, and a run the agent
-was interrupted partway through is resumed on the decision it already made
-rather than reclassified. After an hour of failing to deliver, the plugin gives
-up and says so on the ticket, so nothing waits silently on something that is
-not coming.
+---
 
-A ticket the agent accepted and then crashed on is finished on restart. The
-webhook answers before the work runs, so osTicket counts that ticket as
-delivered and never sends it again. Nothing outside the agent can recover it.
-Tickets older than an hour are handed to a person instead of acted on late.
-
-The agent reports liveness to Splunk every minute. Saved searches in the repo
-alert by email when those reports stop, and when pages or Slack posts keep
-failing to the same destination. Splunk has to be running for either, which is
-why watching the audit index is still a deployment precondition.
-
-See [docs/architecture.md](docs/architecture.md) for the design and threat
-model, [docs/evaluation.md](docs/evaluation.md) for how the classifier is
-measured and what it currently scores,
-[docs/verification.md](docs/verification.md) for what the built system was
-checked to do, and [docs/known-limitations.md](docs/known-limitations.md) for
-what it cannot do.
-
-## Why this exists
+## What this is
 
 Helpdesk queues mix routine IT requests with early signals of real security
 incidents. A compromised account or a phishing report can sit unread behind
-printer tickets. This agent triages every ticket as it arrives, flags the
-security-relevant ones, and enriches them with context from the SIEM before a
-human ever looks.
+printer tickets.
+
+This agent triages every ticket as it arrives. It classifies the ticket for
+security relevance, enriches the serious ones with context from the SIEM, writes
+an internal note back to the ticket, sets its priority, routes it, alerts Slack,
+and pages PagerDuty on every critical security incident. A human opens a ticket
+that has already been triaged.
+
+Claude only ever produces a label. It never writes, never generates a query, and
+never selects an action. A fixed table in code maps a classification to an
+action, so a manipulated classification cannot trigger something that was not
+pre-approved.
+
+---
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A[Ticket in<br/>osTicket] --> B[Plugin<br/>HMAC-signed]
+    B --> C{Webhook<br/>gate}
+    C -->|refused| X[401 or 400<br/>logged, no work done]
+    C -->|accepted| D[Claude<br/>label only]
+    D --> E[Action table<br/>fixed in code]
+    E -->|security_incident<br/>+ critical| P[PagerDuty<br/>page]
+    P --> I[Splunk<br/>enrichment]
+    I --> F[Note, priority,<br/>routing, Slack]
+    E --> F
+    P --> G[(Splunk<br/>audit index)]
+    F --> G
+```
+
+Every action starts at the table.
+
+---
 
 ## How it works
 
@@ -50,39 +57,29 @@ A user submits a ticket in osTicket. The
 [plugin](osticket-plugin/class.TriagePlugin.php) fires on ticket creation, signs
 the payload with HMAC-SHA256, and POSTs it to the agent.
 [`main.py`](agent/main.py) verifies the signature against the raw request body
-and rejects anything that fails.
+and rejects anything that fails, along with anything replayed or already seen. It
+returns `202` as soon as those checks pass and runs the work in a background
+task, so a slow or rate-limited Claude call cannot hang the request osTicket is
+waiting on.
 
 [`classifier.py`](agent/classifier.py) sends the ticket text to Claude as
 user-role content wrapped in delimiters, with the classification instructions in
-the system role. Claude returns a category, severity, and confidence,
-constrained by a tool schema and validated against the Pydantic model in
-[`schemas.py`](agent/schemas.py). [`splunk_logger.py`](agent/splunk_logger.py)
-writes the result to Splunk over HEC.
+the system role. Claude returns a category, severity, and confidence, constrained
+by a tool schema at the API layer and validated again against the Pydantic model
+in [`schemas.py`](agent/schemas.py), so a hostname or username the API accepted
+but the agent will not allow fails here rather than downstream.
 
-When a ticket lands on `security_incident` at `critical` severity,
+That classification is the last thing Claude contributes.
+[`action_table.py`](agent/action_table.py) maps category, severity and confidence
+to a set of actions. Ten rows, documented in
+[docs/action-table.md](docs/action-table.md), covering every combination of the
+three, and the table is the contract between what the classifier says and what
+the agent does.
+
 [`splunk_enrichment.py`](agent/splunk_enrichment.py) searches Splunk for related
-events. Confidence does not gate this, because the tickets that read as
+events when the table selects enrichment, on `security_incident` at `critical`
+severity. Confidence does not gate this, because the tickets that read as
 uncertain are the ones a reviewer most needs context for.
-
-It searches on the submitter's IP, which the server observes, and on the
-requester email only when osTicket reports the ticket was filed from an
-authenticated session for that address. On an open ticket form the email is
-whatever the submitter typed, so an unverified one is a search target the
-submitter picked and never reaches a query. Any hostname, username, or IP the
-classifier extracted from the ticket text is treated the same way: validated and
-recorded in the audit log, never searched for. Every value is validated against a
-strict pattern inside the enrichment module before it can reach a query,
-independent of whether the caller already validated it.
-
-Queries are built from fixed templates, run read-only, authenticate as a Splunk
-user scoped to a single index, and return a named field list rather than raw
-events, so credentials sitting in raw log text never enter the audit index. The
-result, or the reason there wasn't one, goes to the audit log either way.
-
-Claude only ever produces a label. Every action the agent takes comes from
-[`action_table.py`](agent/action_table.py), a fixed table of ten rows documented
-in [docs/action-table.md](docs/action-table.md), so a manipulated classification
-cannot trigger an action that was not pre-approved.
 
 [`note_builder.py`](agent/note_builder.py) builds the internal note, carrying the
 enrichment result when there was one.
@@ -100,14 +97,18 @@ medium and low ones, and `review` for `unclear` tickets and the security
 questions and IT requests it was not confident about.
 [`pagerduty_client.py`](agent/pagerduty_client.py) pages one of two services,
 WAKE to interrupt someone and NOTIFY to create an incident somebody owns without
-waking them. Neither module chooses where its message goes. The channel and the
-page destination are columns of the action table, selected the same way the note
-and the priority are.
+waking them. Neither module chooses where its message goes.
+The channel and the page destination are columns of the action table, selected
+the same way the note and the priority are.
 
 On a critical security incident the page goes out immediately, ahead of
 enrichment and any audit write. Both of those talk to Splunk, and a Splunk that
-hangs rather than refuses would otherwise hold the page for around two and a half
-minutes.
+hangs rather than refuses would otherwise hold the page for over two minutes.
+
+[`splunk_logger.py`](agent/splunk_logger.py) writes an audit event for the
+classification, the enrichment result, every action taken, and every request the
+gate refused. The index is what lets someone reconstruct how a ticket was handled
+without trusting the systems it passed through.
 
 Two modules sit between a decision and a write.
 [`idempotency.py`](agent/idempotency.py) records every completed action in a
@@ -117,366 +118,235 @@ once at import and exposes the single check every write path calls. It has no
 default and accepts only `true` or `false`, so a misspelled value stops the agent
 at boot instead of reading as off. Audit logging is never disabled by it.
 
-If Claude fails to return a classification, rate limited, unreachable, a bad
-credential, or an invalid response, the agent flags the ticket for human review
-and logs the specific failure type to Splunk instead of guessing at a
-classification. Flagging means a post to the review channel naming the ticket
-and the failure, which is all the agent can do with no classification to work
-from. When the audit write fails instead, the classification stands but nothing
-outside Splunk records how it was reached, so the agent writes that gap onto
-the ticket note. The full breakdown is in
-[docs/architecture.md](docs/architecture.md#6-failure-modes-for-the-claude-dependency).
+---
 
-## Example
+## The trust boundary
+
+Ticket text is written by whoever filed the ticket, which on an open form is
+anyone on the internet. Claude reads it, the classifier extracts entities from
+it, enrichment would search on those entities if allowed to, and a Slack alert
+would carry it into a trusted channel if nothing stopped it. Four rules govern
+how far it gets.
+
+**Untrusted input stays in the user role.** Ticket subject and body are wrapped
+in delimiters and sent as user-role content, with the classification instructions
+in the system role. The model is never handed a prompt with submitter text
+spliced into its instructions.
+
+**Claude may produce a label and nothing else.** It never writes, never generates
+a query, and never selects an action. The response is constrained twice, once by
+the tool schema and once by the application's own model, and a response that
+fails either is a failure rather than a classification.
+
+**Only server-observed values may be searched.** Enrichment queries the
+submitter's IP, which the server observes, and the requester email only when
+osTicket reports the ticket was filed from an authenticated session for that
+address. On an open form the email is whatever the submitter typed, so an
+unverified one is a search target the submitter chose, and it never reaches a
+query. Two tickets from the same address, one signed in and one not, are
+compared in
+[docs/verification.md](docs/verification.md#authentication-gate-verification).
+
+Any hostname, username, or IP the classifier extracted from ticket text is
+treated the same way. **Validated, recorded in the audit log, never searched
+for.** An extracted entity is a value an attacker wrote, and searching on it
+hands the attacker the search. Every value is validated against a strict pattern
+inside the enrichment module, independent of whether the caller already validated
+it.
+
+Queries are fixed templates run under least privilege. No SPL is generated. The
+enrichment user is scoped to a single index with no admin, write, or real-time
+search capability. Results come back as a named field list rather than raw
+events, so credentials sitting in raw log text never enter the audit index.
+
+**Nothing the submitter wrote leaves the trust zone.** Every field in a Slack
+alert or a PagerDuty page is one the agent generated. Severity, category, ticket
+number, an enrichment count, and a link.
+
+Three exclusions are deliberate:
+
+- **The ticket subject**, because Slack renders a bare URL as a clickable link. A
+  subject would let anyone who can file a ticket plant a link in a trusted
+  channel under the agent's name.
+- **The requester's address**, because it is personal data the ticket already
+  holds inside the zone.
+- **Enrichment results**, because they reveal what this organisation detects and
+  with what tooling.
+
+That is a rule rather than a judgement made field by field, so adding a field
+later is a decision about the rule.
+
+---
+
+## When things fail
+
+A triage system is most dangerous when it fails silently. A ticket that was never
+classified looks exactly like a ticket classified as routine, and both look like
+an empty queue. Every failure path below ends somewhere a human can see, on the
+ticket, in a channel, or in the audit index.
+
+**Claude fails.** Rate limited, unreachable, a bad credential, or an invalid
+response. The agent posts the ticket number and the failure type to the review
+channel and logs it to Splunk. It never constructs a placeholder classification.
+There is no classification to act on and it will not invent one. The six failure
+categories and what each one retries are in
+[architecture.md, Section 6](docs/architecture.md#6-failure-modes-for-the-claude-dependency).
+
+**The audit write fails.** If the classification never reached Splunk, nothing
+outside the ticket explains how it was labelled, so the agent writes that gap
+onto the note. If an action never reached Splunk, the action still happened and
+left its own evidence, a note on the ticket or a message in Slack, so the agent
+prints it to the console instead.
+
+**Splunk enrichment fails.** The ticket still gets its note, its priority and its
+alert. The note and the alert each report one of four outcomes:
+
+- **`not_eligible`**, the ticket was never a critical security incident, so no
+  line appears at all
+- **`completed`**, which reads as `20 related events` or `no related events`
+- **`no verified identifier`**, meaning there was nothing safe to search on
+- **`enrichment unavailable`**, meaning Splunk could not be reached
+
+Searching and finding nothing, and never searching at all, mean opposite things.
+Four states exist so that those two can never be read as the same one.
+
+**The agent is down.** osTicket queues the send in its own table and retries on
+cron and on the next ticket created. After a configurable window, one hour by
+default, it gives up and says so on the ticket. There is one status note per
+ticket, rewritten in place, so two notes can never disagree.
+
+**The agent crashes mid-ticket.** On restart it finishes what it accepted,
+working from the decision it already made rather than reclassifying. osTicket was
+already told the ticket arrived and will never send it again, so nothing else can
+recover it. Anything older than an hour is handed to a person instead, because
+paging about an incident from hours ago is worse than a note asking someone to
+look.
+
+**The agent stops entirely.** It writes a liveness event to Splunk every minute.
+Three saved searches ship with the repo and alert by email when those events
+stop, when pages keep failing to a destination, and when Slack posts do.
+
+---
+
+## A triaged ticket
 
 One ticket, submitted through the osTicket form by a signed-in user reporting an
 account they could not lock an intruder out of. It classified
 `security_incident / critical / high_confidence`, which writes a note, sets
 priority, alerts the urgent channel with a mention, and pages someone awake.
 
-The internal note it wrote on the ticket, invisible to the person who filed it,
-carries twenty related events and the query that produced them. That query is
-built only from values the server could verify, never from the ticket text.
+**On the ticket.** An internal note, invisible to the person who filed it,
+carrying twenty related events grouped into sign-in outcomes, addresses, accounts
+and applications. The last line is the query that produced them, built only from
+values the server could verify, never from the ticket text.
 
 ![The agent's note on the ticket](docs/images/ticket-note.png)
 
-The alert to the urgent Slack channel carries no ticket subject, no requester
-address and no enrichment detail, because none of those may leave the trust zone.
+**In Slack.** The alert to the urgent channel. Severity, category, ticket number,
+confidence, page destination, event count, and a link. No subject, no requester
+address, no enrichment detail, because none of those may leave the trust zone.
 
 ![The Slack alert](docs/images/slack-alert.png)
 
-The audit index records every step, with the page landing first, ahead of
+**In the audit index.** Every step recorded, and the page landing first, ahead of
 enrichment and ahead of the audit writes.
 
 ![The audit sequence in Splunk](docs/images/audit-sequence.png)
 
-Method and full results for the runs behind these, including the authentication
-gate pair, are in [docs/verification.md](docs/verification.md).
+---
+
+## Verification
+
+| | |
+|---|---|
+| Offline checks | **181** across 7 verifiers |
+| Checks against a live stack | **84** across 3 verifiers |
+| Real tickets used in live runs | **16** |
+
+Full method and results in [docs/verification.md](docs/verification.md). The
+verifiers are in [`agent/verification/`](agent/verification/) and each one is
+reproducible from a single command.
+
+Fourteen defects are recorded across those runs and verifiers. Six were found
+only by running real tickets through a real stack, and no unit test would have
+caught them, because none of them lives in the code a unit test calls.
+
+| Found by | Example |
+|---|---|
+| Live runs on a real stack | The agent was bound to `127.0.0.1`, so the osTicket container could never reach it. Tickets were silently never triaged. |
+| Pressure-testing the store | A failed store write left the in-flight mark set, locking that ticket out of every later delivery for the life of the process. |
+| Walking every action-table row | The fallback page tested severity alone, so an `it_support` ticket rated critical would have paged the security on-call. |
+
+What the verifiers cannot reach is in
+[docs/known-limitations.md](docs/known-limitations.md), including why this lab
+cannot demonstrate a real interrupting page.
+
+---
+
+## Classifier evaluation
+
+Scored against 36 hand-written tickets with expected labels in
+[tests/eval_tickets.json](tests/eval_tickets.json).
+[`run_eval.py`](agent/run_eval.py) sends each ticket's subject and message to the
+classifier and compares the result against the expected label. Expected labels
+are never sent to the model, and classification and entity extraction are scored
+separately so a regression in one cannot hide behind the other.
+
+| Metric | Result |
+|---|---|
+| Category | 36 of 36 |
+| Full label | 34 of 36 |
+| Entity extraction | 36 of 36 |
+| Unstable tickets across nine runs | 0 |
+| Danger criterion | **0 failures in 180 classifications** |
+
+The danger criterion counts only the failures that would leave a real incident
+unalerted, ignoring disagreements that would not. Method and current results in
+[docs/evaluation.md](docs/evaluation.md).
+
+The score is a regression detector, not an estimate of real-world accuracy. What
+the evaluation cannot tell you is in
+[docs/known-limitations.md](docs/known-limitations.md).
+
+---
 
 ## Repository layout
 
 ```
-agent/              FastAPI service: webhook receiver, classifier, enrichment, actions, audit logger
-agent/verification/ 10 verifiers, 265 checks, each reproducible from one command
-docker/             Dockerfile, compose file, and Splunk provisioning for the environment
-docs/               Architecture, action table, evaluation, verification, known limitations
-osticket-plugin/    osTicket plugin that fires the webhook and receives write-backs
-tests/              Evaluation ticket set
+agent/                  FastAPI service: webhook, classifier, enrichment, actions, audit
+agent/verification/     10 verifiers, 265 checks, each reproducible from one command
+docker/                 Dockerfile, compose file, Splunk provisioning and saved searches
+docs/                   Architecture, action table, evaluation, verification, limitations, setup
+osticket-plugin/        osTicket plugin: signing, delivery, retry queue, status note
+tests/                  Labelled ticket set for the classifier evaluation
 ```
 
-## Setup
+---
+
+## Documentation
+
+- [Architecture](docs/architecture.md) — design, threat model, trust boundaries
+- [Action table](docs/action-table.md) — the contract between classification and action
+- [Verification](docs/verification.md) — what the built system was checked to do
+- [Evaluation](docs/evaluation.md) — how the classifier is measured and what it scores
+- [Known limitations](docs/known-limitations.md) — what this build cannot do
+- [Setup](docs/setup.md) — running the whole stack yourself, from an empty
+  directory to a triaged ticket
+
+---
+
+## Deployment preconditions
+
+Four things the agent cannot enforce and the design depends on. Nothing looks
+broken when they are missing, which is what makes them worth checking. Reasoning
+in [architecture.md, Section 10](docs/architecture.md#10-deployment-preconditions).
+
+- **A security department in osTicket** an agent can actually see, or routed
+  tickets vanish from every view while the agent reports success.
+- **Notifications enabled on the urgent Slack channel.** The agent cannot set
+  them and cannot detect that they are unset. The same holds for PagerDuty.
+- **Something outside the agent watching the audit index**, since the agent
+  cannot raise an alarm that its own audit trail has stopped.
+- **CAPTCHA enabled and client registration set deliberately**, or anyone can
+  submit unlimited tickets and bury a real incident under noise.
 
-### Prerequisites
-
-- Docker and Docker Compose
-- Python 3.11 or newer (developed and tested on 3.14)
-- An Anthropic API key
-
-### 1. osTicket environment
-
-```bash
-cd docker
-cp .env.example .env
-```
-
-Edit `docker/.env` and set your own database credentials. These exact values
-are used again during the osTicket installer, so keep them to hand.
-
-The Dockerfile removes osTicket's `setup/` directory, which is a live
-installer page and a liability once osTicket is installed. That directory has
-to exist for the first install, so the first build is done with that line
-commented out.
-
-Comment out this two-line instruction in [docker/Dockerfile](docker/Dockerfile),
-the one that removes `setup/` and chowns the plugin directory:
-
-```dockerfile
-# RUN rm -rf /var/www/html/setup \
-#     && chown -R www-data:www-data /var/www/html/include/plugins/triage-webhook
-```
-
-Then build the image and create the config file:
-
-```bash
-docker compose build osticket
-docker compose run --rm --no-deps --entrypoint cat osticket \
-  /var/www/html/include/ost-sampleconfig.php > ost-config.php
-chmod 0666 ost-config.php
-```
-
-[docker/docker-compose.yml](docker/docker-compose.yml) mounts `ost-config.php`
-into the container so the install survives a rebuild. Docker creates that path
-as a directory if the file does not exist yet, which leaves the installer with
-nowhere to write, so it has to be copied out of the image first.
-
-Start the stack:
-
-```bash
-docker compose up -d --build
-```
-
-Open `http://localhost:8080` and run the installer. Use `db` as the MySQL
-hostname, since that is the service name on the Docker network. The database
-name, user, and password must match what you set in `docker/.env`.
-
-Once the installer finishes, uncomment both lines and rebuild:
-
-```bash
-docker compose up -d --build
-```
-
-`ost-config.php` holds the database credentials and osTicket's secret salt, so
-it is not committed. Each install generates its own. Only the installer needs it
-writable, so tighten it back down now that the install is finished:
-
-```bash
-chmod 0644 ost-config.php
-```
-
-### 2. Plugin configuration
-
-The plugin files are copied into the image by the Dockerfile, so osTicket will
-already see the plugin. The instance still has to be created by hand.
-
-Generate a shared secret. Python's standard library covers this, no project
-setup needed yet:
-
-```bash
-python3 -c "import secrets; print(secrets.token_hex(32))"
-```
-
-Save the output, this value goes into `agent/.env` in Section 4 as well.
-
-Log into the staff panel at `http://localhost:8080/scp`, then Manage →
-Plugins. Open AI Triage Webhook and set it to Active. Add an instance, give it
-a name, set its status to Active, and on the Config tab set:
-
-- FastAPI Webhook URL: `http://host.docker.internal:8000/webhook/ticket`
-- HMAC Shared Secret: the value you just generated
-- HMAC Write-Back Secret: a second value from the same command, not the same
-  one. This authenticates the agent writing into tickets, so a leak of one
-  secret does not grant the other.
-- Security Department: the osTicket department that owns security questions.
-  It must already exist and somebody must have access to it, or routed tickets
-  land where nobody can see them. Leave blank to disable routing.
-- Retry Window (minutes): how long a ticket the agent never accepted keeps
-  being retried before the plugin gives up and notes that on the ticket.
-  Defaults to 60 when blank.
-
-The container reaches the agent through `host.docker.internal`, which resolves
-via the `extra_hosts` entry in
-[docker-compose.yml](docker/docker-compose.yml). The agent must be listening
-on port 8000 on the host.
-
-Finally, give osTicket a real cron schedule. The retry queue drains on cron and
-on the next ticket created, and during an outage only cron happens, since an
-agent accepting nothing gives nobody a reason to file the ticket that would
-trigger the other. On the host:
-
-```bash
-crontab -e
-```
-
-```
-*/5 * * * * docker exec osticket-triage-osticket-1 php /var/www/html/api/cron.php
-```
-
-osTicket's autocron setting is not a substitute. It fires from a 1x1 image on
-staff pages, so it only runs while an agent is browsing, which is not the hour
-a queue most needs draining.
-
-Note that this also starts osTicket's own maintenance cycle, which has been
-dormant. If the helpdesk has tickets older than the SLA grace period, the first
-run marks them overdue and tries to alert on them. Turn off overdue alerts
-under Admin Panel → Settings → Alerts and Notices first if that is not wanted.
-
-Those notices, along with staff alerts and auto-replies, send from the address
-in `default_email_id`. Configure SMTP on it unless the deployment has no real
-submitters. Unconfigured, they fail silently into the container log, and
-nothing in the interface says so.
-
-### 3. Splunk
-
-Splunk runs as part of the same Docker Compose stack and already started in
-Section 1. Set `SPLUNK_PASSWORD` in `docker/.env` (8 or more characters,
-mixing letters and numbers, Splunk rejects overly simple passwords even at
-8 characters).
-
-The agent verifies its TLS connection to Splunk against a certificate
-generated for this deployment, not Splunk's shipped default (the same
-certificate and private key ship in every default Splunk install, so
-trusting it wouldn't prove anything). Run `docker/generate-splunk-cert.sh`
-now, before starting Splunk - docker-compose.yml points Splunk at this
-certificate from its first boot, so it needs to exist beforehand. The
-output is gitignored and not committed. See
-[`splunk_logger.py`](agent/splunk_logger.py).
-
-Enrichment searches the BOTSv3 dataset, which is not committed. Download the
-BOTSv3 data set app and unpack it to `docker/splunk-apps/botsv3_data_set`, which
-[docker-compose.yml](docker/docker-compose.yml) mounts into the container as a
-Splunk app. Skipping this leaves the rest of the pipeline working; enrichment
-simply returns no results.
-
-Then run `docker compose up -d --build`.
-
-Splunk's web UI is at `http://localhost:8010`, mapped from the container's
-internal port 8000 since port 8000 is already used by the agent. Log in with
-`admin` and the password you set.
-
-Create an index named `osticket_triage`.
-
-Confirm HEC is enabled globally: Settings → Data Inputs → HTTP Event Collector
-→ Global Settings, All Tokens should show Enabled. This is usually already on
-by default, but worth checking before creating a token.
-
-Create an HEC token with the `osticket_triage` index in its allowed list. The
-agent sends events with sourcetype `osticket:triage:audit`. Splunk shows the
-token value once, at creation, save it now, this value goes into `agent/.env`
-in Section 4.
-
-Give Splunk a way to send mail, or the alert that tells you the agent has died
-will fire into an empty room. Under Settings → Server settings → Email
-settings, set the mail host, TLS, an account and its password, and the address
-to send as. With Gmail that is `smtp.gmail.com:587`, TLS on, and an app
-password rather than the account password.
-
-Use the Server settings page rather than the alert-actions page reached from
-Settings → Alert actions. The latter saves into whichever app you happened to
-be in, and settings written there may not resolve for an alert owned by a
-different app.
-
-Then set who receives the alerts. Add `SPLUNK_ALERT_EMAIL` to `docker/.env` and
-run `docker/provision-splunk-alerts.sh`. It writes the recipient into the app's
-`local/savedsearches.conf`, which this repo does not track, then loads it into
-the running Splunk.
-
-The searches, their schedules and their wording all ship in `default/`. Only the
-address is deployment-specific, and it lives in `.env` alongside the other
-credentials rather than in the Splunk config.
-
-Enrichment queries run as a separate read-only user, not as admin. Set
-`SPLUNK_AGENT_PASSWORD` in `docker/.env`, then run
-`docker/provision-splunk-user.sh`. It creates a `triage_agent` user in a
-least-privilege role scoped to the `botsv3` index, with no admin, write, or
-real-time search capability. The script is safe to re-run and skips a user that
-already exists. This value goes into `agent/.env` in Section 4 as well.
-
-Splunk must be running when the agent processes a ticket. If it is not, the
-audit write fails and the agent prints a "needs human review" line for that
-ticket, since a decision with no audit trail can't be trusted to have been
-recorded correctly.
-
-### 4. Agent environment
-
-```bash
-cd agent
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
-
-Create `agent/.env`. [`agent/.env.example`](agent/.env.example) lists every
-variable the agent reads, with the optional ones and their defaults:
-
-```
-ANTHROPIC_API_KEY=your-key
-TRIAGE_HMAC_SECRET=the-secret-you-generated-in-section-2
-SPLUNK_HEC_URL=https://localhost:8088/services/collector/event
-SPLUNK_HEC_TOKEN=the-token-you-created-in-section-3
-SPLUNK_SEARCH_URL=https://localhost:8089
-SPLUNK_AGENT_PASSWORD=the-password-you-set-in-section-3
-OSTICKET_WRITE_URL=http://localhost:8080/api/triage
-TRIAGE_WRITE_SECRET=the-write-back-secret-you-generated-in-section-2
-OSTICKET_BASE_URL=http://localhost:8080
-ENABLE_WRITES=false
-```
-
-All ten are asserted at import time. A missing one refuses to boot rather than
-starting in a degraded state.
-
-`ENABLE_WRITES` has no default and must be exactly `true` or `false`. Both
-defaults would be wrong. One writes to real tickets by accident, the other
-silently does nothing.
-
-Leave it `false` for a first run. The agent still classifies, enriches and
-audits. Notes, priority changes, routing, Slack posts and pages are skipped, and
-the console says so at boot. Turning it on requires all three Slack webhooks and
-both PagerDuty routing keys, listed in
-[`agent/.env.example`](agent/.env.example), and the agent refuses to boot
-without them.
-
-`SPLUNK_ENRICHMENT_EARLIEST` defaults to `-7d`, which is the sensible window
-against live telemetry. BOTSv3 is frozen in 2018 and 2019, so a relative window
-can never reach it. Set `SPLUNK_ENRICHMENT_EARLIEST=0` to search all time
-against the demo dataset.
-
-### 5. Run the agent
-
-```bash
-cd agent
-source venv/bin/activate
-uvicorn main:app --reload --host "$(ip -4 addr show docker0 | awk '/inet /{print $2}' | cut -d/ -f1)" --port 8000
-```
-
-Bind to the Docker bridge rather than `0.0.0.0` or `127.0.0.1`. Loopback is
-unreachable from the osTicket container, which comes in through the host
-gateway, and `0.0.0.0` would also expose the agent on every other interface the
-machine has. The bridge is the one address the caller actually uses. On this
-setup that is `172.17.0.1`, and the command above reads it rather than assuming
-it, since another Docker installation may differ.
-
-Keep `--reload`. Without it uvicorn holds whatever code it started with, and a
-stale process produces results that look correct while testing a build that no
-longer exists.
-
-Submit a ticket at `http://localhost:8080`. The classification appears in the
-agent's output and in Splunk under `index=osticket_triage`.
-
-### 6. Deployment preconditions
-
-Four things the agent cannot enforce and the design depends on. Reasoning in
-[docs/architecture.md, Section 10](docs/architecture.md#10-deployment-preconditions).
-
-- **A department in osTicket for security work**, named in the plugin's
-  settings, that an agent can actually see. Without the first two,
-  `security_question` tickets have nowhere to route and the endpoint refuses
-  the move rather than guessing. Without the third they route into a
-  department nobody has access to, which removes them from every view while
-  the agent reports success.
-- **Notifications enabled on the urgent Slack channel**, by whatever mechanism
-  your workspace provides. The agent cannot set them and cannot detect that
-  they are unset, so a critical alert can arrive in a channel nobody is
-  notified about. The same holds for PagerDuty, where whether a page interrupts
-  anyone depends on the responder's notification rules and on what their plan
-  delivers.
-- **Something outside the agent watching the audit index.** When Splunk is
-  unreachable the agent keeps working and records the gap on the ticket, but it
-  cannot raise an alarm that its own audit trail has stopped, since that would
-  mean alerting on the absence of data using the system that is absent.
-- **CAPTCHA enabled and client registration set deliberately** on the ticket
-  form. An open form with neither lets anyone on the internet submit unlimited
-  tickets, which is how a real incident gets buried under noise.
-
-Nothing looks broken when these are missing, which is what makes them worth
-checking.
-
-## Evaluation
-
-The classifier is evaluated against 36 hand-written tickets with expected
-labels in [tests/eval_tickets.json](tests/eval_tickets.json):
-
-```bash
-cd agent
-source venv/bin/activate
-python3 run_eval.py
-```
-
-[`run_eval.py`](agent/run_eval.py) sends each ticket's subject and message to
-the classifier and compares the result against the expected label. Expected
-labels are never sent to the model. Classification and entity extraction are
-scored separately so a regression in one cannot be hidden by the other.
-
-Current results, the method behind them, and a second pass criterion that
-measures only the failures which would leave a real incident unalerted are in
-[docs/evaluation.md](docs/evaluation.md). What the evaluation cannot tell you is in
-[docs/known-limitations.md](docs/known-limitations.md).
