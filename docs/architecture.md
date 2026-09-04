@@ -6,19 +6,9 @@ Most security incidents in small and mid-sized organizations don't arrive labele
  
 Tier 1 helpdesk staff prioritize speed and closing tickets, not threat analysis, so security tickets get worked as routine IT and the real incidents stay buried. A printer ticket that waits three days is still just a broken printer. A security ticket is different. While it waits, the attacker is still moving, stealing credentials, reaching other machines, widening access. By the time someone catches it, the chance of early containment is gone.
  
-This project solves that. It builds an AI triage layer on top of osTicket, an open-source ticketing system. The layer receives each ticket through an authenticated webhook, classifies it for security relevance, enriches the security-relevant ones with Splunk data, and escalates high-severity tickets to a human responder with a pre-investigation summary already attached.
+This project solves that. It builds an AI triage layer on top of osTicket, an open-source ticketing system. The layer receives each ticket through an authenticated webhook, classifies it for security relevance, enriches the security-relevant ones with Splunk data, and escalates high-severity tickets to a human responder with a pre-investigation summary already attached. It targets organizations where dedicated SOC tooling is too expensive but the threat surface is real.
  
-Three actors do the work, and the split between them is the core design decision:
- 
-Claude reads the ticket text and returns a classification: category, severity, confidence. It never runs queries, never picks actions, never writes anything.
- 
-Splunk is read for enrichment context and written to by the agent for audit logs. It does not decide anything.
- 
-The agent (a FastAPI service) does everything else: authenticates the webhook, calls Claude, picks the Splunk query template from the classification, runs it, looks up the response in a fixed action table, assembles the note, writes it back to osTicket, alerts, and logs.
- 
-Claude is kept to classification only because if it wrote the note, an attacker could plant fake instructions in the ticket and have them land as a trusted internal note. Claude decides what the ticket is, and the agent decides what to do about it.
- 
-The system targets small business and nonprofit security operations, where dedicated SOC tooling is too expensive but the threat surface is real. It is built in three phases, each proven before the next begins.
+It was built in three phases, each proven before the next began.
  
 **Phase 1, receive and classify:** Receive the webhook and classify. No writes.
  
