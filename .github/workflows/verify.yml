@@ -1,6 +1,6 @@
 # Runs the offline verifiers on every push and pull request.
 #
-# Only the five that never open a socket run here. verify_slack.py and
+# Only the six that never open a socket run here. verify_slack.py and
 # verify_pagerduty.py can post to a real channel and open a real incident, and
 # verify_webhook.py, verify_writeback.py and verify_wiring.py need a running
 # stack. Those five stay hand-run, and docs/verification.md records them.
@@ -13,7 +13,7 @@
 #
 # This gate exists because verify_wiring.py silently stopped running for four
 # days in August 2026 while docs/verification.md said it passed. That one needs a
-# live stack and cannot run here, so this would not have caught it. The five
+# live stack and cannot run here, so this would not have caught it. The six
 # below can break the same way, and now they cannot do it unnoticed.
 
 name: verify
@@ -67,7 +67,8 @@ jobs:
           set -euo pipefail
           total=0
           for v in verify_action_table verify_idempotency verify_resume \
-                   verify_recovery verify_page_reporting; do
+                   verify_recovery verify_page_reporting \
+                   verify_prompt_isolation; do
             echo "::group::$v"
             out=$(python "agent/verification/$v.py" 2>&1) || {
               echo "$out"
@@ -81,8 +82,8 @@ jobs:
             [ -n "$n" ] || { echo "::error::$v printed no check count"; exit 1; }
             total=$((total + n))
           done
-          echo "$total checks passed across 5 verifiers"
-          [ "$total" -eq 107 ] || {
-            echo "::error::expected 107 checks, got $total"
+          echo "$total checks passed across 6 verifiers"
+          [ "$total" -eq 115 ] || {
+            echo "::error::expected 115 checks, got $total"
             exit 1
           }

@@ -510,6 +510,33 @@ the handler and the signal wiring by sending the signal directly. Running
 `api/cron.php` on a schedule is a deployment step, in
 [architecture.md, Section 10](architecture.md#10-deployment-preconditions).
 
+## Prompt isolation verification
+
+Measured 2026-09-08, eight checks, all passing. The ticket reaches Claude inside
+a delimiter, and the system prompt tells it to treat everything in that block as
+data rather than as instructions. The delimiter used to be the fixed string
+`<ticket>`, so a body containing it closed the block early and left the rest of
+that ticket reading as though it came from the operator. The delimiter is now
+generated per request.
+
+| Property | How it was checked | Result |
+|---|---|---|
+| A hostile body cannot close the block | a message carrying `</ticket>` and `<ticket>` | closed once, by the generated delimiter |
+| The delimiter is not reused | fifty wraps compared | fifty distinct |
+| The old fixed delimiter is never used | the same fifty | absent |
+| The ticket is not altered | subject and message compared byte for byte | unchanged |
+
+The last property is what keeps the fix honest. Stripping the delimiter out of
+the body would pass the first three and change what the agent classifies, so the
+text Claude read would no longer be the text the store keeps and the audit log
+records.
+
+The checks were run against the previous construction before being trusted. Two
+of them fail on it, finding two closing delimiters where there should be one.
+
+Reproduce with `./venv/bin/python verification/verify_prompt_isolation.py` from
+`agent/`. Nothing is written and no network call is made.
+
 ## Action table verification
 
 Measured 2026-08-19, thirty-one checks, all passing. The table is the contract

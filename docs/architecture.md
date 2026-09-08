@@ -50,7 +50,7 @@ When a user submits a ticket in osTicket, the triage plugin fires an authenticat
 
 The agent answers before it classifies. It verifies the HMAC signature, checks that the request is recent, and checks that the ticket is not one it has already accepted, then returns 202. Everything after that runs in a background task, so a slow or rate-limited Claude call cannot hold open the request osTicket is waiting on. A request that fails any of those checks is refused and no work is queued for it.
 
-The agent then sanitizes and isolates the ticket body. It treats the body as untrusted data, wraps it in delimiters, and sends it to Claude as user-role content.
+The agent then isolates the ticket body. It wraps the body in a delimiter unique to that request and sends it to Claude as user-role content. The body itself is not changed.
  
 Claude reads the ticket text and returns a classification: category, severity, and confidence. How that classification works is covered in Section 5.
  
@@ -101,7 +101,7 @@ The agent reads untrusted ticket text and acts on it, so it needs a threat model
  
 **System and user role separation:** My instructions live in the system role, the highest trust. The ticket body goes in the user role, treated as data, not commands. Claude treats system-role instructions as the authority and user-role content as the thing being examined.
  
-**Delimiters around the body:** The agent wraps the body in delimiters so it is clearly marked as untrusted data to be classified, not as part of my instructions.
+**Delimiters around the body:** The agent wraps the body in a delimiter it generates per request, so it is clearly marked as untrusted data to be classified, not as part of my instructions. A fixed one could be closed by a ticket that contains it, which would leave the rest of that ticket reading as though it came from me. A generated one cannot be guessed. The body is never rewritten, since what Claude classifies has to be what the audit log holds.
  
 **Output schema validation:** Claude must return valid JSON matching a strict schema: category, severity, confidence, and optionally a hostname, username, or source IP if the ticket text names one. Any response that does not fit the schema is rejected. So even if injected text changes Claude's output, it cannot produce a valid action. Entity fields carry a different risk than the closed enum values, since they are free text rather than a choice from a fixed set, so each one gets independent format validation and a value that fails is dropped without blocking the rest of the classification. They are also excluded from enrichment queries entirely. Their content comes from ticket text, which the submitter writes, so allowing them into a query would let a ticket author choose what the agent searches for. They are recorded in the audit log for a human to act on, and enrichment searches only on identifiers osTicket's own auth populated.
  
