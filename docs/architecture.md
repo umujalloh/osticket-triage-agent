@@ -46,19 +46,25 @@ This document covers the design across all three phases.
  
 ## 3. Ticket Lifecycle and Data Flow
  
-When a user submits a ticket in osTicket, the triage plugin fires an authenticated webhook POST to the agent.
+When a user submits a ticket in osTicket, it goes through the following steps.
 
-The agent answers before it classifies. It verifies the HMAC signature, checks that the request is recent, and checks that the ticket is not one it has already accepted, then returns 202. Everything after that runs in a background task, so a slow or rate-limited Claude call cannot hold open the request osTicket is waiting on. A request that fails any of those checks is refused and no work is queued for it.
+1. **The plugin fires the webhook:** It signs the payload with HMAC-SHA256 and posts it to the agent.
 
-The agent then isolates the ticket body. It wraps the body in a delimiter unique to that request and sends it to Claude as user-role content. The body itself is not changed.
- 
-Claude reads the ticket text and returns a classification: category, severity, and confidence. How that classification works is covered in Section 5.
- 
-If the ticket is a security_incident at critical severity, the agent runs a pre-defined, read-only Splunk query to enrich the ticket with context. Confidence does not gate this. The query is a single fixed template filled from the submitter's identifiers, not one of several chosen from the classification.
- 
-The agent looks up the classification in the pre-defined action table. A critical security incident pages PagerDuty at once, before enrichment and before anything is written, because the page must not wait on a dependency that can stall. Then it writes an internal note back to osTicket, sets the ticket priority, and posts to the Slack channel that row selects. Any low-confidence ticket routes to human review, which still reaches a channel, a note, and a priority, and on a critical still pages, quietly.
- 
-The agent writes an audit log to Splunk at every step of this process, not only at the end.
+2. **The agent accepts before it classifies:** It verifies the HMAC signature, checks that the payload's timestamp is recent and that the ticket is not one it has already accepted. A bad signature or a stale timestamp is refused, and no work is queued for it. A request that passes all three gets a 202, and the work runs in a background task so a slow or rate-limited Claude call cannot hold open the request osTicket is waiting on.
+
+3. **The ticket text is isolated:** The agent wraps the subject and message in a delimiter unique to that request and sends them to Claude as user-role content.
+
+4. **Claude classifies:** It reads the ticket text and returns a category, a severity, and a confidence. Section 5 covers how that works, and Section 6 covers what happens when Claude fails.
+
+5. **The agent looks up the actions:** It reads the action table row for that category, severity and confidence.
+
+6. **A critical security incident pages PagerDuty:** The page goes out ahead of the classification audit write and enrichment, so a slow Splunk cannot hold up the pager.
+
+7. **A critical security incident is enriched:** The agent runs a read-only Splunk query to add context. Confidence does not gate this. The query is a single fixed template that searches on the submitter's IP, and on the requester's address only when osTicket authenticated them as that address.
+
+8. **The writes go out:** The agent writes an internal note back to osTicket, sets the ticket priority, moves a `security_question` into the security department, and posts to the Slack channel the row selects.
+
+The agent writes an audit log to Splunk at every step of this process, not only at the end. Steps 6 and 8 are the only ones that change anything outside the agent, and a kill switch can turn both off without stopping that log.
 
 ```mermaid
 flowchart TD
@@ -79,7 +85,7 @@ flowchart TD
     claude -->|classification only| agent
     splunk -->|enrichment| agent
     agent -->|audit events| splunk
-    agent -.->|internal note, kill-switched| osticket
+    agent -.->|writes, kill-switched| osticket
     agent -.->|alerts, kill-switched| alerts
 ```
 
