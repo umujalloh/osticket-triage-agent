@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import os
 import time
 from urllib.parse import urlparse
@@ -23,6 +25,14 @@ ROUTING_KEYS = {
     NOTIFY: os.getenv("PAGERDUTY_ROUTING_KEY_NOTIFY"),
 }
 OSTICKET_BASE_URL = os.getenv("OSTICKET_BASE_URL")
+
+# The secret behind the deduplication key. It has to be set even when writes
+# are off, because a page is built before send_page checks the switch. It is
+# not one of the shared secrets. Rotating those would change the dedup key of
+# an incident that is already open.
+PAGERDUTY_DEDUP_SECRET = os.getenv("PAGERDUTY_DEDUP_SECRET")
+if not PAGERDUTY_DEDUP_SECRET:
+    raise RuntimeError("PAGERDUTY_DEDUP_SECRET is not set")
 
 # Asserted only when writes are on, the same exception the Slack webhooks get and
 # for the same reason. Nothing is ever sent with the kill switch off, so a
@@ -57,6 +67,24 @@ class PagerDutyError(Exception):
 
 def _ticket_url(ticket_id) -> str:
     return f"{OSTICKET_BASE_URL.rstrip('/')}/scp/tickets.php?id={ticket_id}"
+
+def _dedup_key(ticket_id) -> str:
+    """The deduplication key for a ticket.
+
+    The Events API resolves and acknowledges an incident on the routing key and
+    the dedup key. Ticket ids are small consecutive integers, so using one
+    directly would let anyone holding a stolen routing key close real incidents
+    by counting from one. The HMAC leaves nothing to count.
+
+    The same ticket always produces the same key. The WAKE and NOTIFY pages for
+    one ticket share it, and the service they arrive at is what keeps them
+    apart.
+    """
+    return hmac.new(
+        PAGERDUTY_DEDUP_SECRET.encode(),
+        str(ticket_id).encode(),
+        hashlib.sha256,
+    ).hexdigest()
 
 def build_page(ticket_id, ticket_number, classification) -> dict:
     """The page for a ticket the table said to page on.
@@ -100,9 +128,10 @@ def build_fallback_page(ticket_id, ticket_number, classification) -> dict:
 def _event(ticket_id, summary, severity) -> dict:
     """Assembles the request body.
 
-    dedup_key is the ticket id, so a replay PagerDuty sees twice attaches to the
-    open incident instead of waking someone again. The idempotency store is the
-    first guard; this is the one that still holds when the store is wrong.
+    dedup_key is derived from the ticket id, so a replay PagerDuty sees twice
+    attaches to the open incident instead of waking someone again. The
+    idempotency store is the first guard; this is the one that still holds when
+    the store is wrong. _dedup_key has the reason it is derived.
 
     The link's text is the URL itself rather than a friendly label. Anyone
     holding the routing key can create a convincing incident, so a responder
@@ -112,7 +141,7 @@ def _event(ticket_id, summary, severity) -> dict:
     url = _ticket_url(ticket_id)
     return {
         "event_action": "trigger",
-        "dedup_key": str(ticket_id),
+        "dedup_key": _dedup_key(ticket_id),
         "payload": {
             "summary": summary,
             "severity": PAGERDUTY_SEVERITY[severity],

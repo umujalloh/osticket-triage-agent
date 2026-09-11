@@ -47,6 +47,7 @@ jobs:
       SLACK_WEBHOOK_REVIEW: https://127.0.0.1:9/ci
       PAGERDUTY_ROUTING_KEY_WAKE: ci-placeholder-not-a-real-key
       PAGERDUTY_ROUTING_KEY_NOTIFY: ci-placeholder-not-a-real-key
+      PAGERDUTY_DEDUP_SECRET: ci-placeholder-not-a-real-secret
 
     steps:
       - name: Checkout

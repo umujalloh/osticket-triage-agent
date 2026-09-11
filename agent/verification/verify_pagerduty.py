@@ -96,7 +96,9 @@ check("  it claims nothing about enrichment",
       any(w in page["payload"]["summary"]
           for w in ("events", "enrichment", "identifier")), False)
 check("  severity maps to pagerduty's", page["payload"]["severity"], "critical")
-check("  dedup key is the ticket id", page["dedup_key"], "15")
+check("  dedup key is not the ticket id", page["dedup_key"] == "15", False)
+check("  and the same ticket always produces the same key",
+      pd.build_page(15, "465581", critical)["dedup_key"], page["dedup_key"])
 check("  event action is trigger", page["event_action"], "trigger")
 check("  source names the osticket host", page["payload"]["source"],
       urlparse(os.getenv("OSTICKET_BASE_URL")).netloc)
@@ -122,7 +124,7 @@ check("  it still names the classification",
       "critical security_incident" in summary, True)
 check("  it does not read as a confident critical",
       summary.startswith("critical"), False)
-check("  it dedups on the same ticket", fb["dedup_key"], "15")
+check("  it dedups on the same ticket", fb["dedup_key"], page["dedup_key"])
 
 check("  the ticket id stands in for a missing number",
       "#15" in pd.build_fallback_page(15, None, low_conf)["payload"]["summary"], True)

@@ -618,7 +618,7 @@ reporting forty-four checks skipped delivery rather than proving it.
 
 ## Paging verification
 
-Measured 2026-08-19, twenty-nine checks, all passing.
+Measured 2026-09-11, thirty checks, all passing.
 
 | Property | How it was checked | Result |
 |---|---|---|
@@ -626,7 +626,8 @@ Measured 2026-08-19, twenty-nine checks, all passing.
 | An unknown destination is refused | `send_page` with a name the table never produces | raises before posting |
 | It claims nothing about enrichment | the built page | no events, enrichment or identifier wording |
 | Severity maps to PagerDuty's | every `Severity` member | all four mapped |
-| The dedup key is the ticket id | the built event | `"15"` |
+| The dedup key is not the ticket id | the built event | an HMAC, not `"15"` |
+| One ticket always gives the same key | `build_page` called twice | keys match |
 | The link text is the URL itself | the `links` entry | text equals href |
 | No enrichment output crosses | the payload | no `custom_details` |
 | The fallback leads with the failure | `build_fallback_page` | "alert delivery failed" first |
