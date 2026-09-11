@@ -224,6 +224,31 @@ Reproduce with `./venv/bin/python verification/verify_writeback.py <ticket_id>`
 from `agent/`. It writes a real note to a ticket that has none, and the endpoint
 has no delete operation, so name a ticket you don't mind marking.
 
+### The priority change is recorded, 2026-09-11, ticket 33
+
+Run by hand. `verify_writeback.py` speaks HTTP only and cannot read the
+database, so this is not one of the checks in the table above.
+
+osTicket has no priority event, so the endpoint logs the change the way core
+logs any dynamic form field change. Before these requests, ticket 33's history
+held `created` and `overdue` and nothing else.
+
+| Request | Result |
+|---|---|
+| Signed, valid, `priority: high` | 200, `from: low`, `to: high` |
+| Signed, valid, `priority: low` | 200, `from: high`, `to: low` |
+
+Each one added a row to `ost_thread_event`:
+
+```
+77  edited  2026-09-11 16:28:30  {"fields":{"Priority":"low"}}
+76  edited  2026-09-11 16:26:20  {"fields":{"Priority":"high"}}
+```
+
+The row is written by the endpoint rather than by the agent, so anything calling
+it leaves one. Restoring the priority added a second event instead of removing
+the first.
+
 ## Idempotency store verification
 
 Measured 2026-08-20, twenty-six checks, all passing. Run against a temporary
@@ -851,7 +876,7 @@ one hour suppression window from a firing nine minutes earlier.
 
 ## Not yet verified
 
-Four things this file does not cover, listed so the sections above are not read
+Three things this file does not cover, listed so the sections above are not read
 as a complete picture.
 
 The fallback page. `needs_fallback_page` is the most intricate condition in the
@@ -868,7 +893,4 @@ dead audit endpoint. What no run has produced is the delay itself, an osTicket
 or Splunk call that hangs to its full timeout rather than refusing at once, so
 the numbers this ordering exists to avoid are arithmetic from the retry
 constants rather than measurements.
-
-An end-to-end run on the current ordering. The ticket 20 table above records the
-old one.
 

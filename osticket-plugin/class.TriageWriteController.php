@@ -106,6 +106,11 @@ class TriageWriteController {
         if (!$updated)
             Http::response(500, 'This ticket has no priority field to set');
 
+        // osTicket has no priority event, so the change is logged the way core
+        // logs any dynamic form field change. The endpoint writes it rather
+        // than the agent, so anything calling this endpoint leaves the record.
+        $ticket->logEvent('edited', array('fields' => array('Priority' => $name)));
+
         $this->respond(array(
             'status' => 'priority_set',
             'ticket_id' => $ticket_id,
