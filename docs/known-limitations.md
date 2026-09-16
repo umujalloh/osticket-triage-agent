@@ -167,6 +167,16 @@ sits in a file on the host in plain text.
 That is acceptable for a single-machine lab and is not how a production
 deployment should hold it.
 
+### Nothing restricts where the agent can connect
+
+The agent is a host process under uvicorn, not a container, and its outbound
+traffic is unrestricted. It reaches five destinations and holds a credential for
+each, so a host compromise is enough to read them and send them anywhere.
+
+The agent cannot fix this. An attacker on the host runs their own code, so what
+the agent does about its own connections is beside the point. The control has to
+be an outbound proxy, which is deployment precondition 7 rather than code.
+
 ## Alerting
 
 ### A failed alert can exhaust every delivery path
