@@ -103,7 +103,7 @@ the same way the note and the priority are.
 
 On a critical security incident the page goes out immediately, ahead of
 enrichment and any audit write. Both of those talk to Splunk, and a Splunk that
-hangs rather than refuses would otherwise hold the page for over two minutes.
+hangs rather than refuses would otherwise hold the page for over a minute.
 
 [`splunk_logger.py`](agent/splunk_logger.py) writes an audit event for the
 classification, the enrichment result, every action taken, and every request the

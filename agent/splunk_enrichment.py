@@ -86,13 +86,16 @@ def build_enrichment_query(submitter_email=None, submitter_ip=None,
     return (f'search index=botsv3 ({condition}) earliest={SPLUNK_ENRICHMENT_EARLIEST} '
             f'| table {ENRICHMENT_FIELDS} | head 20')
 
+# No wait after the last attempt, since no call follows it.
+ATTEMPTS = 3
+
 def _run_enrichment_query(query: str, timeout: int = 15):
     """Not meant to be called directly - use enrich_ticket, which only
     ever passes a query built by build_enrichment_query. This function
     does not validate its input.
     """
     last_error = None
-    for attempt in range(3):
+    for attempt in range(ATTEMPTS):
         try:
             response = requests.post(
                 SPLUNK_SEARCH_URL,
@@ -103,11 +106,13 @@ def _run_enrichment_query(query: str, timeout: int = 15):
             )
         except requests.exceptions.Timeout as e:
             last_error = ("server_down", f"Splunk query timed out: {e}")
-            time.sleep([5, 15, 30][attempt])
+            if attempt < ATTEMPTS - 1:
+                time.sleep([5, 15][attempt])
             continue
         except requests.exceptions.ConnectionError as e:
             last_error = ("server_down", f"Could not connect to Splunk: {e}")
-            time.sleep([5, 15, 30][attempt])
+            if attempt < ATTEMPTS - 1:
+                time.sleep([5, 15][attempt])
             continue
         except requests.exceptions.RequestException as e:
             raise EnrichmentError("unknown", f"{type(e).__name__}: {e}")
@@ -116,7 +121,8 @@ def _run_enrichment_query(query: str, timeout: int = 15):
             raise EnrichmentError("auth_failure", "Splunk rejected the triage_agent credentials")
         if response.status_code in (429, 503):
             last_error = ("rate_limited", f"Splunk search quota exceeded (HTTP {response.status_code})")
-            time.sleep([20, 40, 60][attempt])
+            if attempt < ATTEMPTS - 1:
+                time.sleep([20, 40][attempt])
             continue
         if response.status_code == 400:
             raise EnrichmentError("bad_request", f"Splunk rejected the query: {response.text}")

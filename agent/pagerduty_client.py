@@ -95,7 +95,7 @@ def build_page(ticket_id, ticket_number, classification) -> dict:
     No enrichment result, because the page is sent before enrichment runs. A
     count would have been the only field that varies between one page and the
     next, and waiting for it put the pager behind a Splunk call that can retry
-    for a minute and a half. The enrichment lands on the ticket a moment later,
+    for over a minute. The enrichment lands on the ticket a moment later,
     which is where a woken responder is going anyway.
     """
     summary = (f"{classification.severity.value} {classification.category.value}"
@@ -150,6 +150,9 @@ def _event(ticket_id, summary, severity) -> dict:
         "links": [{"href": url, "text": url}],
     }
 
+# No wait after the last attempt, since no call follows it.
+ATTEMPTS = 3
+
 def send_page(destination: str, event: dict) -> str:
     """Sends one page to the destination it is handed. Returns DONE, or SKIPPED
     when writes are off.
@@ -170,12 +173,13 @@ def send_page(destination: str, event: dict) -> str:
 
     body = dict(event, routing_key=ROUTING_KEYS[destination])
     last_error = None
-    for attempt in range(3):
+    for attempt in range(ATTEMPTS):
         try:
             response = requests.post(PAGERDUTY_EVENTS_URL, json=body, timeout=10)
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
             last_error = ("server_down", f"Could not reach PagerDuty for the {destination} service")
-            time.sleep([2, 5, 10][attempt])
+            if attempt < ATTEMPTS - 1:
+                time.sleep([2, 5][attempt])
             continue
         except requests.exceptions.RequestException as e:
             raise PagerDutyError("unknown", f"{type(e).__name__} sending the {destination} page")
@@ -193,7 +197,8 @@ def send_page(destination: str, event: dict) -> str:
             )
         if response.status_code == 429:
             last_error = ("rate_limited", f"PagerDuty rate limited the {destination} service")
-            time.sleep([5, 15, 30][attempt])
+            if attempt < ATTEMPTS - 1:
+                time.sleep([5, 15][attempt])
             continue
         raise PagerDutyError(
             "unknown", f"Unexpected PagerDuty response for {destination}: HTTP {response.status_code}"

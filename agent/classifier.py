@@ -111,11 +111,15 @@ def build_ticket_text(subject: str, message: str) -> str:
     tag = f"ticket-{secrets.token_hex(4)}"
     return f"<{tag}>\nSubject: {subject}\nMessage: {message}\n</{tag}>"
 
+# Three calls in all. A transient failure waits before the next call, and the
+# last one raises at once, since there is no next call to wait for.
+ATTEMPTS = 3
+
 def classify_ticket(subject: str, message: str) -> TicketClassification:
     ticket_text = build_ticket_text(subject, message)
 
     last_error = None
-    for attempt in range(3):
+    for attempt in range(ATTEMPTS):
         try:
             response = client.messages.create(
                 model=MODEL,
@@ -133,12 +137,14 @@ def classify_ticket(subject: str, message: str) -> TicketClassification:
 
         except anthropic.RateLimitError as e:
             last_error = ("rate_limited", str(e))
-            time.sleep([20, 40, 60][attempt])
+            if attempt < ATTEMPTS - 1:
+                time.sleep([20, 40][attempt])
 
         except (anthropic.APIConnectionError, anthropic.APITimeoutError,
                 anthropic.InternalServerError, anthropic.OverloadedError) as e:
             last_error = ("server_down", f"{type(e).__name__}: {e}")
-            time.sleep([5, 15, 30][attempt])
+            if attempt < ATTEMPTS - 1:
+                time.sleep([5, 15][attempt])
 
         except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as e:
             raise ClassificationError("auth_failure", f"{type(e).__name__}: {e}")

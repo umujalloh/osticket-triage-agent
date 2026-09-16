@@ -612,7 +612,7 @@ different failures, and fails if that string appears anywhere in the child
 process output.
 
 Reproduce with `./venv/bin/python verification/verify_slack.py` from `agent/`. One case takes
-about 17 seconds because it exhausts three retries against an unreachable host.
+about 7 seconds because it makes three attempts against an unreachable host.
 The delivery case needs `SLACK_WEBHOOK_TEST` set and skips without it, so a run
 reporting forty-four checks skipped delivery rather than proving it.
 

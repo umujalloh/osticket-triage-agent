@@ -202,7 +202,7 @@ out = run_case("url_leak", ENABLE_WRITES="true",
 check("  a malformed url is not echoed", CANARY in out, False)
 check("  and it still raises", "OUTCOME=raised" in out, True)
 
-print("  (the next case retries three times, so it takes about 17 seconds)")
+print("  (the next case makes three attempts, so it takes about 7 seconds)")
 out = run_case("url_leak", ENABLE_WRITES="true",
                SLACK_WEBHOOK_URGENT=f"http://127.0.0.1:1/{CANARY}")
 check("  an unreachable host is not echoed", CANARY in out, False)

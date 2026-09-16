@@ -36,6 +36,9 @@ def _sign(body: bytes) -> str:
         TRIAGE_WRITE_SECRET.encode(), body, hashlib.sha256
     ).hexdigest()
 
+# No wait after the last attempt, since no call follows it.
+ATTEMPTS = 3
+
 def _post(operation: str, payload: dict) -> dict:
     """Signs and sends one write, retrying only what a retry can fix.
 
@@ -48,12 +51,13 @@ def _post(operation: str, payload: dict) -> dict:
     headers = {"Content-Type": "application/json", "X-Triage-Signature": _sign(body)}
 
     last_error = None
-    for attempt in range(3):
+    for attempt in range(ATTEMPTS):
         try:
             response = requests.post(url, data=body, headers=headers, timeout=10)
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
             last_error = ("server_down", f"Could not reach osTicket: {e}")
-            time.sleep([2, 5, 10][attempt])
+            if attempt < ATTEMPTS - 1:
+                time.sleep([2, 5][attempt])
             continue
         except requests.exceptions.RequestException as e:
             raise OsTicketWriteError("unknown", f"{type(e).__name__}: {e}")
@@ -72,7 +76,8 @@ def _post(operation: str, payload: dict) -> dict:
             )
         if response.status_code in (429, 503):
             last_error = ("rate_limited", f"osTicket is unavailable (HTTP {response.status_code})")
-            time.sleep([5, 15, 30][attempt])
+            if attempt < ATTEMPTS - 1:
+                time.sleep([5, 15][attempt])
             continue
         raise OsTicketWriteError(
             "unknown", f"Unexpected osTicket response: HTTP {response.status_code}"
