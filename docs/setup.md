@@ -14,6 +14,7 @@ The system this sets up is described in [the README](../README.md).
 ```bash
 cd docker
 cp .env.example .env
+chmod 600 .env
 ```
 
 Edit `docker/.env` and set your own database credentials. These exact values
@@ -225,11 +226,19 @@ SPLUNK_AGENT_PASSWORD=the-password-you-set-in-section-3
 OSTICKET_WRITE_URL=http://localhost:8080/api/triage
 TRIAGE_WRITE_SECRET=the-write-back-secret-you-generated-in-section-2
 OSTICKET_BASE_URL=http://localhost:8080
+PAGERDUTY_DEDUP_SECRET=a-random-value-you-generate
 ENABLE_WRITES=false
 ```
 
-All ten are asserted at import time. A missing one refuses to boot rather than
-starting in a degraded state.
+All eleven are asserted at import time. A missing one refuses to boot rather
+than starting in a degraded state.
+
+Generate the dedup secret with `python3 -c "import secrets;
+print(secrets.token_hex(32))"`. It keys the PagerDuty deduplication key, so
+changing it later changes every one.
+
+Both `.env` files hold credentials in plain text, so `chmod 600` them. The
+agent's own state file is already created that way.
 
 `ENABLE_WRITES` has no default and must be exactly `true` or `false`. Both
 defaults would be wrong. One writes to real tickets by accident, the other
