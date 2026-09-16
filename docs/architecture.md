@@ -237,23 +237,63 @@ Nothing restricts where the agent can connect, so a compromised host can read th
 
 Claude classifies each ticket along three dimensions:
 
-**Category:** what kind of ticket it is. security_incident, security_question, it_support, or unclear.
+**Category:** what kind of ticket it is. `security_incident`, `security_question`, `it_support`, or `unclear`.
 
-**Severity:** how serious the ticket is in the context of its category. critical, high, medium, or low.
+**Severity:** how serious the ticket is for its category. `critical`, `high`, `medium`, or `low`.
 
-**Confidence:** whether the ticket accounts for what happened. high_confidence or low_confidence.
+**Confidence:** how well the ticket supports its classification. `high_confidence` or `low_confidence`.
 
-They are separate because the action table reads all three together rather than one combined label. Category decides whether a ticket is a security matter, severity decides how loudly to alert, and confidence decides whether the agent should act on the classification at all without a human. Enrichment and paging each require a specific combination of all three, not any single dimension. Confidence is the only one that acts on its own, since low confidence routes to a human regardless of category or severity.
+There are three dimensions because they answer different questions. Folding them into one label would force a vague report of a possible account compromise to be either a routine ticket or a confident incident.
 
-Confidence describes the ticket, not the model's certainty. A vague ticket is low_confidence even when the model has a strong guess, and so is a ticket that names an event but leaves it unexplained. Strong evidence for a category is not on its own enough: a ticket can point clearly at security_incident and still be low_confidence when the user cannot account for what happened. Defining it as strength of signal instead lets a well-narrated but unexplained incident come back high_confidence and bypass human review, which is the one thing this field exists to prevent.
+Claude also extracts any hostname, username or source IP the ticket explicitly names. Sections 4 and 9 cover how the agent validates and records them.
 
-Severity is scoped by category. Critical is reserved for security_incident, since that is the only tier that pages a human, and widening it would mean the on-call gets woken for non-security events. The lower tiers stay available to every category so the helpdesk can prioritize: a production outage can be high, a printer out of paper is low.
+The rubric Claude is given is the system prompt in `agent/classifier.py`. How the classifier is evaluated and measured is in [evaluation.md](evaluation.md). What each classification triggers is in [action-table.md](action-table.md).
 
-What severity measures differs by category. For a security incident it is the state of the threat: whether unauthorized access is still held, or destructive action has already been carried out. For every other category it is disruption and urgency. Each gets its own definition rather than sharing one ladder, because a scale built around attacker access says nothing useful about a printer, and leaving those categories without a rule of their own makes their severity arbitrary. 
+### Category
 
-For account, login, and device tickets, classification turns on whether the ticket explains what happened. A stated ordinary cause is routine regardless of how alarmed the user sounds. Behavior that cannot be clearly explained by the user goes to security_incident or unclear at low confidence, since absence of detail is not evidence that nothing happened.
- 
-Each category-severity-confidence combination maps to a pre-defined action. The full action table is in Section 7, with one rule that overrides everything: any ticket classified low confidence routes to a human for review, regardless of category or severity. This keeps a real incident that happens to read as vague from being missed.
+`security_incident`: an event that has happened or is happening, or a deliberate attack aimed at the organization that nobody has acted on yet.
+
+`security_question`: a question about security practice or policy, or a request to judge whether something is safe, with no sign of an attack aimed at the organization.
+
+`it_support`: a routine technical problem with no security relevance.
+
+`unclear`: too little information to pick one of the other three.
+
+When a ticket describes behavior that could be either `it_support` or `security_incident`, its cause differentiates it. A stated, ordinary cause is `it_support` however alarmed the user sounds. Behavior the user cannot account for is `security_incident`, since the classifier cannot confirm from a description alone that nothing happened.
+
+### Severity
+
+Severity uses two scales, one for security incidents and one for everything else, because a scale built around attacker access says nothing useful about a routine problem.
+
+For `security_incident`, severity is the state of the threat right now.
+
+`critical`: someone unauthorized still holds access, or destructive action has already happened, such as files encrypted or data taken.
+
+`high`: nobody unauthorized holds access now, but the matter is not closed, such as an attempt that failed or that nobody acted on, or a compromise the ticket suspects but does not establish.
+
+`medium`: the incident is contained and its extent is known, such as access that has been removed or an exposure that is understood and limited.
+
+`low`: a hygiene or policy lapse with no attacker involved.
+
+A successful unauthorized login counts as access still held unless the ticket says the session was ended or the credentials were changed. Access gained hours ago and never revoked is still current, and not knowing what an intruder did does not lower the severity.
+
+For `security_question`, `it_support` and `unclear`, severity is disruption and urgency instead. `critical` is not offered.
+
+`high`: work is significantly disrupted, such as a production outage or a user unable to work.
+
+`medium`: meaningful disruption to one person or team, or a question that blocks a decision about granting access.
+
+`low`: minor, routine or informational.
+
+### Confidence
+
+Confidence describes the ticket, not how sure the classifier is.
+
+`high_confidence`: the ticket says what happened, and it contains the facts needed to place it.
+
+`low_confidence`: the ticket is vague, could fit more than one category, or describes something the user cannot account for. An `unclear` ticket is always `low_confidence`.
+
+A ticket can point toward `security_incident` and still be `low_confidence`. Unexplained behavior is enough to classify a ticket as a security incident, but not enough to make that classification confident, since the ticket does not say what actually happened.
  
 ---
  
