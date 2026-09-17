@@ -47,7 +47,10 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 if not ANTHROPIC_API_KEY:
     raise RuntimeError("ANTHROPIC_API_KEY is not set")
 
-client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+# The SDK retries on its own by default and waits up to ten minutes for a
+# response. classify_ticket does the retrying, so each attempt is one request,
+# and an attempt that gets no answer fails after 30 seconds.
+client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, max_retries=0, timeout=30)
 
 MODEL = os.getenv("TRIAGE_MODEL", "claude-haiku-4-5")
 
