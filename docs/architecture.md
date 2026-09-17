@@ -299,80 +299,28 @@ A ticket can point toward `security_incident` and still be `low_confidence`. Une
  
 ## 6. Failure Modes for the Claude Dependency
 
-**Principle: fail safe.** Phase 1 depends on Claude returning a trustworthy
-classification label. When Claude cannot return one, the agent routes
-the ticket to a human and logs the failure to Splunk. The agent never
-auto-closes a ticket or assumes low severity when it has no real
-classification.
+When Claude cannot classify a ticket, the agent fails safe. It never assigns a default classification, because a guessed label would decide how the ticket is escalated, and a guessed low severity would keep a real incident quiet.
 
-The six failure cases split into two groups: transient failures, where
-trying again has a real chance of succeeding, and terminal failures,
-where retrying would just produce the same result. Rate limiting and
-server errors are transient. Everything else is terminal.
+### Failure types
 
-Six failure cases:
+Every failure is logged as one of six types, so each kind can be counted over time.
 
-1. **Rate limited:** When request volume exceeds the API limit, Claude
-   rejects the request until the agent drops back under the limit, so
-   no label is returned. This is transient, so the agent retries the
-   call 3 times with backoffs. If it still fails, the agent treats
-   Claude as unavailable, routes the ticket to a human, and logs the
-   failure as `rate_limited` to Splunk.
-2. **Server down:** Claude is unreachable, returns a server error, or
-   times out. This is also transient, so the agent retries the call 3
-   times. If it still fails, the agent treats Claude as unavailable,
-   routes the ticket to a human, and logs the failure as `server_down`
-   to Splunk.
-3. **Auth failure:** The API key is invalid, expired, or lacks permission,
-   so no label is returned. This is terminal, since the key stays
-   broken until a human replaces it, so the agent does not retry. It
-   routes the ticket to a human and logs the failure as `auth_failure`
-   to Splunk.
-4. **Bad request:** The request itself is malformed or exceeds the size
-   limit, so no label is returned. Retrying an identical request
-   produces the identical failure, so the agent does not retry. It
-   routes the ticket to a human and logs the failure as `bad_request`
-   to Splunk.
-5. **Bad output:** Claude responds, but the output does not match the
-   required schema. The agent does not retry in this case because
-   retrying is likely to return the same failure, and a persistent
-   schema failure can indicate a rejected injection attempt (see
-   Attack 1). The agent discards the label, sends the ticket to a
-   human, and logs the failure as `bad_output` to Splunk.
-6. **Unknown:** Any failure not covered by the five cases above falls
-   here, so no label is returned. An unrecognized failure is not safe
-   to assume is retryable, so the agent does not retry. It routes the
-   ticket to a human and logs the failure as `unknown` to Splunk.
+| Type | What happened | Retried |
+|---|---|---|
+| `rate_limited` | Claude rejected the request for exceeding the rate limit. | Yes. The limit recovers with time. |
+| `server_down` | Claude could not be reached, returned a server error, was overloaded, or did not answer within 30 seconds. | Yes. A brief outage can clear between attempts. |
+| `auth_failure` | Claude rejected the API key, or the key lacks permission. | No. The key stays rejected until someone replaces it. |
+| `bad_request` | Claude rejected the request as malformed or too large. | No. The same request would be rejected again. |
+| `bad_output` | Claude answered, but the classification failed validation against the schema. | No. The same ticket text is likely to produce it again. |
+| `unknown` | Anything else, including an answer with no classification in it. | No. An unrecognized failure is not assumed safe to retry. |
 
-**Logging note:** each Splunk failure entry records which of the six
-failure types occurred, so failures are countable and comparable over
-time rather than logged as a single generic error.
+### Retries
 
-Routing to a human in these six cases means a post to the review
-channel carrying the ticket number and which of the six failures it
-was, and nothing more. The subject stays out for the reason Section 8
-gives. This is a Phase 3 action, since the channels do not exist
-before it; earlier phases had only a console line, which is the gap
-Phase 3 closes.
+A retried failure gets up to three attempts, with a wait before each retry. A classification that fails validation is discarded whole. Keeping the fields that passed would mean acting on output the schema was built to reject.
 
-It is a narrower thing than the human review Section 7 describes,
-which reaches a note and a priority as well, because that ticket has a
-classification to work from and this one does not.
+### What the agent does
 
-There is nothing else the agent can correctly do. A failed
-classification produces no category, severity, or confidence, so there
-is no row in the action table, no note content, and no priority to
-set, and constructing a placeholder to fill the gap is the one thing
-this design refuses. The ticket keeps the priority osTicket assigned
-at creation and sits in the normal queue, which is why someone has to
-be told it is there.
-
-The review channel is the right destination because its job is
-deciding what an unresolved ticket is, and a ticket the classifier
-never labelled is the strongest form of that. If that post fails
-there is nothing behind it: the fallback page belongs to critical
-incidents, and a ticket with no classification has no severity to
-qualify. That boundary is recorded in known-limitations.md.
+When classification fails on a ticket, the agent logs the failure type to Splunk and posts a message to the review channel as shown in Section 8. It does nothing else, because the page, the note, the priority and enrichment all come from a classification, and this ticket has none.
 
 ---
 
