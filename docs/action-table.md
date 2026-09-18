@@ -28,16 +28,19 @@ could not place reaches PagerDuty at low urgency rather than not at all.
 
 | Category | Severity | Confidence | Channel | Page | Ticket actions |
 |---|---|---|---|---|---|
-| security_incident | critical | high | urgent, `@here` | WAKE | Write enrichment note, set priority critical |
-| security_incident | critical | low | urgent | NOTIFY | Write enrichment note, set priority critical |
+| security_incident | critical | high | urgent, `@here` | WAKE | Write enrichment note, set priority emergency |
+| security_incident | critical | low | urgent | NOTIFY | Write enrichment note, set priority emergency |
 | security_incident | high | any | incidents | none | Write note, set priority high |
-| security_incident | medium | any | incidents | none | Write note, set priority medium |
+| security_incident | medium | any | incidents | none | Write note, set priority normal |
 | security_incident | low | any | incidents | none | Write note, set priority low |
 | security_question | any | high | none | none | Write note, route to the security department, set priority from severity |
 | security_question | any | low | review | none | Write note, route to the security department, set priority from severity |
 | it_support | any | high | none | none | Write note, set priority from severity |
 | it_support | any | low | review | none | Write note, set priority from severity |
 | unclear | any | any | review | none | Write note, set priority from severity |
+
+Priority comes from severity through osTicket's own names: critical sets
+`emergency`, high sets `high`, medium sets `normal` and low sets `low`.
 
 Three channels, and the line between the first two is the same line the
 severity rubric already draws.
@@ -56,7 +59,7 @@ only channel carrying more than one severity, so a reader has to sort
 within it.
 
 **review** carries `unclear` at any confidence, and the tickets the
-classifier did categorise but was not sure about. `unclear` and low
+classifier did categorize but was not sure about. `unclear` and low
 confidence are the same signal on two axes: both say nobody has
 established what the ticket is. Keeping them together means the channel
 can be owned by a rotation or a dedicated analyst, rather than mixed in
@@ -65,7 +68,7 @@ with tickets that only need action.
 ## Design notes
 
 **Why severity only fully branches for `security_incident`.** Severity's
-only job in this system is to decide alert level: which channel a ticket
+main job in this system is to decide alert level: which channel a ticket
 reaches, whether it mentions, and whether it pages at all. Only security
 incidents ever justify interrupting a human.
 For `security_question` and `it_support`, severity still sets the
