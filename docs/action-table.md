@@ -111,7 +111,7 @@ producing frequent criticals has a classification problem.
 **Order of actions** is not part of this table. A page runs before
 everything, including enrichment, and the channel post runs after the
 ticket writes, for reasons in
-[architecture.md, Section 7](architecture.md#7-action-layer-and-phasing).
+[architecture.md, Section 7](architecture.md#7-action-layer).
 
 **Why `security_question` routes differently from `it_support`.**
 Category changes who should review the ticket, not just how urgent it
@@ -124,6 +124,9 @@ preconditions in
 **Enrichment scope.** Splunk enrichment triggers on security_incident +
 critical, at either confidence. High, medium, and low severity security
 incidents are handled without enrichment. Confidence gates how loudly a
-ticket escalates, not the query, because the tickets that read as
-uncertain are the ones a reviewer most needs context for. Reasoning in
-[architecture.md, Section 7](architecture.md#7-action-layer-and-phasing).
+ticket escalates, not the query. The rubric sends unexplained behavior to
+low confidence, so gating the query on confidence would withhold context
+from the tickets a reviewer most needs it for. The query is read-only and
+bounded by the agent's Splunk role, which allows three concurrent searches
+against one index, so enriching an uncertain ticket costs search capacity
+and nothing else.

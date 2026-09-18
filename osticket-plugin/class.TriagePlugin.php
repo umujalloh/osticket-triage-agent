@@ -142,8 +142,7 @@ class TriagePlugin extends Plugin {
                 $this->enqueue($ticket->getId(), $verified);
                 // On the first failure, not after a delay. An undelivered
                 // ticket has to be readable as a possible critical incident,
-                // because classifying it is what just failed. architecture.md,
-                // Section 7.
+                // because it was never classified. architecture.md, Section 7.
                 $this->setStatusNote($ticket->getId(),
                                      $this->pendingNote($this->retryWindowMinutes()));
             }
@@ -284,7 +283,7 @@ class TriagePlugin extends Plugin {
      * Reasoning in architecture.md, Section 7.
      *
      * alert stays true so osTicket's own note settings decide whether anyone is
-     * pushed. Do not set it false to quieten this: it reaches nobody by default
+     * pushed. Do not set it false to quiet this: it reaches nobody by default
      * already, and hardcoding it takes the choice off the deployment.
      */
     private function setStatusNote($ticket_id, $body) {

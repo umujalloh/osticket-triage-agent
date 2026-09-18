@@ -24,11 +24,11 @@ This document covers the design across all three phases.
  
 **osTicket:** An open-source helpdesk system with a MySQL database where tickets live. Users submit a ticket here when they have an issue. The agent writes back to osTicket, posting an internal note, setting a priority that decides where the ticket sits in the Open queue, and moving a `security_question` into the security department. It does not call the agent itself; the plugin below does.
  
-**The triage plugin:** PHP that runs inside osTicket, in `osticket-plugin/`. It listens for the ticket-created signal, signs the payload, and posts it to the agent. It also registers the endpoints the agent writes back through, since osTicket's own API cannot touch an existing ticket. Both directions are signed, each with its own secret. The plugin also owns delivery. A ticket the agent does not accept goes into a retry queue in osTicket's database, drained on cron and on the next ticket created. It keeps retrying for an hour by default, then gives up and notes on the ticket that triage never ran.
+**The triage plugin:** PHP that runs inside osTicket, in `osticket-plugin/`. It listens for the ticket-created signal, signs the payload, and posts it to the agent. It also registers the endpoints the agent writes back through, since osTicket's own API cannot touch an existing ticket. Both directions are signed, each with its own secret. It owns delivery when the agent cannot be reached, which Section 7 covers.
 
 **The triage agent:** The FastAPI service, in `agent/`, and the orchestrator. It receives the webhook from the plugin and sends the ticket to Claude for classification. A pre-defined action table decides what happens next. It pages PagerDuty when the row calls for it, queries Splunk for enrichment, then writes back to osTicket and posts to Slack.
 
-**The idempotency store:** A SQLite file beside the agent, one row per ticket it has accepted. Each row holds the classification that ticket was given, a flag per action taken on it, and the webhook body while the ticket is unfinished. A ticket whose actions all completed is refused before any work starts. One interrupted partway through is picked up instead, running only what it still owes and finishing on the classification it already has rather than asking Claude a second time. It survives a restart. If it is ever lost, the agent has no record of what it already did, and PagerDuty's deduplication key is what stops a repeat page raising a second incident. The file is created mode 600, readable only by the account running the agent, and what it holds at rest is in Section 8.
+**The idempotency store:** A SQLite file beside the agent, one row per ticket it has accepted, holding the classification, a flag per action taken and the webhook body while the ticket is unfinished. It survives a restart. Section 7 covers how the agent uses it, and Section 8 what it holds at rest.
  
 **Claude API:** An external LLM, used for classification only. It receives the ticket text from the agent and returns a category, a severity, a confidence, and any hostname, username or source IP the ticket explicitly names. It runs no queries and writes nothing.
  
@@ -324,112 +324,96 @@ When classification fails on a ticket, the agent logs the failure type to Splunk
 
 ---
 
-## 7. Action Layer and Phasing
- 
-**Action table:** The agent does not decide actions on its own and never takes them from Claude. Every action comes from a fixed table written in code. Claude's classification is the key, the action is the value. The agent looks up the category-severity-confidence combination and runs the matching action.
- 
-The full table is in [docs/action-table.md](action-table.md). A few example rows:
- 
-| Category | Severity | Confidence | Action |
-|----------|----------|------------|--------|
-| security_incident | critical | high | Urgent channel with a mention, page on-call, enrichment note, priority critical |
-| security_incident | critical | low | Urgent channel with a mention, no page, enrichment note, priority critical |
-| security_incident | high | any | Incidents channel, note, priority high, no page |
-| unclear | any | any | Review channel, note, priority from severity, no page |
- 
-Paging is reserved for critical security incidents, at either confidence. Splunk enrichment has the same trigger. What confidence decides is not whether a page happens but where it goes, because a page can be loud or quiet and only the loud one needs certainty. Enrichment is read-only and bounded by the agent's Splunk role, which allows three concurrent searches against one index, so running it on an uncertain ticket costs search capacity and nothing else.
+## 7. Action Layer
 
-Gating it on confidence too would have withheld enrichment from the tickets that need it most, because the rubric forces unexplained behavior to low_confidence. A critical incident nobody can account for is exactly where a reviewer needs a starting point.
+Every action the agent takes comes from a fixed table in code, keyed on the category, severity and confidence Claude returned. Claude never selects an action. The table, with the reasoning behind each row, is in [action-table.md](action-table.md). This section covers how the agent carries those actions out, and what happens when it cannot.
 
-Alerting splits across three channels, and the line between the first two is the one the severity rubric already draws. Critical means someone unauthorized holds access right now, which is what justifies interrupting people, so critical incidents reach an urgent channel and mention it. High, medium, and low incidents are ones where nobody currently holds access, an attempt that failed or a suspicion the ticket cannot establish, so they reach an incidents channel that interrupts nobody. Tickets the classifier could not place, and those it placed without confidence, reach a review channel whose job is deciding what they are.
+### Order of actions
 
-Two PagerDuty services rather than one, because urgency is a property of a service and not something an event can request. WAKE is set to high urgency and is meant to interrupt. NOTIFY is set to low urgency and creates an incident somebody owns and has to acknowledge, without waking them. Sending a lower severity in the payload and letting a severity-mapped service downgrade it would save a service, at the cost of the payload misdescribing an incident that genuinely is critical.
+The agent runs a row's actions in a fixed order:
 
-A mention and a page reach different people, the page tasking the one person on call and the mention telling the rest of the team. Only the confident critical does both. Once one at low confidence pages NOTIFY, an `@here` would be the loudest signal on the classification the agent is least sure of, and it would interrupt a whole team about something one person already owns.
+1. Page, on the rows that page.
+2. Write the classification to the audit index.
+3. Enrich, on the rows that enrich.
+4. Write the note, carrying the enrichment result.
+5. Set the priority from severity.
+6. Route a security question to the security department.
+7. Post to the channel the row selected.
 
-Human review is an outcome rather than a label. A ticket routed to it still reaches a channel, still gets its note so any enrichment is on the ticket when someone opens it, and still gets its priority so the queue sorts correctly. On a critical it also pages, quietly. What the override changes is how loudly the ticket escalates, and nothing else about how it is handled.
+The pager goes first because nothing that can stall is allowed in front of it. Enrichment and the audit write both go to Splunk, which can be slow for the same reason the ticket was filed, and behind them a page would sit through 19 seconds of audit retries and 65 of enrichment before it was sent. Ahead of them it depends on PagerDuty alone.
 
-Confidence gates interruption, not visibility, and withholding the page entirely got that wrong. It left a critical the classifier could not place with a channel post as its only push, arriving last and behind every retry above it, so the tickets the system understood least were also the slowest to reach anyone. A quiet page is visibility. It is the thing confidence was supposed to permit.
- 
-**Order of actions:** A page runs before everything, including the classification audit write and enrichment. Then the note, the priority, and the channel post last, so a reader who opens the ticket finds it complete.
+The page carries only the classification, the ticket number and a link. That is enough to get someone to the ticket, where the note, the priority and the enrichment land about two seconds behind it. The Slack post goes last, after those writes, so the alert can carry how many related events turned up from enrichment, or why there are none.
 
-The page leads because nothing it depends on may be able to stall. That rules out more than osTicket. Enrichment and audit logging are both Splunk, and Splunk answering slowly is not a rare event, since it can be unwell for the same reason the ticket was filed. With the page behind them, a Splunk outage delays the pager by the sum of their retry budgets, which is around two and a half minutes for a confident critical. PagerDuty is now the page's only dependency.
+### Enrichment outcomes
 
-The cost is that the page carries no enrichment result, because nothing has searched when it is sent. Severity, category and confidence are identical on every page the table produces, so the enrichment count was the one field that told one page from another. Giving it up is still the right trade. A page exists to wake someone, and what they do when woken is open the ticket, where the enrichment lands about a second later. A count that arrives with the page changes how alarmed they are on the way to the laptop, not whether they go.
+Enrichment adds context to a critical incident and never silences one, so a Splunk outage or a ticket with nothing safe to query cannot stop the page, the note, the priority or the post. The agent records which of four things happened, because an unsearched ticket and a clean one would otherwise look alike:
 
-Below critical none of this applies, because nothing pages. A critical at low confidence has only its channel post, which runs last and inherits every delay above it.
-
-Enrichment not producing results does not cancel the alert. Enrichment adds context; alerting is the point, so neither a Splunk outage nor a ticket with no verified identifier may silence a critical incident. The agent carries on to the actions in every case and reports which case it was, because four different things can happen and three of them look alike if collapsed:
-
-| State | What it means | What the note and alert say |
+| State | What it means | What the note and the alert say |
 |---|---|---|
-| Not eligible | The ticket was never a critical incident, so no query applied | nothing |
-| No verified identifier | Eligible, but nothing could safely be queried, which is what a guest submission with no valid IP produces | `no verified identifier` |
-| Ran, empty | The query ran and Splunk returned no matches | `no related events` |
-| Failed | The query did not complete | `enrichment unavailable` |
+| Not eligible | The row does not enrich, so no query ran | nothing |
+| No verified identifier | Nothing could safely be queried, because the address was not authenticated and there was no valid IP | `no verified identifier` |
+| Ran, empty | The environment was searched and nothing matched | `no related events` |
+| Failed | The query did not finish | `enrichment unavailable` |
 
-The middle two are the pair most easily confused and the most misleading to confuse. "No related events" tells a reader the environment was searched and looked clean. "No verified identifier" tells them nothing was searched at all, which on a critical incident is a reason to look harder rather than to relax.
+### When an action fails
 
-That second state is a direct consequence of the requester email gate in Attack 3. A guest filing a critical incident has a typed email the agent will not query and an IP that may match nothing, so the agent correctly has nothing to look up. It must still write the note, set the priority, post, and page.
+The agent's actions reach four systems, osTicket, Splunk, Slack and PagerDuty, and any of them can refuse a request or go quiet. A failure in one never cancels the rest, because a ticket that loses its note still needs its alert. A connection error, a timeout, or a destination that says it is busy or unavailable gets three attempts. Anything else fails at once. Every failure is recorded, and a destination that keeps failing is caught from outside, in Section 9.
 
-**Alert delivery failure:** Connection errors, timeouts, 429 and 5xx are retried three times with backoff. 400, 403, 404 and 410 are terminal, because a malformed payload, a disabled app, a revoked webhook and an archived channel are not fixed by trying again.
+What happens next depends on which action failed:
 
-When the retries are exhausted on a critical security incident and nothing has paged, the agent pages as a fallback, and the page says that is why. Severity alone does not qualify, since the classifier can rate an it_support ticket critical and a major outage is not what the security on-call exists for. The interruption is justified by the delivery failure rather than by confidence in the classification, and the responder is told which it is rather than being woken for what looks like a confident critical. Below critical there is no fallback: the note and the priority are still on the ticket, so it sits correctly ordered in the queue even though nobody was pushed. If both Slack and PagerDuty fail, the agent has no path left and only the audit event records it, which is stated as a boundary in known-limitations.md rather than papered over.
+| What failed | What the agent does |
+|---|---|
+| Enrichment | The note and the alert say `enrichment unavailable`. Everything else runs unchanged. |
+| Note, priority or routing write | Records the failure and moves on. The ticket can end up with an alert and no note. |
+| Classification audit write | The note ends with `No audit record.`, so the ticket carries what Splunk is missing. |
+| Page | The channel post reports the failure and asks for manual escalation. |
+| Channel post, on a critical that paged NOTIFY | Sends a WAKE page that leads with the delivery failure, so it does not read as a confident critical. |
+| Channel post, anywhere else | Nothing further. The note and the priority hold the ticket's place in the queue, with nobody pushed. |
+| Channel post and page together | Nothing reaches anyone. The audit event is the only record, and [known-limitations.md](known-limitations.md) carries that boundary. |
 
-A page failing on its own is the smaller case, and it degrades rather than disappears. The page runs first, so a failure there still leaves the note, the priority and the channel post to follow, and a confident critical ends up announced in the urgent channel with a mention instead of waking someone. The reverse does not hold, which is why the fallback exists at all.
+### Idempotency
 
-**Repeated failure:** A revoked webhook fails on every ticket, not just one. The agent does not count failures or trip a breaker, because a component that monitors itself is unreliable exactly when it is broken. Every failure is already an audit event, so noticing a run of them is a search over the audit index rather than state the agent keeps. Two searches ship for this, one for pages and one for Slack posts. Neither counts failures in a window, because that needs ticket volume a small helpdesk does not have: at a few tickets a day a dead webhook produces one failure today and one next week, and any threshold per hour would never fire on a destination broken the whole time. What they test instead is whether anything has succeeded since. A credential that has stopped working fails every attempt, so two failures with no success after them is a fault at any volume, and the next success clears it without a timer deciding. Neither alert delivers through Slack: routing an alert about Slack being broken through Slack is circular.
+The agent keeps a SQLite file beside itself that survives a restart. It holds every ticket ID the agent has accepted, the classification that ticket was given, and a flag for each action that finished.
 
-**Alert credentials:** Each channel has its own Slack incoming webhook, three values rather than one bot token. A webhook is bound to its channel, so a leaked one lets an attacker post to that channel and nothing else, where a bot token would grant the whole workspace. All three are asserted at boot when ENABLE_WRITES is true and none are required when it is false, so a deployment cannot believe it is alerting on critical incidents while missing the webhook that would carry them. A webhook URL is a bearer credential and never appears in a log line, a console message, or an audit event. That requires care in exception handling, because HTTP client errors routinely embed the request URL in their message text.
+The plugin retries any send the agent does not accept, so the same ticket can arrive twice, and the store decides what happens to the second delivery. A ticket that finished is refused as a duplicate. A ticket the agent was interrupted partway through is resumed on its stored classification, and only the actions it still owes are run. A ticket still being worked on is refused, because the run already in progress will finish it.
 
-The PagerDuty routing key works the same way and is scoped the same way, one key bound to one service, asserted at boot only when writes are on. It differs in where it travels. The key sits in the request body rather than the URL, so a client error that quotes the URL is harmless here, and what can still expose it is a rejection that quotes the field it refused. The response body is truncated for that reason.
+The webhook is answered before the actions run, so a crash in between leaves osTicket believing the ticket was delivered, and the plugin does not resend it. The agent therefore keeps the webhook body until the ticket completes and finishes whatever is left on any ticket still holding one at the next start, unless the ticket was accepted more than an hour ago. Paging then would be about something hours old, so the ticket gets a note saying triage started and did not finish, and is posted to the review channel.
 
-**Phasing:** The build is in three phases, each proven before the next.
- 
-Phase 1: receive the webhook and classify. No writes.
- 
-Phase 2: add Splunk enrichment. Still no writes.
- 
-Phase 3: internal note writes and alerting (Slack posts, and PagerDuty pages for critical high-confidence incidents).
- 
-Writes are the risky capability, so they come last, after classification and enrichment are working. Within Phase 3, alerts are kill-switched effectful writes in the same risk class as note writes, which is why they land together.
- 
-**Idempotency and resumption:** Accepted ticket IDs are recorded in a SQLite store beside the agent, so a retried webhook doesn't double-page or double-note and a restart doesn't forget what was handled. Alongside each ID the store keeps the classification the ticket was given and a column per action completed, which is what separates a ticket the agent finished from one it was interrupted partway through. A repeat delivery of the first is refused as a duplicate. A repeat delivery of the second resumes it, running the outstanding actions and skipping the rest. A repeat delivery that lands while the first run is still going is answered in flight and left alone, because the run it would duplicate has not finished deciding what it still owes.
+### When the agent is unreachable
 
-**A resumed ticket is not classified again:** Claude at temperature 0 is not guaranteed to answer identically, and a ticket a page has already described cannot be re-decided halfway through without the second decision contradicting an alert somebody is already reading. Storing the decision before acting on it makes the resumed run finish the ticket the first run started rather than start a different one. A ticket interrupted before it was ever classified has nothing stored and no actions taken, so it is classified fresh, which is the same thing the first run would have done.
+The agent cannot ask osTicket to resend a ticket it never received, so the plugin owns delivery and the ticket is not lost. The plugin puts the ticket in a queue table in osTicket's own database, with the attempt count, when it first failed, and whether osTicket had authenticated the submitter. That last value comes from the submitter's live session, which no retry has, so rebuilding it later would always produce false and quietly narrow what the agent may search on. The payload is rebuilt from the ticket on every attempt, so the queue carries no copy of the ticket text and a retry cannot drift from the original send.
 
-A third case sits between the two. A retry can arrive while the first run is still going, because the plugin retries a send that failed and a send can fail after the agent has already accepted the ticket. Such a ticket has actions outstanding and would otherwise read as resumable, so the agent tracks which tickets are being worked on right now and refuses a delivery for one of them. That tracking is in memory, which is as strong as the store itself, since the store is a file beside a single process.
+The plugin writes a note on the ticket at the first failed send, not after a delay:
 
-**Recovering an interrupted run:** The webhook answers 202 before the actions run, so a crash in between leaves a ticket osTicket believes was delivered. The plugin will not resend it, because from its side nothing failed, and the resume needs a delivery to react to. Nothing outside the agent can start this, so the agent stores the webhook body when it accepts a ticket and drops it when the ticket completes. On startup it finishes anything still holding a body, through the same path a repeat delivery takes. A ticket that fails is logged and left for the next start rather than ending the run, so one bad ticket cannot strand the ones behind it. One that keeps failing ages past the window and is handed to a person like any other.
+```
+Automated triage has not run on this ticket.
 
-The body is what marks a ticket unfinished, so the delete and the ticket completing are one event and cannot disagree. It also bounds how long ticket text is kept: a finished ticket has none, and the store accumulates only while something is actually wrong.
+The triage agent could not be reached, so the ticket has no triage
+classification, its priority is not one triage set, and no alert was raised
+for it. Treat the priority as unknown rather than low.
 
-A ticket that sat unfinished longer than the recovery window, an hour by default, is not completed on startup. Acting on it then would raise an alert about something hours old. It carries a note saying triage started and did not finish, because a ticket holding a note with no priority beside it reads as triaged when it was not, and the review channel is told. That is the same answer a classification failure gets, and for the same reason: the agent decided nothing, so it cannot know whether this was a critical incident, and a note nobody opens is not enough on a ticket that might have been one. It does not page, because there is no severity to page on.
+Delivery is being retried until about 10:00. This note is updated when that
+resolves either way.
+```
 
-**Retry queue:** Resumption is worth nothing unless something delivers the ticket a second time, and the agent cannot ask for that, since being unreachable is the case in question. So the plugin owns the retry. A send the agent does not accept puts the ticket in a table beside osTicket's own, and two triggers drain it: the next ticket created, and osTicket's cron signal. Cron is the one that matters during an outage, because an agent accepting nothing gives nobody a reason to file the ticket that would otherwise trigger a flush.
+The ticket was never classified, so nobody knows whether it is a critical incident, and until someone does it has to read as one. Without the note it would sit at the priority osTicket gave it, looking like a ticket that was triaged and found routine.
 
-The queue stores the ticket ID, the attempt count, when it first failed, and one value that cannot be recovered later. requester_verified is read from the submitter's live browser session, which no retry has. Rebuilding it would return false every time and quietly narrow what the agent may search on, so it is captured at the moment of failure and replayed with the ticket. Everything else is rebuilt from the ticket itself, and created_at is generated fresh on each attempt, which is what keeps a legitimate retry distinguishable from a captured request replayed later: only something holding the shared secret can sign a current timestamp.
+Two triggers drain the queue. A new ticket whose own send succeeds also sends the oldest queued ticket. It sends only one, because the submitter is waiting for the page to load. Cron runs every five minutes and sends up to twenty-five queued tickets, starting from the oldest. Both stop at the first failure, since every ticket behind it is queued for the same reason. During an outage a new ticket's own send fails too, so cron is what empties the queue once the agent is back.
 
-**Draining is deliberately lopsided:** Cron sends up to twenty-five, because nobody is waiting. A ticket being created sends one, and only when its own send succeeded, because that path runs while a submitter waits on their own submission and charging them for someone else's backlog is the wrong trade. Either way the drain stops at the first failure rather than working through the rest, since they queued for one reason and will all rediscover it a timeout at a time.
+The note is rewritten in place as this resolves, never added to, so the ticket never carries two that disagree. Once the ticket lands it says triage was delayed and by how long, and once the plugin gives up, an hour after the first failure by default, it says triage never ran. Giving up needs no agent, so it still happens while the agent is down, and the ticket is left to be worked by hand.
 
-**Telling a human:** The plugin writes an internal note on the first failed send, not after a delay. It cannot know whether the ticket in front of it is a critical incident, because classifying it is the thing that just failed, so every undelivered ticket has to be readable as one. The two errors here are not symmetric. A note about a delay that turned out not to matter costs a line of text and is rewritten later; a warning that arrives an hour after a critical incident was filed cannot be recovered at all.
+### Kill switch
 
-That note is local work needing no agent, which is what lets it be written during the outage rather than after it. It is left subject to osTicket's own note-alert settings rather than forced silent, so a deployment that wants staff pushed gets that and one that does not is not overridden. By default it reaches nobody, since every note recipient osTicket considers is somebody already involved with the ticket and a ticket seconds old has nobody.
+`ENABLE_WRITES` decides whether the agent carries out its actions. Every note, priority change, department move, Slack post and page checks it first, and when it is off the action is skipped and recorded as skipped.
 
-**One note, rewritten:** The plugin keeps a single note per ticket and edits it in place through its three states: triage has not run, delivery was delayed by so many minutes, or triage never ran at all. A note per event would leave a ticket carrying two that disagree, with nothing telling a reader which still applies. The delivered wording reports only that the agent accepted the ticket, never that triage succeeded, because a 202 means it was taken and not that it was finished with.
+The variable has no default and accepts only true or false. A missing value stops the agent at startup, and so does any other spelling, so `ENABLE_WRITES=yes` never passes as off. A default would have to choose between writing to real tickets by accident and doing nothing while looking healthy.
 
-The note is posted under a different name from the one the write endpoint uses. That endpoint decides a note is a repeat by looking for its own poster, so a shared name would make the agent's real triage note bounce as already present and be recorded as written.
+With the switch off the agent still classifies, still enriches and still writes its full audit trail, so a run against real tickets can be watched end to end with nothing delivered. Slack and PagerDuty credentials are asserted only when the switch is on, so a deployment that never writes does not hold keys it cannot use. When it is on, every one of them is required, so a deployment cannot believe it is alerting on tickets it has no way to reach. The agent prints its mode at boot and repeats it on every heartbeat, so the switch's position can be read from Splunk at any time.
 
-**Giving up:** After a configurable window, one hour by default, the plugin stops retrying and the note settles on saying triage never ran. The window is set by how long a page is still the right response to the ticket, not by how long delivery might eventually succeed. A ticket that reaches this point falls back to being worked by hand, which is the same fallback every other failure path in this design ends at.
- 
-**Kill switch:** One environment variable, ENABLE_WRITES, governs every effectful write the agent makes. It has no default and must be exactly true or false, so a deployment cannot start writing to real tickets by accident or silently do nothing while looking healthy. The agent reports which mode it booted in. Audit logging continues regardless, so even with writes off, every classification and decision is still recorded.
+The note the plugin writes when it cannot reach the agent is the one write outside the switch. Putting it behind the agent's own switch would silence the report of the agent's absence.
 
-One write sits outside it, and it is not a triage action. The plugin's status note is written precisely because the agent could not be reached, so putting it behind the agent's own switch would silence the report of the agent's absence. The switch exists to stop the agent acting on a classification. This note is what gets written when there is no classification to act on.
- 
-**Latency tradeoff:** Low-confidence tickets route to a human instead of paging automatically. This is safer but slower because a genuinely urgent but ambiguously worded incident waits for a human rather than paging immediately. It is a deliberate choice, since acting on an uncertain classification is the worse risk.
- 
 ---
- 
+
 ## 8. Trust Boundaries and Least Privilege
  
 **Trust boundary:** The trust zone is the part of the system that runs in my own infrastructure: osTicket, the agent, and Splunk. Outside it are the end user, Claude, and the alert services (PagerDuty, Slack). Inside is trusted, outside is not.
@@ -487,7 +471,9 @@ osTicket write-back: the agent holds no osTicket API key. osTicket's own API exp
  
 Claude API key: not scoped in code. Spend is capped by a limit set in the Anthropic Console, outside the agent. The agent backs off when the API rejects a call, but never limits how often it calls.
 
-Slack webhooks: one per channel, each bound to its channel by Slack itself, so a leaked webhook posts to that channel and nothing else. Covered in Section 7.
+Slack webhooks: one per channel, each bound to its channel by Slack, so a leaked webhook posts to that channel and nothing else, where a bot token would reach the whole workspace. A webhook URL is a bearer credential, so it never appears in a log line, a console message or an audit event. HTTP client errors routinely quote the request URL, so a failed post is reported by the error's type and never its text.
+
+PagerDuty routing keys: one per service, WAKE and NOTIFY, each bound to its service. The key travels in the request body rather than the URL, so an error that quotes the URL exposes nothing, and a rejection that quotes the refused field is cut short before it is recorded.
 
 Deployment preconditions are listed in Section 10, because they are obligations on the environment rather than properties of the design.
  
@@ -516,6 +502,8 @@ Neither case posts to a channel. The test is whether a message asks someone to d
 The beat is sent once with no retry, unlike every other audit write. The next one covers a missed beat, and a Splunk that will not take this event cannot raise an alarm about it either. An agent that keeps crashing and restarting still sends beats, so the alert never fires. Each beat carries its uptime, which resets instead of climbing, so the evidence is in the index. No alert watches for it, so noticing takes someone looking. The heartbeat runs only while the agent is serving. Importing the module does not start it, which is what lets the verifiers exercise the agent without writing beats to the Splunk index.
 
 This does not cover an agent that is alive and beating but unreachable from osTicket. A wrong bind address looks perfectly healthy from inside the process. osTicket catches that instead, writing the failed send to its system log and raising an admin alert.
+
+**Destination failures:** A revoked webhook or a rotated routing key fails on every ticket, not just one. The agent counts nothing and trips no breaker, since a component that watches itself is unreliable exactly when it breaks. Two searches over the audit index do it instead, one for pages and one for Slack posts. They use no rate, which a few tickets a day cannot produce, and fire when a destination has two failures with nothing succeeding after them. The next success clears them. Both alert by email, because an alert about Slack cannot travel through Slack.
 
 ---
  

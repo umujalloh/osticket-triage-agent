@@ -59,7 +59,7 @@ class Actions:
     human_review: bool = False
 
 # Only critical security incidents are enriched, at either confidence. Read
-# the reasoning in docs/architecture.md, Section 7, before changing this.
+# the reasoning in docs/action-table.md before changing this.
 def _should_enrich(category, severity) -> bool:
     return category == Category.security_incident and severity == Severity.critical
 
