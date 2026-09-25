@@ -473,7 +473,7 @@ Claude API key: not scoped in code. Spend is capped by a limit set in the Anthro
 
 Slack webhooks: one per channel, each bound to its channel by Slack, so a leaked webhook posts to that channel and nothing else, where a bot token would reach the whole workspace. A webhook URL is a bearer credential, so it never appears in a log line, a console message or an audit event. HTTP client errors routinely quote the request URL, so a failed post is reported by the error's type and never its text.
 
-PagerDuty routing keys: one per service, WAKE and NOTIFY, each bound to its service. The key travels in the request body rather than the URL, so an error that quotes the URL exposes nothing, and a rejection that quotes the refused field is cut short before it is recorded.
+PagerDuty routing keys: one per service, WAKE and NOTIFY, each bound to its service. The key travels in the request body rather than the URL, so an error that quotes the URL exposes nothing. A rejection could quote the key back from the request, so it is recorded by its status code, never its response body.
 
 Deployment preconditions are listed in Section 10, because they are obligations on the environment rather than properties of the design.
  

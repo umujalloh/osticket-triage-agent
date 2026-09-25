@@ -163,7 +163,7 @@ def send_page(destination: str, event: dict) -> str:
     Raises PagerDutyError on failure and never reports a page that did not
     happen. The routing key travels in the body rather than the URL, so an
     exception carrying the request URL is safe here in a way it is not for a
-    Slack webhook. Response text is still truncated, since a rejection can
+    Slack webhook. The response body is never recorded, since a rejection can
     quote the field it rejected.
     """
     if not writes_enabled():
@@ -192,8 +192,7 @@ def send_page(destination: str, event: dict) -> str:
         if response.status_code in (400, 401, 403, 404):
             raise PagerDutyError(
                 "bad_request",
-                f"PagerDuty refused the {destination} page: HTTP {response.status_code} "
-                f"{response.text[:100]}",
+                f"PagerDuty refused the {destination} page: HTTP {response.status_code}",
             )
         if response.status_code == 429:
             last_error = ("rate_limited", f"PagerDuty rate limited the {destination} service")

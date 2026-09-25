@@ -640,7 +640,7 @@ Measured 2026-09-11, thirty checks, all passing.
 The routing key sits in the request body rather than the URL, so the usual
 danger of a client library echoing the URL does not apply here. What can still
 expose it is a rejection quoting the field it refused, which is why the canary
-is the key itself and why the response body is truncated before it is logged.
+is the key itself and why the response body is never recorded.
 
 Reproduce with `./venv/bin/python verification/verify_pagerduty.py` from `agent/`. The
 delivery case needs `PAGERDUTY_ROUTING_KEY_TEST` and skips without it.
