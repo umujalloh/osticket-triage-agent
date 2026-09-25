@@ -203,7 +203,10 @@ async def lifespan(app: FastAPI):
         beat.cancel()
         recover.cancel()
 
-app = FastAPI(lifespan=lifespan)
+# FastAPI serves interactive docs and the API schema by default, with no
+# authentication. They are turned off, so the signed webhook is the only route.
+app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None,
+              openapi_url=None)
 
 print(f"Effectful writes are {'ENABLED' if writes_enabled() else 'DISABLED'}")
 
