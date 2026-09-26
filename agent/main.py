@@ -2,6 +2,7 @@ import asyncio
 import hmac
 import hashlib
 import os
+import re
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -235,6 +236,11 @@ def verify_signature(raw_body: bytes, signature_header: str) -> bool:
 
 REPLAY_WINDOW_SECONDS = 300
 CLOCK_SKEW_TOLERANCE_SECONDS = 60
+
+# A ticket number goes into Slack alerts and PagerDuty pages as text, and Slack
+# reads < > and & as markup. Only up to 32 letters, digits and hyphens are let
+# through, and alerts and pages show the ticket ID for anything else.
+PLAIN_TICKET_NUMBER = re.compile(r"[A-Za-z0-9-]{1,32}")
 
 def is_fresh(created_at) -> bool:
     if not created_at:
@@ -811,15 +817,25 @@ async def receive_ticket(request: Request, background_tasks: BackgroundTasks):
         )
         return JSONResponse(status_code=400, content={"detail": "ticket_id is required"})
 
-    # A bool is not a ticket identifier, and isinstance(True, int) is True, so
-    # it has to be rejected explicitly rather than by the type check below.
-    if isinstance(ticket_id, bool) or not isinstance(ticket_id, (int, str)):
+    # osTicket sends its internal ticket ID as an integer, and it goes into the
+    # ticket link in every alert and page. A bool has to be rejected
+    # explicitly, because isinstance(True, int) is True.
+    if (isinstance(ticket_id, bool) or not isinstance(ticket_id, int)
+            or ticket_id < 1):
         background_tasks.add_task(
             log_request_rejected, reason="invalid_ticket_id", source_ip=source_ip
         )
         return JSONResponse(
-            status_code=400, content={"detail": "ticket_id must be a number or string"}
+            status_code=400, content={"detail": "ticket_id must be a positive integer"}
         )
+
+    # A ticket number that is not plain is dropped, so alerts and pages show
+    # the ticket ID instead.
+    ticket_number = payload.get("ticket_number")
+    if ticket_number is not None and not (
+            isinstance(ticket_number, str)
+            and PLAIN_TICKET_NUMBER.fullmatch(ticket_number)):
+        payload["ticket_number"] = None
 
     # Claiming and starting are separate. The claim is the store's record that
     # this ticket was accepted once; starting is this process saying it is

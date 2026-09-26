@@ -58,9 +58,9 @@ def _connect():
     return conn
 
 def ticket_key(ticket_id) -> str:
-    """osTicket sends an integer, but the webhook accepts a string too.
-    Both spellings name the same ticket, so they have to collide here or a
-    resend with the other type would be processed twice.
+    """The store keys tickets as text, so an integer and its string spelling
+    name the same ticket. The webhook accepts only integers, but the store
+    does not rely on that.
 
     Public because anything else keeping per-ticket state has to agree with the
     store on what counts as the same ticket.
