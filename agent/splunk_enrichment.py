@@ -40,7 +40,14 @@ class EnrichmentError(Exception):
         self.failure_type = failure_type
         super().__init__(message)
 
+# ipaddress accepts an IPv6 zone after a %, and the zone can hold almost any
+# text, including a quote that closes the search string. The value must be
+# only hex digits, colons and dots before it is parsed.
+IP_CHARS = re.compile(r"[0-9A-Fa-f:.]{2,45}")
+
 def _is_valid_ip(value: str) -> bool:
+    if not isinstance(value, str) or not IP_CHARS.fullmatch(value):
+        return False
     try:
         ipaddress.ip_address(value)
         return True
