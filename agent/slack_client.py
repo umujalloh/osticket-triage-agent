@@ -179,6 +179,12 @@ def post_alert(channel: str, text: str) -> str:
             if attempt < ATTEMPTS - 1:
                 time.sleep([5, 15][attempt])
             continue
+        # A 503 says the service is down for now, so a later attempt can get past it.
+        if response.status_code == 503:
+            last_error = ("server_down", f"Slack is unavailable for the {channel} channel")
+            if attempt < ATTEMPTS - 1:
+                time.sleep([2, 5][attempt])
+            continue
         raise SlackError(
             "unknown", f"Unexpected Slack response for {channel}: HTTP {response.status_code}"
         )

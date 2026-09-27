@@ -199,6 +199,12 @@ def send_page(destination: str, event: dict) -> str:
             if attempt < ATTEMPTS - 1:
                 time.sleep([5, 15][attempt])
             continue
+        # A 503 says the service is down for now, so a later attempt can get past it.
+        if response.status_code == 503:
+            last_error = ("server_down", f"PagerDuty is unavailable for the {destination} service")
+            if attempt < ATTEMPTS - 1:
+                time.sleep([2, 5][attempt])
+            continue
         raise PagerDutyError(
             "unknown", f"Unexpected PagerDuty response for {destination}: HTTP {response.status_code}"
         )
