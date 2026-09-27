@@ -24,7 +24,7 @@ This document covers the design across all three phases.
  
 **osTicket:** An open-source helpdesk system with a MySQL database where tickets live. Users submit a ticket here when they have an issue. The agent writes back to osTicket, posting an internal note, setting a priority that decides where the ticket sits in the Open queue, and moving a `security_question` into the security department. It does not call the agent itself; the plugin below does.
  
-**The triage plugin:** PHP that runs inside osTicket, in `osticket-plugin/`. It listens for the ticket-created signal, signs the payload, and posts it to the agent. It also registers the endpoints the agent writes back through, since osTicket's own API cannot touch an existing ticket. Both directions are signed, each with its own secret. It owns delivery when the agent cannot be reached, which Section 7 covers.
+**The triage plugin:** PHP that runs inside osTicket, in `osticket-plugin/`. It listens for the ticket-created signal, signs the payload, and posts it to the agent. It also registers the endpoints the agent writes back through, since osTicket's own API cannot change the priority or department of an existing ticket. Both directions are signed, each with its own secret. It owns delivery when the agent cannot be reached, which Section 7 covers.
 
 **The triage agent:** The FastAPI service, in `agent/`, and the orchestrator. It receives the webhook from the plugin and sends the ticket to Claude for classification. A pre-defined action table decides what happens next. It pages PagerDuty when the row calls for it, queries Splunk for enrichment, then writes back to osTicket and posts to Slack.
 
@@ -201,7 +201,7 @@ Anyone who can open the ticket can read its notes, and that includes every staff
  
 **Defense**
  
-**Least privilege per credential:** Most of the credentials are scoped so a stolen one is bounded by what it was allowed to do. Splunk has two, split by direction, a read-only account on a single index for enrichment and a write-only token for the audit index. osTicket also has two, one secret signing the webhook coming in and a different one signing the write endpoint, so stealing the webhook secret does not let an attacker write to tickets. The write endpoint exists because osTicket's own API cannot touch an existing ticket, and it is limited to adding a note, setting a priority, and moving a ticket to the security department. Slack and PagerDuty get one credential per destination, each bound to its own channel or service. The Claude key is the exception, scoped only by a spend limit set outside the agent.
+**Least privilege per credential:** Most of the credentials are scoped so a stolen one is bounded by what it was allowed to do. Splunk has two, split by direction, a read-only account on a single index for enrichment and a write-only token for the audit index. osTicket also has two, one secret signing the webhook coming in and a different one signing the write endpoint, so stealing the webhook secret does not let an attacker write to tickets. The write endpoint exists because osTicket's own API cannot change the priority or department of an existing ticket, and it is limited to adding a note, setting a priority, and moving a ticket to the security department. Slack and PagerDuty get one credential per destination, each bound to its own channel or service. The Claude key is the exception, scoped only by a spend limit set outside the agent.
  
 **Rotatable keys:** No credential is embedded in code. Every one is read from the environment at import, so a revoked credential can be replaced with a config change and a restart.
  
@@ -342,7 +342,7 @@ The agent runs a row's actions in a fixed order:
 
 The pager goes first because nothing that can stall is allowed in front of it. Enrichment and the audit write both go to Splunk, which can be slow for the same reason the ticket was filed, and behind them a page would sit through 19 seconds of audit retries and 65 of enrichment before it was sent. Ahead of them it depends on PagerDuty alone.
 
-The page carries only the classification, the ticket number and a link. That is enough to get someone to the ticket, where the note, the priority and the enrichment land about two seconds behind it. The Slack post goes last, after those writes, so the alert can carry how many related events turned up from enrichment, or why there are none.
+The page carries the severity, category, ticket number and a link. That is enough to get someone to the ticket, where the note, the priority and the enrichment land about two seconds behind it. The Slack post goes last, after those writes, so the alert can carry how many related events turned up from enrichment, or why there are none.
 
 ### Enrichment outcomes
 

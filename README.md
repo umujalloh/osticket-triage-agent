@@ -87,9 +87,10 @@ enrichment result when there was one.
 priority from the severity, and moves security questions to the security
 department. It writes through
 [`class.TriageWriteController.php`](osticket-plugin/class.TriageWriteController.php),
-an endpoint the plugin registers, because osTicket's stock API can create a
-ticket and trigger cron and nothing else. The note is an internal thread entry,
-so the person who filed the ticket never sees it.
+an endpoint the plugin registers, because osTicket's own API cannot change the
+priority or department of an existing ticket. The note goes through the same
+controller and write secret, so every write takes one signed path. It is an
+internal thread entry, so the person who filed the ticket never sees it.
 
 [`slack_client.py`](agent/slack_client.py) posts the alert to one of three
 channels, `urgent` for critical security incidents, `incidents` for the high,
@@ -159,22 +160,12 @@ enrichment user is scoped to a single index with no admin, write, or real-time
 search capability. Results come back as a named field list rather than raw
 events, so credentials sitting in raw log text never enter the audit index.
 
-**Nothing the submitter wrote leaves the trust zone.** Every field in a Slack
-alert or a PagerDuty page is one the agent generated. Severity, category, ticket
-number, an enrichment count, and a link.
-
-Three exclusions are deliberate:
-
-- **The ticket subject**, because Slack renders a bare URL as a clickable link. A
-  subject would let anyone who can file a ticket plant a link in a trusted
-  channel under the agent's name.
-- **The requester's address**, because it is personal data the ticket already
-  holds inside the zone.
-- **Enrichment results**, because they reveal what this organisation detects and
-  with what tooling.
-
-That is a rule rather than a judgement made field by field, so adding a field
-later is a decision about the rule.
+**Nothing the submitter wrote reaches Slack or PagerDuty.** Alerts and pages
+carry what the agent decided, the ticket number and a link to the ticket. The
+ticket text, the requester's address and IP, and the enrichment results are
+left out on purpose.
+[Section 8 of the architecture doc](docs/architecture.md#8-trust-boundaries-and-least-privilege)
+lists every field and the reason for each exclusion.
 
 ---
 
@@ -243,8 +234,8 @@ values the server could verify, never from the ticket text.
 ![The agent's note on the ticket](docs/images/ticket-note.png)
 
 **In Slack.** The alert to the urgent channel. Severity, category, ticket number,
-confidence, page destination, event count, and a link. No subject, no requester
-address, no enrichment detail, because none of those may leave the trust zone.
+confidence, page destination, event count, and a link. No ticket text, no
+requester address, no enrichment detail, because none of those may reach Slack.
 
 ![The Slack alert](docs/images/slack-alert.png)
 

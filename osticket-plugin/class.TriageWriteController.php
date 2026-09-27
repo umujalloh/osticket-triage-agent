@@ -9,10 +9,12 @@ require_once(INCLUDE_DIR . 'class.http.php');
 /**
  * The agent's only way to write into osTicket.
  *
- * osTicket's own API creates tickets and nothing else, so notes and priority
- * are unreachable through it. This endpoint exists to close that gap, and the
- * scoping the architecture claims is enforced by what it implements: two
- * operations, on one ticket, named in an authenticated request body.
+ * osTicket's own API creates tickets, threads emailed replies and runs cron.
+ * It cannot change the priority or department of an existing ticket. This
+ * controller exists to close that gap, and handles the agent's note too, so
+ * every write takes one signed path. It does only these three writes, each on
+ * one ticket named in a signed request, so the write secret can do nothing
+ * else.
  */
 class TriageWriteController {
 
