@@ -484,7 +484,7 @@ The agent reads eleven secrets from `agent/.env` at import. Two optional test ke
 |---|---|---|
 | `TRIAGE_HMAC_SECRET` | Verifying the webhook | Accepted only by the webhook endpoint. Whoever holds it can submit tickets the agent classifies and acts on. |
 | `TRIAGE_WRITE_SECRET` | Signing write-back | The note, priority and department endpoints, on any ticket. |
-| `SPLUNK_AGENT_PASSWORD` | Enrichment, as `triage_agent` by default | Role `triage_enrichment` searches `botsv3` only, with three concurrent jobs, 100 MB of search disk and no real-time searches. Splunk also grants every role a baseline set of capabilities, including `run_collect`, which can write search results into an index. |
+| `SPLUNK_AGENT_PASSWORD` | Enrichment, as `triage_agent` by default | Role `triage_enrichment` searches `botsv3` only, with three concurrent jobs, 100 MB of search disk, no real-time searches and no writes to any index. |
 | `SPLUNK_HEC_TOKEN` | Audit events | Scoped at token creation to `osticket_triage`, which the agent never checks. |
 | `ANTHROPIC_API_KEY` | Classification | Unscoped in code, bounded by the organization's spend limit. |
 | `SLACK_WEBHOOK_URGENT`, `_INCIDENTS`, `_REVIEW` | Alerts | One channel each, bound by Slack. |
