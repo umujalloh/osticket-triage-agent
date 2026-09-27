@@ -415,67 +415,87 @@ The note the plugin writes when it cannot reach the agent is the one write outsi
 ---
 
 ## 8. Trust Boundaries and Least Privilege
- 
-**Trust boundary:** The trust zone is the part of the system that runs in my own infrastructure: osTicket, the agent, and Splunk. Outside it are the end user, Claude, and the alert services (PagerDuty, Slack). Inside is trusted, outside is not.
- 
-**The important crossing is at the webhook:** The network path from osTicket to the agent is trusted, since both run in my infrastructure, but the data crossing it is not. The ticket body was written by an unknown user, so it enters as untrusted input even though it arrives over a trusted channel. This is why the agent treats every ticket body as data to be validated, never as instructions.
- 
-**Exposure:** The osTicket and Splunk containers publish their ports on 127.0.0.1, so the web UIs, the HEC endpoint, and the management port are reachable only from the machine running them. The agent cannot use loopback, because the osTicket container reaches it through the host gateway, so 127.0.0.1 would break the webhook. It binds to the Docker bridge instead of to all interfaces, which is the one address the container actually calls and leaves the agent unreachable from every other interface the machine has. The webhook is still the one port on this stack a container can reach, which is why it is also the one port with signature verification in front of it.
- 
-Outbound, only the ticket body and the classification request go to Claude. Credentials and raw Splunk data never leave the trust zone. I limit what crosses to an external service to the minimum that service needs to do its job.
 
-At rest, the agent's store holds more than the audit trail does. Both keep the classification and the entities extracted from ticket text. The store also keeps the body of any ticket still in flight. osTicket holds the same ticket text, so nothing crosses a boundary it had not already crossed, but this is a second copy under weaker protection: osTicket's is in a database behind credentials, this is a file on the host. The file is created mode 600, so only the account running the agent can read it. That stops another local user and nothing else. It is not encrypted, it does not stop root, and it offers nothing against disk or backup access. Real protection for data at rest would mean disk encryption or not storing it, and the choice made here is to store it briefly instead: the body is deleted the moment the ticket completes.
+### Trust boundary
 
-A Slack alert carries only values the agent generated. In full, an alert on a critical incident is:
+The trust zone is osTicket, the agent and Splunk. The end user, Claude, Slack and PagerDuty are outside it.
+
+Three untrusted inputs reach the agent. The first is the ticket, its text and requester address both written by whoever filed it. The plugin's signature proves the request came from osTicket, and nothing about the ticket text. The second is Claude's answer, which the agent uses only after it passes the Pydantic model in `schemas.py`. Attack 1 covers the ticket text and Claude's answer. The third is the log data enrichment returns, which can hold values an attacker typed, such as a username on a failed sign-in. The agent writes those values into the note as plain text, and osTicket escapes them when it displays the note, so they cannot run as code.
+
+osTicket is inside the zone, and in a real deployment its ticket form is open to the internet. Its plugin configuration holds both HMAC secrets, so whoever controls osTicket can submit tickets the agent accepts, choose the requester, its verified flag and the IP that enrichment searches on, and write to any ticket. Attack 2 covers the writes, Attack 3 the requester and the IP, and Attack 6 the secrets. The network layout below denies a compromised osTicket a direct route to Splunk, but a compromised osTicket can still steer what the agent searches for and read the results in the note.
+
+### Network exposure
+
+osTicket never needs Splunk, so it shares a Docker network only with its MySQL database, and Splunk has its own. The osTicket and Splunk containers bind every port they publish to `127.0.0.1`, which keeps those ports off the network and out of reach of other containers. Any account on this machine can still reach them. osTicket is on 8080, the Splunk UI on 8010, HEC on 8088 and the management port on 8089.
+
+The agent listens on the Docker bridge address `172.17.0.1:8000`, which the osTicket container reaches by the name `host.docker.internal`. Loopback would not work, because inside a container `127.0.0.1` means the container itself, and `0.0.0.0` would answer on the machine's network too. Every container on the host can reach the bridge, so the webhook's HMAC check is the only control between them and the agent.
+
+Traffic between osTicket and the agent is plain HTTP in both directions, and neither call leaves the machine they both run on. The webhook goes to `http://host.docker.internal:8000/webhook/ticket`, and write-back goes to `http://localhost:8080/api/triage`. Each HMAC signature covers the request body, so it proves the sender held that direction's secret and that nobody changed the body. Anyone who can capture traffic on the host can read ticket text, requester addresses, submitter IPs and the enrichment in each note, and can replay a captured write request within five minutes.
+
+The agent calls Splunk over TLS, using the `https` URLs in `agent/.env.example`, and verifies Splunk's certificate against a CA that `generate-splunk-cert.sh` creates for this deployment.
+
+### What leaves the zone
+
+**Claude** receives only the system prompt, the tool definition, and the ticket's subject and message wrapped in a delimiter generated for that request. The requester address, the submitter IP and Splunk data never reach it. Anthropic holds the subject and message under its API retention terms, which this repo neither sets nor checks.
+
+**Slack alerts** carry at most an `@here` mention, the severity, category and confidence, the ticket number, which service it paged and whether that worked, what enrichment found, and a link. When osTicket sends no ticket number, or one with anything but letters, digits and hyphens, the ticket ID takes its place, so the ticket number cannot carry Slack markup. An alert on a high-confidence critical security incident renders in Slack as:
 
 ```
+@here
 🔴 critical security_incident  ·  Ticket #465581  ·  high confidence  ·  paged WAKE
 20 related events
-http://helpdesk.example.com/scp/tickets.php?id=15
+http://helpdesk.example.com/scp/tickets.php?id=14
 ```
 
-Severity, category, ticket number, confidence, the page destination and whether it was sent, an enrichment count, and a link. Nothing else crosses, and that is a rule rather than a per-field judgement, so adding a field later is a decision about the rule instead of an argument about one field.
-
-Confidence and the page destination are the two fields added under that rule. Both are values the agent generated, confidence from the classification and the destination from the action table, so neither widens what a submitter can put in a channel. They earn their place because the urgent channel carries two rows that read alike and escalate differently, and without them a reader tells the confident critical from the unconfident one only by noticing that an `@here` is missing. Confidence is stated on every alert rather than only the low one, for the same reason: an absence is the weakest way to carry a meaning.
-
-The page field reports the outcome as well as the destination. If PagerDuty refuses the event, `paged WAKE` becomes `WAKE PAGE FAILED, escalate manually`. A reader who sees a page in the alert assumes the on-call is awake and does not escalate, so the alert has to distinguish a page that was sent from one that was only attempted.
-
-There is one other message shape, and it is that decision made once. A ticket Claude never classified has no severity, category, or enrichment count, so its post to the review channel carries the ticket number, a link, and which of the six failure types occurred:
+Two kinds of Slack post carry no classification and go to the review channel, one for a ticket Claude never classified and one for a ticket the agent abandoned after an interruption. Both carry the ticket number, a link, and either the failure type or `interrupted`:
 
 ```
 ⚪ classification failed  ·  Ticket #465581  ·  rate_limited
-http://helpdesk.example.com/scp/tickets.php?id=15
+http://helpdesk.example.com/scp/tickets.php?id=14
 ```
 
-It reuses the review channel's icon rather than introducing one. Icons here vary only by colour, and colour means severity, so a distinct shape on a ticket with no severity would assert an urgency the agent has no basis for. The text already says what happened.
+A stolen Slack webhook URL lets anyone post a message identical to a real alert, so every link is a raw URL a reader can check before opening it. Messages also stay in Slack after posting, outside the zone, which is recorded in [known-limitations.md](known-limitations.md).
 
-The failure type is one of six fixed values the agent chose, never text from a ticket, so it cannot be used to smuggle content into the channel. It earns its place because it tells the reader whether to wait or to fix something: `rate_limited` clears on its own, `auth_failure` does not. The cost is that it tells anyone who later reaches the workspace which part of the pipeline was broken and when.
+**A PagerDuty page** carries the severity, category and ticket number, the osTicket host as its source, and the ticket link. It carries no enrichment count, because it goes out before the agent runs enrichment. The fallback WAKE page described in Section 7 adds the confidence and leads with `alert delivery failed`. Each page also carries a deduplication key, an HMAC of the ticket ID, so a replayed event folds into the incident already open instead of paging again.
 
-**Three exclusions are deliberate:** The ticket subject, because it is written by whoever filed the ticket and Slack renders bare URLs as links, so including it would let anyone who can file a ticket put a clickable link into a trusted internal channel under the agent's name. The requester address, because it is personal data the ticket already holds inside the zone. The enrichment results themselves, including sourcetype names, because those are Splunk data and would tell anyone reading the channel what this organisation detects and with what tooling.
+Nothing a submitter wrote reaches Slack or PagerDuty. Three kinds of data are left out of both on purpose.
 
-That costs something. An alert with no ticket text is harder to tell from another at a glance, so a reader clicks through more often. The link is a raw URL rather than text hiding one, so a reader can check where it points before clicking, which matters because anyone holding the webhook can post a message that looks exactly like a real alert.
+- The requester address and the submitter IP. Both are personal data, and the ticket already holds them inside the zone.
+- The events enrichment returned, including their sourcetype names. They would tell a reader what this organization logs and with which tools.
+- The ticket text. The submitter writes it, so sending it would put their words under the agent's name, and any URL they typed would render in Slack as a clickable link in a trusted channel.
 
-Slack retains what it receives, so these messages are a permanent record outside the trust zone, reachable by anyone who later gains access to the workspace. That is a second reason the message carries as little as it does.
+### Data at rest
 
-A page follows the same rules, because PagerDuty sits outside the boundary for the same reasons Slack does. It carries fewer fields, severity, category, ticket number and a link, since it is sent before enrichment runs and has no count to report. Section 7 covers why. The Events API accepts an arbitrary `custom_details` object, which is exactly where enrichment output would end up if the rule were a per-field judgement rather than a rule, so the agent sends none. The link's text is the URL itself rather than a friendly label, since anyone holding the routing key can raise an incident that looks entirely real.
+Ticket data sits in three systems inside the zone:
 
-The page also carries a deduplication key. PagerDuty attaches a repeat event with a known key to the open incident instead of raising a second one, so a replay that gets past the idempotency store still does not wake anyone twice. PagerDuty also closes an incident by that key. Ticket IDs run 1, 2, 3, so setting the key to the ticket ID would let a stolen routing key close every open incident by counting. The agent sends an HMAC of the ticket ID, so an attacker has nothing to count through.
- 
-**Least privilege:** Each of the agent's three credentials is scoped to the minimum it needs, so a compromised key is bounded to what that key was allowed to do.
- 
-Splunk service account: read-only, scoped to only the index(es) enrichment queries need. No write, no admin, no deploy.
- 
-osTicket write-back: the agent holds no osTicket API key. osTicket's own API exposes ticket creation and a cron trigger, neither of which touches an existing ticket, so notes go through an endpoint the triage plugin registers on osTicket's api signal. That endpoint implements three operations, writing an internal note, setting priority, and moving a ticket into the security department, so its scope is set by what it implements rather than by a permission list. The third takes no target, which is what keeps it from being a general transfer. It authenticates with its own HMAC secret, separate from the inbound one, so a leak of the secret that submits tickets does not also grant writing into them.
+**osTicket's database** holds the ticket and the notes the agent writes, which carry enrichment values. It sits behind database credentials on an unencrypted volume.
 
-**All three are safe to repeat:** The agent retries a write that times out, and a timeout says the reply was lost rather than that the write failed, so a retry can arrive after osTicket already committed. Setting a priority twice produces the same value, and so does moving a ticket to the department it is already in, which the endpoint reports rather than treating as a failure. Writing a note twice would not, so the endpoint answers a repeat instead of acting on it, recognising a note already posted under the agent's name. Keying that on the poster rather than on the note body avoids comparing what was sent against whatever osTicket stored. Slack has no equivalent, which is recorded in known-limitations.md rather than solved.
- 
-Claude API key: not scoped in code. Spend is capped by a limit set in the Anthropic Console, outside the agent. The agent backs off when the API rejects a call, but never limits how often it calls.
+**The Splunk audit index**, `osticket_triage`, holds the subject, the entities the classifier extracted, and the events each enrichment query returned. Splunk also records every dispatched search in its own `_audit` index, so any requester address or submitter IP a query searched on rests there too.
 
-Slack webhooks: one per channel, each bound to its channel by Slack, so a leaked webhook posts to that channel and nothing else, where a bot token would reach the whole workspace. A webhook URL is a bearer credential, so it never appears in a log line, a console message or an audit event. HTTP client errors routinely quote the request URL, so a failed post is reported by the error's type and never its text.
+**The agent's idempotency store** is a SQLite file at `agent/triage_state.db` by default, with a row for each ticket the agent has accepted. The row keeps the ticket ID, when it was accepted, the classification, any hostname, username or IP extracted from the ticket text, and one flag per action. It also holds the webhook body, which includes the subject, message, requester address and submitter IP. The body is kept until every action the ticket needs is done. A ticket stays unfinished when Claude never classified it, when a step failed or was interrupted, or when writes are off. Each start retries an unfinished ticket until it is older than the recovery window, an hour by default, and then abandons it and clears the body. At startup the agent sets the store and its WAL and shared-memory files to mode 600, so only the account running the agent can read them, and prints a warning if it cannot. The store is not encrypted, so root, or anyone with a disk image or backup, can read all of it.
 
-PagerDuty routing keys: one per service, WAKE and NOTIFY, each bound to its service. The key travels in the request body rather than the URL, so an error that quotes the URL exposes nothing. A rejection could quote the key back from the request, so it is recorded by its status code, never its response body.
+The agent's secrets sit in plain text on the same host, in `agent/.env` for the agent and `docker/.env` for the Splunk admin, `triage_agent` and MySQL passwords. Both files are mode 600, so only their owner and root can read them, but the agent never checks the mode of `agent/.env`. osTicket's `ost-config.php` holds a second copy of the MySQL password and the key that encrypts both HMAC secrets in osTicket's database. It is mode 644, so any account on this machine that can reach it can read it. Splunk's TLS server key is mode 644, and its CA key is mode 600. Whoever holds the CA key can issue a certificate the agent accepts as Splunk.
 
-Deployment preconditions are listed in Section 10, because they are obligations on the environment rather than properties of the design.
+### Credentials
+
+The agent reads eleven secrets from `agent/.env` at import. Two optional test keys serve only the verifiers. Each secret is bound to one service, except the dedup secret. Attack 6 covers what stolen credentials allow.
+
+| Secret | Used for | Scope |
+|---|---|---|
+| `TRIAGE_HMAC_SECRET` | Verifying the webhook | Accepted only by the webhook endpoint. Whoever holds it can submit tickets the agent classifies and acts on. |
+| `TRIAGE_WRITE_SECRET` | Signing write-back | The note, priority and department endpoints, on any ticket. |
+| `SPLUNK_AGENT_PASSWORD` | Enrichment, as `triage_agent` by default | Role `triage_enrichment` searches `botsv3` only, with three concurrent jobs, 100 MB of search disk and no real-time searches. Splunk also grants every role a baseline set of capabilities, including `run_collect`, which can write search results into an index. |
+| `SPLUNK_HEC_TOKEN` | Audit events | Scoped at token creation to `osticket_triage`, which the agent never checks. |
+| `ANTHROPIC_API_KEY` | Classification | Unscoped in code, bounded by the organization's spend limit. |
+| `SLACK_WEBHOOK_URGENT`, `_INCIDENTS`, `_REVIEW` | Alerts | One channel each, bound by Slack. |
+| `PAGERDUTY_ROUTING_KEY_WAKE`, `_NOTIFY` | Pages | One service each. |
+| `PAGERDUTY_DEDUP_SECRET` | Deriving deduplication keys | Grants no access on its own. It keeps deduplication keys unguessable, so a stolen routing key alone cannot close incidents. |
+
+osTicket's own API creates tickets, threads emailed replies into existing tickets and runs cron. It cannot change the priority or department of an existing ticket, so the agent holds no osTicket API key. The plugin registers three endpoints on osTicket's API signal instead. They post an internal note, set the priority to `low`, `normal`, `high` or `emergency`, and move a ticket to the security department. The agent sends no department name in the request body when a ticket needs to be moved, and the plugin takes the department from its own configuration, so a stolen write secret can move a ticket only into that one department. Every request must carry a valid signature, checked with `hash_equals`, and a timestamp no more than five minutes old, with 60 seconds of clock skew allowed.
+
+A write can arrive twice, because one that times out is retried. Setting the same priority or department again changes nothing, though each priority write adds an entry to the ticket's history. A repeated note is not written at all, because the endpoint first checks whether a note posted as `Triage Agent` is already on the ticket. That check only looks for a note already posted under that name, so whoever holds the write secret can post a note as `Triage Agent` first, and the agent's own note is then never written.
+
+The agent keeps its secrets out of error messages. A Slack webhook URL is itself a secret, and the HTTP client writes the URL it called into any error it raises, so the agent never records that error. It records its own description of the failure instead. The PagerDuty, Splunk and osTicket secrets are not in their URLs, so a failed call's error can be recorded. A PagerDuty rejection could still quote the routing key back from the request, so the agent records its status code and never its body.
  
 ---
  
