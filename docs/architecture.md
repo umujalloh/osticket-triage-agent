@@ -95,7 +95,7 @@ In the diagram, Claude only returns a classification to the agent. Every action,
  
 ## 4. Threat Model
  
-The agent reads untrusted ticket text and acts on it, so it needs a threat model before any code. Each attack below follows the same shape: what the attack is, how it reaches the system, the defense, and the residual risk left after that defense. The seven attacks fall into three groups: input-channel attacks through the ticket text (1, 2, 3), classifier accuracy failures (4, 5), and infrastructure attacks that bypass the front door (6, 7).
+The agent reads untrusted ticket text and acts on it. Each attack below follows the same shape: what the attack is, how it reaches the system, the defense, and the residual risk left after that defense. The seven attacks fall into three groups: input-channel attacks through the ticket text (1, 2, 3), classifier accuracy failures (4, 5), and infrastructure attacks that bypass the front door (6, 7).
  
 ### Attack 1: Prompt Injection
  
@@ -105,13 +105,13 @@ The agent reads untrusted ticket text and acts on it, so it needs a threat model
  
 **Defense:** Three layers, plus a backstop.
  
-**System and user role separation:** My instructions live in the system role, the highest trust. The ticket text goes in the user role, treated as data, not commands. Claude treats system-role instructions as the authority and user-role content as the thing being examined.
+**System and user role separation:** The classification instructions live in the system role, the highest trust. The ticket text goes in the user role, treated as data, not commands. Claude treats system-role instructions as the authority and user-role content as the thing being examined.
  
-**Delimiters around the ticket text:** The agent generates a delimiter for each request and wraps the ticket text inside it, so the text is marked as untrusted data to be classified rather than as part of my instructions. A fixed delimiter could be closed by a ticket containing it, leaving the rest of that ticket reading as though it came from me, but a generated one cannot be guessed.
+**Delimiters around the ticket text:** The agent generates a delimiter for each request and wraps the ticket text inside it, so the text is marked as untrusted data to be classified rather than as part of the instructions. A fixed delimiter could be closed by a ticket containing it, leaving the rest of that ticket reading as though it were part of the instructions, but a generated one cannot be guessed.
  
 **Output schema validation:** Claude must return valid JSON matching a strict schema: category, severity, confidence, and optionally a hostname, username, or source IP if the ticket text names one. Any response that does not fit is rejected, so injection that changes Claude's output still cannot produce a valid action. The entity fields carry a different risk from the closed enums, since they are free text rather than a choice from a fixed set. Each gets its own format validation, and a value that fails is dropped without blocking the rest of the classification.
  
-**The backstop:** Even if an attacker slips past the role separation and fools the classifier, the damage stops at the label. Claude only returns a classification and up to three optional entity values. It never picks an action and never writes anything. The agent takes the label, looks up the matching row in a fixed table written in code, and acts only within what its scoped credentials permit. No label, however manipulated, can trigger an action I did not pre-approve. Nothing Claude returns reaches a Splunk query either, since the template is fixed and filled from identifiers the webhook supplied. Entity values come from ticket text the submitter writes, so letting them into a query would put the submitter in charge of what the agent searches for. The worst case is a wrong but allowed action, like writing a note when it should not or failing to page when it should, not a dangerous new one. The action table and credential scoping are covered in Sections 7 and 8.
+**The backstop:** Even if an attacker slips past the role separation and fools the classifier, the damage stops at the label. Claude only returns a classification and up to three optional entity values. It never picks an action and never writes anything. The agent takes the label, looks up the matching row in a fixed table written in code, and acts only within what its scoped credentials permit. No label, however manipulated, can trigger an action the table does not already allow. Nothing Claude returns reaches a Splunk query either, since the template is fixed and filled from identifiers the webhook supplied. Entity values come from ticket text the submitter writes, so letting them into a query would put the submitter in charge of what the agent searches for. The worst case is a wrong but allowed action, like writing a note when it should not or failing to page when it should, not a dangerous new one. The table is listed in [action-table.md](action-table.md) and explained in Section 7, and credential scoping is covered in Section 8.
  
 **Residual risk:** None of these layers stops a ticket that is simply worded to mislead. Someone could write a real incident to sound harmless, or a harmless ticket to sound alarming, and Claude would classify the text honestly but wrongly. Those cases are covered as their own attacks, 4 and 5.
  
@@ -125,7 +125,7 @@ The agent reads untrusted ticket text and acts on it, so it needs a threat model
  
 **Defense:** The agent only acts on the ticket ID that came in the authenticated webhook. It never reads a ticket ID from the ticket content. So "also update ticket 5000" is just text the agent classifies, never a target it acts on. The action table has no "modify another ticket" action, so even a successful injection cannot name a different target.
  
-**Residual risk:** The defense rests on the ticket ID in the webhook being honest. The agent trusts it because the webhook is authenticated, but authentication only proves the request came from osTicket, not that the ID inside it is correct. An attacker who could make osTicket fire for a ticket they should not reach would have the agent act on a bad but authenticated ID. At that point the security is osTicket's own access control, which sits outside this design. Anyone who gets that far already controls osTicket, and can write to any ticket directly without going through the agent.
+**Residual risk:** The defense rests on the ticket ID in the webhook being honest. The agent trusts it because the webhook is authenticated, but authentication only proves the sender held the webhook secret, not that the ID inside it is correct. An attacker who could make osTicket fire for a ticket they should not reach would have the agent act on a bad but authenticated ID. At that point the security is osTicket's own access control, which sits outside this design. Anyone who gets that far already controls osTicket, and can write to any ticket directly without going through the agent.
  
 ---
  
@@ -139,7 +139,7 @@ The agent reads untrusted ticket text and acts on it, so it needs a threat model
  
 **No generated SPL:** The query runs from a fixed template, never composed by Claude, so an attacker cannot trick Claude into writing a malicious one. Each blank is filled from the submitter's email or IP, never from ticket text. The agent validates that value against a strict pattern before substituting it, so a crafted value cannot break out of the template and alter the query.
 
-**The session gate:** Validation stops a crafted value from altering the query. It does not stop a valid one from choosing what the query looks up. On an open ticket form the requester email is whatever the submitter typed, so filing a convincing critical incident as someone else would run the query against that person. The email is therefore searched only when osTicket reports an authenticated session, a logged-in user who owns the ticket, and a confirmed account. Checking only that the account is confirmed would not close it, because osTicket attaches a guest submission to whatever user already owns the typed address. An impersonated ticket would inherit that user's confirmed status. An unverified address is left out of the query entirely. The submitter IP is always searchable, since the server observes it rather than accepting it as input.
+**The session gate:** Validation stops a crafted value from changing the query, but a valid email still decides whose activity it looks up. On an open ticket form the email is whatever the submitter typed, so a convincing critical incident filed under someone else's address would search that person. The email is therefore searched only when osTicket reports an authenticated session belonging to the ticket's owner, on a confirmed account. A confirmed account alone is not enough, because osTicket attaches a guest submission to whoever already owns the typed address, so an impersonated ticket would inherit that status. An unverified email address is left out of the query entirely. The submitter IP is always searchable, since the server observes it rather than taking it as input.
 
 **Queries return a fixed field list, not raw events:** `_raw` is excluded because a raw event carries whatever its source logged, which is where credentials appear: tokens in URLs, passwords on command lines, session IDs in request paths. The current list is in `ENRICHMENT_FIELDS` in `agent/splunk_enrichment.py` and holds timestamps, host, sourcetype, network addresses, account names, and sign-in outcomes. The query returns at most twenty events, and the note builder limits the count again rather than relying on that. Whatever the query does not return cannot reach a note.
  
@@ -151,7 +151,7 @@ The agent reads untrusted ticket text and acts on it, so it needs a threat model
 
 Field scoping bounds the field names, not their contents. The allowlist was checked against BOTSv3, where those fields hold addresses, account names, and sign-in outcomes. On another dataset the same names could carry something else, so the list has to be re-verified against real log sources rather than assumed to travel.
 
-The session gate inherits osTicket's session handling. If that is misconfigured or bypassed, the agent believes what osTicket tells it, since it has no independent way to authenticate the submitter.
+The session gate inherits osTicket's session handling, and the agent has no independent way to authenticate the submitter. If that handling is misconfigured or bypassed, or someone holds the webhook secret, the agent believes whatever requester, verified flag and IP the payload carries, so the query can be pointed at any account or address, and anyone who can open the ticket reads the results in the note.
 
 The submitter IP is only as trustworthy as osTicket's proxy configuration. osTicket reads it from the connection but honors a forwarded header from any address in its trusted proxy list, so a wildcard entry there would hand the submitter control of the one identifier they are not supposed to choose.
 
@@ -171,7 +171,7 @@ Anyone who can open the ticket can read its notes, and that includes every staff
  
 **An eval harness against labeled tickets:** The classifier prompt is tested against a fixed set of tickets with known labels, comparing the current rubric with a rewrite of it, to catch a change that makes the classifier worse. The rewrite is kept only if its improvement holds across at least three runs and no ticket's answer flips between runs. It is rejected if any ticket labeled a security incident comes back with high confidence as `it_support` or `security_question`, or as a low severity incident. The results and the method are in `docs/evaluation.md`.
  
-**Residual risk:** The low-confidence override fires only when the ticket reads as vague, so a confidently wrong classification passes it. The eval harness scores a fixed set, so it cannot catch a live ticket. A real incident marked below critical still reaches the incidents channel, where a person can see it, but one marked as not security-relevant does not notify anyone.
+**Residual risk:** The low-confidence override fires only when the ticket reads as vague, so a confidently wrong classification passes it. The eval harness scores a fixed set, so it cannot catch a live ticket. A real incident marked below critical still reaches the incidents channel, where a person can see it. One confidently marked `it_support` notifies no one, and one confidently marked `security_question` only moves to the security department's queue.
  
 ---
  
@@ -205,13 +205,19 @@ Anyone who can open the ticket can read its notes, and that includes every staff
  
 **Rotatable keys:** No credential is embedded in code. Every one is read from the environment at import, so a revoked credential can be replaced with a config change and a restart.
  
+**Secrets kept out of error messages:** A Slack webhook URL is itself a secret, so a failed connection is recorded by its type, never the HTTP client's error text, which quotes the URL. A PagerDuty rejection is recorded by its status code, never its body, which could quote the routing key. Section 8 covers each client.
+ 
 **Derived deduplication key:** Every page carries a deduplication key that tells PagerDuty which incident it belongs to, and the same key is what closes an incident. If that key were the ticket id, which runs 1, 2, 3, a stolen PagerDuty routing key could close every open incident by counting upward. The agent sends an HMAC of the ticket id instead, so a stolen routing key can still raise an incident but cannot close one.
  
-**Residual risk:** Scoping does not make a stolen credential harmless, and each one can still do everything inside its scope.
- 
-Four of them let an attacker act as the agent. osTicket's ticket history records what changed, not who made the change, so a write made with the stolen write secret looks like the agent's. The Slack webhook posts messages that cannot be told from the agent's, since both arrive through the same identity. The PagerDuty routing key raises incidents that look like they came from the agent. The Splunk HEC token cannot read or erase, but it can append, so a stolen one writes events the audit index holds as the agent's.
- 
-The Splunk search account can run any search against the enrichment index, so a stolen one reads all of it and not the twenty events the agent's template returns. The Claude key spends against the console limit, and exhausting it leaves every ticket in the review channel with no classification. The webhook secret writes nothing, but it hands the agent text an attacker wrote, and text that reads as a critical incident pages the on-call.
+**Residual risk:** Scoping does not make a stolen credential harmless. Each one can still do everything inside its scope, which Section 8 lists for every credential.
+
+- **osTicket webhook secret:** sends the agent fake tickets, which it handles like real ones for any ticket ID it has not seen before. It writes a note and sets a priority on the ticket a fake names, and a fake that reads as a critical incident pages the on-call.
+- **osTicket write secret:** writes notes, sets priorities and moves tickets to the security department, and the ticket history cannot tell those changes from the agent's.
+- **Splunk search account:** reads the whole enrichment index, not only the twenty events the agent's template returns.
+- **Splunk HEC token:** cannot read or erase events in the audit index, but can append events to it that cannot be told apart from the agent's real ones.
+- **Claude key:** spends against the console limit. Exhausting it leaves every ticket in the review channel with no classification.
+- **Slack webhooks:** post messages that cannot be told from the agent's.
+- **PagerDuty routing keys:** raise incidents that look like the agent's. Together with the deduplication secret, they let an attacker compute the key for any ticket and close its incident.
  
 Nothing restricts where the agent can connect, so a compromised host can read the credentials and send them anywhere. Restricting that traffic is precondition 7 in Section 10, not something the code can do.
  
