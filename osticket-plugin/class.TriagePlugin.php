@@ -113,6 +113,13 @@ class TriagePlugin extends Plugin {
                 return $controller->postDepartment();
             })
         );
+        $dispatcher->append(
+            url_post('^/triage/number$', function () use ($plugin, $instance) {
+                require_once(__DIR__ . '/class.TriageWriteController.php');
+                $controller = new TriageWriteController($plugin, $instance);
+                return $controller->postNumber();
+            })
+        );
     }
 
     /**

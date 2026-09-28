@@ -45,7 +45,10 @@ def _post(operation: str, payload: dict) -> dict:
     Returns the endpoint's parsed response. Raises OsTicketWriteError on
     failure and never reports a write that did not happen.
     """
-    payload = dict(payload, created_at=datetime.now(timezone.utc).isoformat())
+    # The operation is signed with the rest of the body, so the plugin can
+    # refuse a captured request replayed to a different endpoint.
+    payload = dict(payload, operation=operation.lstrip("/"),
+                   created_at=datetime.now(timezone.utc).isoformat())
     body = json.dumps(payload).encode()
     url = OSTICKET_WRITE_URL.rstrip("/") + operation
     headers = {"Content-Type": "application/json", "X-Triage-Signature": _sign(body)}
@@ -131,3 +134,41 @@ def route_to_security(ticket_id: int) -> dict:
     result = _post("/department", {"ticket_id": ticket_id})
     outcome = ALREADY_ROUTED if result.get("status") == "already_routed" else DONE
     return {"outcome": outcome, "from": result.get("from"), "to": result.get("to")}
+
+def lookup_number(ticket_id: int):
+    """The number osTicket gave this ticket and whether it is past osTicket's
+    retry window, or None if osTicket has no such ticket.
+
+    A read, so the kill switch does not apply. One attempt only, because
+    osTicket waits on the webhook for five seconds. If this fails, osTicket
+    keeps the ticket in its retry queue and sends it again later. Raises
+    OsTicketWriteError when osTicket cannot answer.
+    """
+    payload = {"ticket_id": ticket_id, "operation": "number",
+               "created_at": datetime.now(timezone.utc).isoformat()}
+    body = json.dumps(payload).encode()
+    url = OSTICKET_WRITE_URL.rstrip("/") + "/number"
+    headers = {"Content-Type": "application/json", "X-Triage-Signature": _sign(body)}
+    try:
+        # One second to connect and two to read, short enough to finish inside
+        # osTicket's five second wait on the webhook in the usual case.
+        response = requests.post(url, data=body, headers=headers, timeout=(1, 2))
+    except requests.exceptions.RequestException as e:
+        raise OsTicketWriteError("server_down", f"Could not reach osTicket: {type(e).__name__}")
+    # The plugin answers a ticket it does not have with this exact 404. Any
+    # other 404, such as a wrong OSTICKET_WRITE_URL, means the endpoint was
+    # never reached, so it is a failure and not an answer about the ticket.
+    if response.status_code == 404 and response.text.strip() == "Ticket not found":
+        return None
+    if response.status_code != 200:
+        raise OsTicketWriteError(
+            "unknown", f"osTicket refused the lookup: HTTP {response.status_code}")
+    try:
+        body = response.json()
+        number = body["number"]
+        past_window = body["past_retry_window"]
+    except (ValueError, KeyError, TypeError):
+        raise OsTicketWriteError("bad_output", "Could not read the ticket number")
+    if not number or not isinstance(past_window, bool):
+        raise OsTicketWriteError("bad_output", "osTicket returned no ticket number")
+    return str(number), past_window

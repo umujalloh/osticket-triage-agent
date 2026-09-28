@@ -190,7 +190,7 @@ bytes across 20 events.
 
 ## Write-back endpoint verification
 
-Measured 2026-08-23 against the running stack, twenty-five checks, all passing.
+Measured 2026-09-28 against the running stack, twenty-seven checks, all passing.
 
 | Request | Result |
 |---|---|
@@ -208,6 +208,13 @@ Measured 2026-08-23 against the running stack, twenty-five checks, all passing.
 | Signed, valid, department | 200, `status: routed` |
 | Signed, valid, department again | 200, `status: already_routed` |
 | Signed, department named in the body | 200, moved where the config says |
+| Signed for the ticket number check, sent to the department endpoint | 400 |
+| Signed, no operation named | 400 |
+
+The last two cases cover replay across endpoints. The department endpoint reads
+only the ticket ID, so without the operation named inside the body, a captured
+request for any other endpoint could have been replayed there to move a ticket
+to the security department.
 
 The successful write was confirmed in the database rather than from the response
 code: an internal thread entry on ticket 11, type N, poster `Triage Agent`.
@@ -722,11 +729,11 @@ destinations when those are configured.
 
 ## Webhook gate verification
 
-Measured 2026-08-23, twenty checks across nineteen requests, all passing. The
-duplicate request is asserted twice, on its status code and on the reason it
-gives. The endpoint osTicket calls is the only part of the agent an outsider can
-reach, and a request that fails any check here is refused before the agent does
-any work.
+Measured 2026-09-28, twenty-four checks across twenty-three requests, all
+passing. The duplicate request is asserted twice, on its status code and on the
+reason it gives. The endpoint osTicket calls is the only part of the agent an
+outsider can reach, and a request that fails any check here is refused before
+the agent does any work.
 
 | Request | Result |
 |---|---|
@@ -747,6 +754,10 @@ any work.
 | Ticket ID `true` | 400 |
 | Ticket ID a list | 400 |
 | Ticket ID an object | 400 |
+| Ticket number that does not match osTicket's | 403 |
+| Ticket osTicket does not have | 403 |
+| Ticket number missing | 400 |
+| Right number for a ticket past the retry window the agent never processed | 403 |
 | Ticket ID already processed | 200, `status: duplicate` |
 | The same request again | 200, `status: duplicate` |
 
@@ -758,7 +769,9 @@ A timestamp five minutes in the future is refused because the freshness window
 allows 60 seconds of clock skew and no more, so a replay cannot buy itself a
 window by claiming to be from ahead. A boolean ticket ID is refused explicitly,
 because `isinstance(True, int)` is true in Python and it would otherwise pass
-the numeric check.
+the numeric check. A ticket that fails the ticket number check is refused before
+the store is touched, so a forged request never marks its ticket ID as taken and
+the real ticket is still accepted when it arrives.
 
 The accepted path is not exercised here. A `202` queues classification, a note,
 an alert and possibly a page against a real ticket, so proving it belongs with
@@ -770,6 +783,19 @@ from `agent/`, naming a ticket the agent has already processed. That ID is used
 for the duplicate cases, and an unprocessed one would be claimed and queue real
 work. Set `TRIAGE_WEBHOOK_URL` if the agent is not on `127.0.0.1:8000`, and note
 that this is the address the agent bound to rather than the one osTicket uses.
+It also needs osTicket running and the agent's `.env` in place, because it looks
+up ticket numbers through the plugin, and ticket 1 present and never processed,
+which is the old-ticket case.
+
+### A forged claim does not block the real ticket, 2026-09-27, ticket 38
+
+Run by hand against the running stack, with writes off. A signed request
+claimed ticket 38 with a made-up number before the ticket existed. The agent
+refused it with 403 and the store gained no row for ticket 38. A ticket then
+filed through the osTicket web form was given ID 38, and osTicket's own request
+for it was accepted with 202 and classified. The lookup back to osTicket ran
+while osTicket was still waiting on that request, so the check works inside a
+live submission.
 
 ## Heartbeat and the agent-down alert
 

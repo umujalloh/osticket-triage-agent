@@ -19,8 +19,9 @@ if len(sys.argv) != 2 or not sys.argv[1].isdigit():
     raise SystemExit(
         "usage: python verification/verify_webhook.py <processed_ticket_id>\n\n"
         "Exercises the gate on the endpoint osTicket calls, against a running\n"
-        "agent. Every case here is refused before the agent does any work, so\n"
-        "nothing is classified, written or alerted.\n\n"
+        "agent and osTicket, which the ticket number check calls. Every case here\n"
+        "is refused before the agent does any work, so nothing is classified,\n"
+        "written or alerted.\n\n"
         "Name a ticket the agent finished. It is used to prove duplicate\n"
         "suppression, which needs an ID the store has seen. An ID it has never\n"
         "seen would be claimed and queue real work, and one the agent was\n"
@@ -32,6 +33,22 @@ if len(sys.argv) != 2 or not sys.argv[1].isdigit():
     )
 
 PROCESSED_TICKET_ID = int(sys.argv[1])
+# Every request below carries this ticket's real number, so each case fails
+# for the reason it tests and not at the ticket number check.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from osticket_client import lookup_number
+_found = lookup_number(PROCESSED_TICKET_ID)
+if _found is None:
+    raise SystemExit(f"osTicket has no ticket {PROCESSED_TICKET_ID}")
+PROCESSED_NUMBER = _found[0]
+
+# Ticket 1 predates the agent and was never processed, so it is past the retry
+# window and unknown to the store, which is the case the age check refuses.
+OLD_TICKET_ID = 1
+_old = lookup_number(OLD_TICKET_ID)
+if _old is None:
+    raise SystemExit(f"osTicket has no ticket {OLD_TICKET_ID}")
+OLD_NUMBER = _old[0]
 
 def send(payload, secret=SECRET, signature=None, sign=True, raw=None):
     body = raw if raw is not None else json.dumps(payload).encode()
@@ -50,7 +67,7 @@ def now():
 def fresh(**overrides):
     """A request that would be accepted, before the case under test breaks it."""
     payload = {"ticket_id": PROCESSED_TICKET_ID, "created_at": now(),
-               "ticket_number": "VERIFY", "subject": "verifier",
+               "ticket_number": PROCESSED_NUMBER, "subject": "verifier",
                "message": "verifier"}
     payload.update(overrides)
     return payload
@@ -139,6 +156,16 @@ check("  a list ticket id is rejected",
       send(fresh(ticket_id=[1])).status_code, 400)
 check("  an object ticket id is rejected",
       send(fresh(ticket_id={"id": 1})).status_code, 400)
+
+print("ticket number")
+check("  a forged number for a real ticket is refused",
+      send(fresh(ticket_number="000000")).status_code, 403)
+check("  a ticket osTicket does not have is refused",
+      send(fresh(ticket_id=99999)).status_code, 403)
+check("  a request with no ticket number is refused",
+      send(fresh(ticket_number=None)).status_code, 400)
+check("  an old ticket the agent never processed is refused, right number or not",
+      send(fresh(ticket_id=OLD_TICKET_ID, ticket_number=OLD_NUMBER)).status_code, 403)
 
 print("replay")
 first = send(fresh())

@@ -56,11 +56,11 @@ Every action starts at the table.
 A user submits a ticket in osTicket. The
 [plugin](osticket-plugin/class.TriagePlugin.php) fires on ticket creation, signs
 the payload with HMAC-SHA256, and POSTs it to the agent.
-[`main.py`](agent/main.py) verifies the signature against the raw request body
-and rejects anything that fails, along with anything replayed or already seen. It
-returns `202` as soon as those checks pass and runs the work in a background
-task, so a slow or rate-limited Claude call cannot hang the request osTicket is
-waiting on.
+[`main.py`](agent/main.py) verifies the signature against the raw request body,
+confirms the ticket's number with osTicket, and rejects anything that fails,
+along with anything replayed or already seen. It returns `202` as soon as those
+checks pass and runs the work in a background task, so a slow or rate-limited
+Claude call cannot hang the request osTicket is waiting on.
 
 [`classifier.py`](agent/classifier.py) sends the ticket text to Claude as
 user-role content wrapped in delimiters, with the classification instructions in

@@ -16,13 +16,14 @@ load_dotenv()
 from action_table import actions_for, PRIORITY_FOR_SEVERITY, REVIEW, WAKE
 from classifier import classify_ticket, ClassificationError
 from idempotency import (
-    claim_ticket, clear_payload, completed_actions, mark_done, save_classification,
-    save_payload, stored_classification, ticket_key, unfinished_payloads,
+    claim_ticket, clear_payload, completed_actions, is_known_ticket, mark_done,
+    save_classification, save_payload, stored_classification, ticket_key,
+    unfinished_payloads,
 )
 from note_builder import build_abandoned_note, build_note
 from osticket_client import (
     write_note, set_priority, route_to_security, OsTicketWriteError, SKIPPED,
-    ALREADY_WRITTEN, ALREADY_ROUTED,
+    ALREADY_WRITTEN, ALREADY_ROUTED, lookup_number,
 )
 from pagerduty_client import (
     build_page, build_fallback_page, send_page, PagerDutyError,
@@ -829,12 +830,55 @@ async def receive_ticket(request: Request, background_tasks: BackgroundTasks):
             status_code=400, content={"detail": "ticket_id must be a positive integer"}
         )
 
+    # osTicket gives each ticket an ID in order and a random ticket number,
+    # so the next ID is easy to guess. Without this check a forged request
+    # could claim an ID before the real ticket exists, and the real ticket
+    # would then be resumed under the forged request's classification. The
+    # number is compared as sent, before the plain-number check below may
+    # drop it.
+    sent_number = payload.get("ticket_number")
+    if not isinstance(sent_number, str) or not sent_number:
+        background_tasks.add_task(
+            log_request_rejected, reason="missing_ticket_number",
+            source_ip=source_ip, ticket_id=ticket_id
+        )
+        return JSONResponse(status_code=400,
+                            content={"detail": "ticket_number is required"})
+    try:
+        found = await asyncio.to_thread(lookup_number, ticket_id)
+    except OsTicketWriteError:
+        background_tasks.add_task(
+            log_request_rejected, reason="osticket_unreachable",
+            source_ip=source_ip, ticket_id=ticket_id
+        )
+        # 503 so the plugin keeps the ticket in its retry queue.
+        return JSONResponse(status_code=503,
+                            content={"detail": "Could not confirm the ticket with osTicket"})
+    real_number, past_window = found if found else (None, False)
+    if real_number != sent_number:
+        reason = "ticket_not_found" if real_number is None else "ticket_number_mismatch"
+        background_tasks.add_task(
+            log_request_rejected, reason=reason, source_ip=source_ip,
+            ticket_id=ticket_id
+        )
+        return JSONResponse(status_code=403,
+                            content={"detail": "Ticket does not match osTicket"})
+
+    # A ticket past osTicket's retry window can no longer arrive genuinely, so
+    # one the store has never seen is refused. Without this a forged request
+    # would have unlimited time to guess an old ticket's number. The answer is
+    # the same as a wrong number, so a correct guess cannot be told apart.
+    if past_window and not is_known_ticket(ticket_id):
+        background_tasks.add_task(
+            log_request_rejected, reason="ticket_past_retry_window",
+            source_ip=source_ip, ticket_id=ticket_id
+        )
+        return JSONResponse(status_code=403,
+                            content={"detail": "Ticket does not match osTicket"})
+
     # A ticket number that is not plain is dropped, so alerts and pages show
     # the ticket ID instead.
-    ticket_number = payload.get("ticket_number")
-    if ticket_number is not None and not (
-            isinstance(ticket_number, str)
-            and PLAIN_TICKET_NUMBER.fullmatch(ticket_number)):
+    if not PLAIN_TICKET_NUMBER.fullmatch(sent_number):
         payload["ticket_number"] = None
 
     # Claiming and starting are separate. The claim is the store's record that

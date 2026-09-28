@@ -56,6 +56,9 @@ main.set_priority = lambda **kw: acted["priorities"].append(kw) or {
 main.route_to_security = lambda **kw: {"outcome": "routed", "from": "a", "to": "b"}
 main.send_page = lambda destination, event: "queued"
 main.enrich_ticket = lambda **kw: []
+# The webhook confirms each ticket with osTicket before claiming it. Offline,
+# osTicket agrees with the number every test ticket here carries.
+main.lookup_number = lambda ticket_id: ("465581", False)
 for name in [n for n in dir(main) if n.startswith("log_")]:
     setattr(main, name, lambda *a, **kw: True)
 

@@ -24,7 +24,7 @@ This document covers the design across all three phases.
  
 **osTicket:** An open-source helpdesk system with a MySQL database where tickets live. Users submit a ticket here when they have an issue. The agent writes back to osTicket, posting an internal note, setting a priority that decides where the ticket sits in the Open queue, and moving a `security_question` into the security department. It does not call the agent itself; the plugin below does.
  
-**The triage plugin:** PHP that runs inside osTicket, in `osticket-plugin/`. It listens for the ticket-created signal, signs the payload, and posts it to the agent. It also registers the endpoints the agent writes back through, since osTicket's own API cannot change the priority or department of an existing ticket. Both directions are signed, each with its own secret. It owns delivery when the agent cannot be reached, which Section 7 covers.
+**The triage plugin:** PHP that runs inside osTicket, in `osticket-plugin/`. It listens for the ticket-created signal, signs the payload, and posts it to the agent. It also registers the endpoints the agent calls back on. One returns a ticket's number for the ticket number check, and three write to the ticket, because osTicket's own API cannot change the priority or department of an existing ticket. Both directions are signed, each with its own secret. It owns delivery when the agent cannot be reached, which Section 7 covers.
 
 **The triage agent:** The FastAPI service, in `agent/`, and the orchestrator. It receives the webhook from the plugin and sends the ticket to Claude for classification. A pre-defined action table decides what happens next. It pages PagerDuty when the row calls for it, queries Splunk for enrichment, then writes back to osTicket and posts to Slack.
 
@@ -50,7 +50,7 @@ When a user submits a ticket in osTicket, it goes through the following steps.
 
 1. **The plugin fires the webhook:** It signs the payload with HMAC-SHA256 and posts it to the agent.
 
-2. **The agent accepts before it classifies:** It verifies the HMAC signature, checks that the payload's timestamp is recent and that the ticket is not one it has already accepted. A bad signature or a stale timestamp is refused, and no work is queued for it. A request that passes all three gets a 202, and the work runs in a background task so a slow or rate-limited Claude call cannot hold open the request osTicket is waiting on.
+2. **The agent accepts before it classifies:** It verifies the HMAC signature, checks that the payload's timestamp is recent, runs the ticket number check, and checks that the ticket is not one it has already accepted. A request that fails any of these is refused, and no work is queued for it. A request that passes all four gets a 202, and the work runs in a background task so a slow or rate-limited Claude call cannot hold open the request osTicket is waiting on.
 
 3. **The ticket text is isolated:** The agent wraps the subject and message in a delimiter unique to that request and sends them to Claude as user-role content.
 
@@ -201,7 +201,7 @@ Anyone who can open the ticket can read its notes, and that includes every staff
  
 **Defense**
  
-**Least privilege per credential:** Most of the credentials are scoped so a stolen one is bounded by what it was allowed to do. Splunk has two, split by direction, a read-only account on a single index for enrichment and a write-only token for the audit index. osTicket also has two, one secret signing the webhook coming in and a different one signing the write endpoint, so stealing the webhook secret does not let an attacker write to tickets. The write endpoint exists because osTicket's own API cannot change the priority or department of an existing ticket, and it is limited to adding a note, setting a priority, and moving a ticket to the security department. Slack and PagerDuty get one credential per destination, each bound to its own channel or service. The Claude key is the exception, scoped only by a spend limit set outside the agent.
+**Least privilege per credential:** Most of the credentials are scoped so a stolen one is bounded by what it was allowed to do. Splunk has two, split by direction, a read-only account on a single index for enrichment and a write-only token for the audit index. osTicket also has two, one secret signing the webhook coming in and a different one signing the write endpoint, so stealing the webhook secret does not let an attacker write to tickets. The write secret's endpoints exist because osTicket's own API cannot change the priority or department of an existing ticket, and they are limited to returning a ticket's number for the ticket number check, adding a note, setting a priority, and moving a ticket to the security department. Slack and PagerDuty get one credential per destination, each bound to its own channel or service. The Claude key is the exception, scoped only by a spend limit set outside the agent.
  
 **Rotatable keys:** No credential is embedded in code. Every one is read from the environment at import, so a revoked credential can be replaced with a config change and a restart.
  
@@ -211,8 +211,8 @@ Anyone who can open the ticket can read its notes, and that includes every staff
  
 **Residual risk:** Scoping does not make a stolen credential harmless. Each one can still do everything inside its scope, which Section 8 lists for every credential.
 
-- **osTicket webhook secret:** sends the agent fake tickets, which it handles like real ones for any ticket ID it has not seen before. It writes a note and sets a priority on the ticket a fake names, and a fake that reads as a critical incident pages the on-call.
-- **osTicket write secret:** writes notes, sets priorities and moves tickets to the security department, and the ticket history cannot tell those changes from the agent's.
+- **osTicket webhook secret:** lets an attacker send the agent forged webhook requests. The agent refuses any whose ticket ID and random ticket number do not match a real ticket it has not already processed. An attacker who knows a ticket's number, such as one they filed themselves, can still get a forged request in before osTicket's genuine one, while osTicket's delivery of that ticket is failing or waiting in its retry queue. That request can name any requester email as verified and any submitter IP, pointing one enrichment search at someone else's activity, as Attack 3 describes. An insider who can also see other people's tickets can do the same to a real incident, which is then triaged as the forged content and never pages anyone.
+- **osTicket write secret:** answers the ticket number check, writes notes, sets priorities and moves tickets to the security department, and the ticket history cannot tell those changes from the agent's.
 - **Splunk search account:** reads the whole enrichment index, not only the twenty events the agent's template returns.
 - **Splunk HEC token:** cannot read or erase events in the audit index, but can append events to it that cannot be told apart from the agent's real ones.
 - **Claude key:** spends against the console limit. Exhausting it leaves every ticket in the review channel with no classification.
@@ -225,7 +225,7 @@ Nothing restricts where the agent can connect, so a compromised host can read th
  
 ### Attack 7: Replay and Duplicate Processing
  
-**Failure:** The same request is processed more than once. The plugin queues any send the agent does not accept and drains that queue later, so a ticket the agent did receive can arrive again when the response was lost. An attacker can also capture a valid signed request and resend it unchanged. Either way the agent acts twice, so a second Slack post goes out and the classification runs again.
+**Failure:** The same request is processed more than once. osTicket's triage plugin queues any send the agent does not accept and drains that queue later, so a ticket the agent did receive can arrive again when the response was lost. An attacker can also capture a valid signed request and resend it unchanged. Either way the agent acts twice, so a second Slack post goes out and the classification runs again. A request signed with a stolen webhook secret can do the opposite, claiming a ticket ID before the real ticket exists, so the real ticket is then triaged under the forged request's classification.
  
 **Vector:** The webhook endpoint. An HMAC signature proves a request was signed with the shared secret, not that it is arriving for the first time, so it cannot separate a replay from a genuine delivery.
  
@@ -235,7 +235,9 @@ Nothing restricts where the agent can connect, so a compromised host can read th
  
 **Timestamped payload with a freshness check:** The signed payload includes a `created_at` timestamp, so tampering with it invalidates the signature. The agent rejects any request whose timestamp is more than five minutes old (with a 60 second allowance for clock skew).
  
-**Residual risk:** A replay inside the freshness window passes the timestamp check, but the store still refuses it, because the ticket is already recorded in the file beside the agent. If that file gets deleted, a previously handled ticket can be replayed as new, as long as the captured request is under five minutes old.
+**Ticket number check:** Before the store claims a ticket, the agent asks osTicket, through a signed plugin endpoint, for the number it gave that ticket, and refuses the request unless the two match. A forged request for a ticket that does not exist yet gets no number back, and one for an existing ticket has to guess its random six-digit number. A refused request never reaches the store, so the real ticket is claimed and processed as normal when it arrives. The agent also refuses a ticket older than osTicket's retry window that it never processed, because a genuine delivery always arrives within that window. If osTicket cannot answer, the agent returns 503 and osTicket keeps the ticket in its retry queue to send again later.
+ 
+**Residual risk:** A replay inside the freshness window passes the timestamp check, but the store still refuses it, because the ticket is already recorded in the file beside the agent. If that file gets deleted, a previously handled ticket can be replayed as new, as long as the captured request is under five minutes old. The ticket number check trusts osTicket's answer, so a compromised osTicket, which knows every number, can still claim a ticket first. A wrong number is refused and a right one accepted, so a secret holder could keep guessing at a ticket the agent has not processed, but only within osTicket's retry window, since older tickets are refused. The check also relies on osTicket's default random ticket numbers, which an administrator could switch to sequential ones. Each refused request also costs one lookup to osTicket, so a flood of forged requests can slow real tickets' lookups past osTicket's five second wait, leaving them in its retry queue and delaying their triage.
  
 ---
  
@@ -444,7 +446,7 @@ The agent calls Splunk over TLS, using the `https` URLs in `agent/.env.example`,
 
 **Claude** receives only the system prompt, the tool definition, and the ticket's subject and message wrapped in a delimiter generated for that request. The requester address, the submitter IP and Splunk data never reach it. Anthropic holds the subject and message under its API retention terms, which this repo neither sets nor checks.
 
-**Slack alerts** carry at most an `@here` mention, the severity, category and confidence, the ticket number, which service it paged and whether that worked, what enrichment found, and a link. When osTicket sends no ticket number, or one with anything but letters, digits and hyphens, the ticket ID takes its place, so the ticket number cannot carry Slack markup. An alert on a high-confidence critical security incident renders in Slack as:
+**Slack alerts** carry at most an `@here` mention, the severity, category and confidence, the ticket number, which service it paged and whether that worked, what enrichment found, and a link. When the ticket number holds anything but letters, digits and hyphens, the ticket ID takes its place, so the ticket number cannot carry Slack markup. An alert on a high-confidence critical security incident renders in Slack as:
 
 ```
 @here
@@ -488,8 +490,8 @@ The agent reads eleven secrets from `agent/.env` at import. Two optional test ke
 
 | Secret | Used for | Scope |
 |---|---|---|
-| `TRIAGE_HMAC_SECRET` | Verifying the webhook | Accepted only by the webhook endpoint. Whoever holds it can submit tickets the agent classifies and acts on. |
-| `TRIAGE_WRITE_SECRET` | Signing write-back | The note, priority and department endpoints, on any ticket. |
+| `TRIAGE_HMAC_SECRET` | Verifying the webhook | Accepted only by the webhook endpoint. Whoever holds it can pass off a forged request as a real, unprocessed ticket, if they know that ticket's number. |
+| `TRIAGE_WRITE_SECRET` | Signing write-back and the ticket number check | The note, priority and department endpoints and the ticket number check, on any ticket. |
 | `SPLUNK_AGENT_PASSWORD` | Enrichment, as `triage_agent` by default | Role `triage_enrichment` searches `botsv3` only, with three concurrent jobs, 100 MB of search disk, no real-time searches and no writes to any index. |
 | `SPLUNK_HEC_TOKEN` | Audit events | Scoped at token creation to `osticket_triage`, which the agent never checks. |
 | `ANTHROPIC_API_KEY` | Classification | Unscoped in code, bounded by the organization's spend limit. |
@@ -497,7 +499,7 @@ The agent reads eleven secrets from `agent/.env` at import. Two optional test ke
 | `PAGERDUTY_ROUTING_KEY_WAKE`, `_NOTIFY` | Pages | One service each. |
 | `PAGERDUTY_DEDUP_SECRET` | Deriving deduplication keys | Grants no access on its own. It keeps deduplication keys unguessable, so a stolen routing key alone cannot close incidents. |
 
-osTicket's own API creates tickets, threads emailed replies into existing tickets and runs cron. It cannot change the priority or department of an existing ticket, so the agent holds no osTicket API key. The plugin registers three endpoints on osTicket's API signal instead. They post an internal note, set the priority to `low`, `normal`, `high` or `emergency`, and move a ticket to the security department. The agent sends no department name in the request body when a ticket needs to be moved, and the plugin takes the department from its own configuration, so a stolen write secret can move a ticket only into that one department. Every request must carry a valid signature, checked with `hash_equals`, and a timestamp no more than five minutes old, with 60 seconds of clock skew allowed.
+osTicket's own API creates tickets, threads emailed replies into existing tickets and runs cron. It cannot change the priority or department of an existing ticket, so the agent holds no osTicket API key. The plugin registers four endpoints on osTicket's API signal instead. They return a ticket's number for the ticket number check, post an internal note to a ticket, set the priority to `low`, `normal`, `high` or `emergency`, and move a ticket to the security department. The agent sends no department name in the request body when a ticket needs to be moved, and the plugin takes the department from its own configuration, so a stolen write secret can move a ticket only into that one department. Every request must carry a valid signature, checked with `hash_equals`, and a timestamp no more than five minutes old, with 60 seconds of clock skew allowed. It must also name its operation inside the signed body, so a captured request cannot be replayed to a different endpoint. The ticket number check is signed with the same write secret, so a secret that differs between the agent and the plugin stops every ticket from being triaged, not only its writes.
 
 A write can arrive twice, because one that times out is retried. Setting the same priority or department again changes nothing, though each priority write adds an entry to the ticket's history. A repeated note is not written at all, because the endpoint first checks whether a note posted as `Triage Agent` is already on the ticket. That check only looks for a note already posted under that name, so whoever holds the write secret can post a note as `Triage Agent` first, and the agent's own note is then never written.
 
@@ -513,7 +515,7 @@ The agent keeps its secrets out of error messages. A Slack webhook URL is itself
  
 **Reconciliation:** After an incident the audit index answers what the agent decided about any ticket and when. Alerting continuously on a disagreement was considered and not built. The page and the channel post go out at classification time, so a priority changed afterwards hides nothing, and osTicket does not log priority changes at all, so a difference carries no actor and would fire on ordinary work.
  
-**Rejected requests:** Every refusal is logged with its reason and the requesting IP, so probing and replay leave a trace. A request is refused when the signature fails, when the body is not a JSON object, when the timestamp falls outside the freshness window, when it names no usable ticket ID, when the ticket was already accepted, or when that ticket is still being worked on. Nothing from the body is recorded when the signature is what failed, since the body is not parsed until the signature passes. These writes are queued rather than made inline, so a slow write cannot delay the response and forged requests cannot be used to stall the rejection path.
+**Rejected requests:** Every refusal is logged with its reason and the requesting IP, so probing and replay leave a trace. A request is refused when the signature fails, when the body is not a JSON object, when the timestamp falls outside the freshness window, when it names no usable ticket ID, when it fails the ticket number check, when the ticket was already accepted, or when that ticket is still being worked on. Nothing from the body is recorded when the signature is what failed, since the body is not parsed until the signature passes. These writes are queued rather than made inline, so a slow write cannot delay the response and forged requests cannot be used to stall the rejection path.
  
 **Audit write failure:** A failed Splunk write does not stop the actions the table selected. Stopping would leave a critical incident unhandled and unannounced with only a console line to show for it, and Splunk being briefly unavailable during a restart must not mean the agent quietly stops alerting. What the failure changes is the record, and there are two cases.
 

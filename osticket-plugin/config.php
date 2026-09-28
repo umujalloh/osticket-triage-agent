@@ -23,7 +23,7 @@ class TriagePluginConfig extends PluginConfig {
             )),
             'triage-write-secret' => new PasswordField(array(
                 'label' => __('HMAC Write-Back Secret'),
-                'hint' => __('Separate from the secret above. Authenticates the agent writing notes into tickets, so a leak of one does not grant the other.'),
+                'hint' => __('Separate from the secret above. Authenticates the agent\'s writes and its ticket number check, so triage stops if it does not match the agent\'s.'),
                 'configuration' => array(
                     'size' => 60,
                     'length' => 100

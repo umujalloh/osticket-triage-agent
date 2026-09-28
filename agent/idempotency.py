@@ -133,6 +133,13 @@ def claim_ticket(ticket_id) -> bool:
         )
         return cur.rowcount == 1
 
+def is_known_ticket(ticket_id) -> bool:
+    """Whether the store has a row for this ticket, without claiming it."""
+    with _connect() as conn:
+        row = conn.execute("SELECT 1 FROM processed_tickets WHERE ticket_id = ?",
+                           (ticket_key(ticket_id),)).fetchone()
+    return row is not None
+
 def _ensure_row(conn, ticket_id) -> bool:
     """Creates the ticket's row if it has none. Returns True if it created one.
 

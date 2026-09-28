@@ -92,8 +92,9 @@ a name, set its status to Active, and on the Config tab set:
 - FastAPI Webhook URL: `http://host.docker.internal:8000/webhook/ticket`
 - HMAC Shared Secret: the value you just generated
 - HMAC Write-Back Secret: a second value from the same command, not the same
-  one. This authenticates the agent writing into tickets, so a leak of one
-  secret does not grant the other.
+  one. This authenticates the agent writing into tickets and the ticket number
+  check, so triage stops if it does not match `TRIAGE_WRITE_SECRET`. A leak of
+  one secret does not grant the other.
 - Security Department: the osTicket department that owns security questions.
   It must already exist and somebody must have access to it, or routed tickets
   land where nobody can see them. Leave blank to disable routing.
