@@ -95,7 +95,7 @@ In the diagram, Claude only returns a classification to the agent. Every action,
  
 ## 4. Threat Model
  
-The agent reads untrusted ticket text and acts on it. Each attack below follows the same shape: what the attack is, how it reaches the system, the defense, and the residual risk left after that defense. The seven attacks fall into three groups: input-channel attacks through the ticket text (1, 2, 3), classifier accuracy failures (4, 5), and infrastructure attacks that bypass the front door (6, 7).
+The agent reads untrusted ticket text and acts on it. Each attack below follows the same shape: what the attack is, how it reaches the system, the defense, and the residual risk left after that defense. The eight attacks fall into four groups: input-channel attacks through the ticket text (1, 2, 3), classifier accuracy failures (4, 5), infrastructure attacks that bypass the front door (6, 7), and untrusted log data written into the note (8).
  
 ### Attack 1: Prompt Injection
  
@@ -238,6 +238,26 @@ Nothing restricts where the agent can connect, so a compromised host can read th
 **Ticket number check:** Before the store claims a ticket, the agent asks osTicket, through a signed plugin endpoint, for the number it gave that ticket, and refuses the request unless the two match. A forged request for a ticket that does not exist yet gets no number back, and one for an existing ticket has to guess its random six-digit number. A refused request never reaches the store, so the real ticket is claimed and processed as normal when it arrives. The agent also refuses a ticket older than osTicket's retry window that it never processed, because a genuine delivery always arrives within that window. If osTicket cannot answer, the agent returns 503 and osTicket keeps the ticket in its retry queue to send again later.
  
 **Residual risk:** A replay inside the freshness window passes the timestamp check, but the store still refuses it, because the ticket is already recorded in the file beside the agent. If that file gets deleted, a previously handled ticket can be replayed as new, as long as the captured request is under five minutes old. The ticket number check trusts osTicket's answer, so a compromised osTicket, which knows every number, can still claim a ticket first. A wrong number is refused and a right one accepted, so a secret holder could keep guessing at a ticket the agent has not processed, but only within osTicket's retry window, since older tickets are refused. The check also relies on osTicket's default random ticket numbers, which an administrator could switch to sequential ones. Each refused request also costs one lookup to osTicket, so a flood of forged requests can slow real tickets' lookups past osTicket's five second wait, leaving them in its retry queue and delaying their triage.
+ 
+---
+ 
+### Attack 8: Log Injection via Enrichment
+ 
+**Attack:** An attacker plants text in the logs the agent searches, so it reaches the internal note the agent posts as Triage Agent. The aim is to run script in an analyst's browser, put a link in front of the analyst, or plant text that reads like the agent's own finding.
+ 
+**Vector:** Enrichment. On a ticket classified as a critical security incident, the agent searches Splunk for events containing the submitter's IP, which needs no sign-in, or the requester's email, which is searched only when osTicket verified it. It copies the accounts, addresses, applications, actions, sign-in outcomes and error codes from up to 20 events into the note. Those are whatever the source logged, and sign-in logs commonly record whatever was typed as the username. An attacker can reach a ticket of their own by failing a sign-in with a crafted username, then filing a ticket from the same address that describes a critical incident. Slack gets only the event count, and the page goes out before enrichment runs.
+ 
+**Defense**
+ 
+**Enrichment after the decision:** The agent classifies the ticket and chooses its actions before it searches, and the search results never go to Claude. Poisoned log data can change what the note says, but not the classification, priority, routing, alert channel or page.
+ 
+**Plain-text note:** The plugin posts the note as a plain-text thread entry, which osTicket escapes before display, so HTML or script in a value shows as text and does not run.
+ 
+**Defanged addresses:** When osTicket displays a plain-text note, it turns text starting with `http://`, `https://`, `ftp://`, `ftps://` or `www.` into a link, and email addresses into `mailto:` links. The agent rewrites `://` as `[:]//`, `www.` as `www[.]` and `@` as `[@]` in every value it copies from the logs, so an address stays readable but cannot be clicked. `verify_note.py` checks the built note against a copy of osTicket's link pattern on every push.
+ 
+**Length cap:** Each value is cut to 100 characters and marked `(cut)`, and each line shows at most 20 values.
+ 
+**Residual risk:** A short value can still be worded as a finding, such as "benign, verified by SOC", on a note attached to a critical incident. The label before it names the kind of field it came from, but nothing stops an analyst reading it as the agent's judgment. The test checks against a copy of osTicket's link pattern, so an osTicket upgrade that links more patterns would bring links back until that copy is updated.
  
 ---
  
@@ -428,7 +448,7 @@ The note the plugin writes when it cannot reach the agent is the one write outsi
 
 The trust zone is osTicket, the agent and Splunk. The end user, Claude, Slack and PagerDuty are outside it.
 
-Three untrusted inputs reach the agent. The first is the ticket, its text and requester address both written by whoever filed it. The plugin's signature proves the request came from osTicket, and nothing about the ticket text. The second is Claude's answer, which the agent uses only after it passes the Pydantic model in `schemas.py`. Attack 1 covers the ticket text and Claude's answer. The third is the log data enrichment returns, which can hold values an attacker typed, such as a username on a failed sign-in. The agent writes those values into the note as plain text, and osTicket escapes them when it displays the note, so they cannot run as code.
+Three untrusted inputs reach the agent. The first is the ticket, its text and requester address both written by whoever filed it. The plugin's signature proves the request came from osTicket, and nothing about the ticket text. The second is Claude's answer, which the agent uses only after it passes the Pydantic model in `schemas.py`. Attack 1 covers the ticket text and Claude's answer. The third is the log data enrichment returns, which can hold values an attacker typed, such as a username on a failed sign-in. The agent writes those values into the note as plain text, and osTicket escapes them when it displays the note, so they cannot run as code. Attack 8 covers what they can still do.
 
 osTicket is inside the zone, and in a real deployment its ticket form is open to the internet. Its plugin configuration holds both HMAC secrets, so whoever controls osTicket can submit tickets the agent accepts, choose the requester, its verified flag and the IP that enrichment searches on, and write to any ticket. Attack 2 covers the writes, Attack 3 the requester and the IP, and Attack 6 the secrets. The network layout below denies a compromised osTicket a direct route to Splunk, but a compromised osTicket can still steer what the agent searches for and read the results in the note.
 

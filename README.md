@@ -233,6 +233,9 @@ values the server could verify, never from the ticket text.
 
 ![The agent's note on the ticket](docs/images/ticket-note.png)
 
+Captured 2026-08-25, before log values were defanged. The account now reads
+`bgist[@]froth.ly`.
+
 **In Slack.** The alert to the urgent channel. Severity, category, ticket number,
 confidence, page destination, event count, and a link. No ticket text, no
 requester address, no enrichment detail, because none of those may reach Slack.
@@ -250,8 +253,8 @@ enrichment and ahead of the audit writes.
 
 | | |
 |---|---|
-| Offline checks | **181** across 7 verifiers |
-| Checks against a live stack | **84** across 3 verifiers |
+| Offline checks, run in CI on every push | **127** across 7 verifiers |
+| Checks against a live stack | **90** across 3 verifiers |
 | Real tickets used in live runs | **16** |
 
 Full method and results in [docs/verification.md](docs/verification.md). The
@@ -305,7 +308,7 @@ the evaluation cannot tell you is in
 
 ```
 agent/                  FastAPI service: webhook, classifier, enrichment, actions, audit
-agent/verification/     10 verifiers, 265 checks, each reproducible from one command
+agent/verification/     12 verifiers, each reproducible from one command
 docker/                 Dockerfile, compose file, Splunk provisioning and saved searches
 docs/                   Architecture, action table, evaluation, verification, limitations, setup
 osticket-plugin/        osTicket plugin: signing, delivery, retry queue, status note

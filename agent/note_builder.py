@@ -1,3 +1,4 @@
+import re
 from collections import Counter
 
 from schemas import EnrichmentOutcome, enrichment_line
@@ -20,17 +21,38 @@ FIELD_GROUPS = (
 # module and could change. High enough that current data never truncates.
 MAX_VALUES_PER_LINE = 20
 
+# A value longer than this is cut. Real accounts, addresses and application
+# names are far shorter, and a long value is room for text worded as a finding.
+MAX_VALUE_LENGTH = 100
+
+def _defang(text):
+    """Stops osTicket turning a logged value into a link.
+
+    osTicket escapes a plain-text note and then links anything that looks like
+    a web or email address. A value an attacker got into the logs, such as a
+    username typed at a sign-in page, would otherwise reach the analyst as a
+    link under the agent's name. The brackets break the pattern and leave the
+    value readable.
+    """
+    text = text.replace("://", "[:]//").replace("@", "[@]")
+    return re.sub(r"(www)\.", r"\1[.]", text, flags=re.IGNORECASE)
+
 def _clean(values):
-    """Drops values a reader cannot use.
+    """Drops values a reader cannot use, and makes the rest safe to display.
 
     Splunk returns whatever the source logged, which includes stray
     punctuation. One BOTSv3 event carries an email field of a single
     backslash. Anything without an alphanumeric character is noise in a note.
+    What is kept is defanged and cut to MAX_VALUE_LENGTH.
     """
     out = set()
     for value in values:
         text = str(value).strip()
         if text and any(c.isalnum() for c in text):
+            # Defanged first, so the cut measures what the note shows.
+            text = _defang(text)
+            if len(text) > MAX_VALUE_LENGTH:
+                text = text[:MAX_VALUE_LENGTH] + " (cut)"
             out.add(text)
     return sorted(out)
 

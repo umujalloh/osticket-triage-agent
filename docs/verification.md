@@ -901,6 +901,38 @@ Two alerts did not fire during that run, both correctly. The heartbeat alert
 declined because the agent was up and beating. The paging alert was inside its
 one hour suppression window from a firing nine minutes earlier.
 
+## Note link verification
+
+Measured 2026-09-28, twelve checks, all passing. An attacker can choose some of
+the log values the agent copies into the note, and osTicket turns anything in a
+plain-text note that matches its link pattern into a live link.
+`verify_note.py` builds a note from hostile values and checks it against a copy
+of that pattern, taken from `Format::clickableurls` in osTicket's
+`include/class.format.php`.
+
+| Value in the logs | In the note |
+|---|---|
+| `https://evil.example/reset` | `https[:]//evil.example/reset` |
+| `www.evil.example` | `www[.]evil.example` |
+| `WWW.evil.example` | `WWW[.]evil.example` |
+| `ftp://files.example/x` | `ftp[:]//files.example/x` |
+| `alice@example.com` | `alice[@]example.com` |
+| A 180-character sentence | cut to 100 characters, ending `(cut)` |
+| `bob.smith`, `192.0.2.7` | unchanged |
+
+The pattern links every raw value except the uppercase `WWW.` one, which
+osTicket's case-sensitive pattern leaves alone. It finds nothing in the built
+note. The `Search:` line is left as the agent built it, so an analyst can paste
+it into Splunk, and it holds only values the agent validated.
+
+The same note was also run once through osTicket's own `Format::htmlchars` and
+`Format::clickableurls` inside the container. It produced no links, and the raw
+values from the table put through the same code produced four, all but the
+uppercase `WWW.` one.
+
+Reproduce with `./venv/bin/python verification/verify_note.py` from `agent/`.
+Nothing is written and no network call is made.
+
 ## Not yet verified
 
 Three things this file does not cover, listed so the sections above are not read
