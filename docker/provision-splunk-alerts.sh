@@ -33,7 +33,6 @@ SPLUNK_CONTAINER="${SPLUNK_CONTAINER:-osticket-triage-splunk-1}"
 SPLUNK_REST_HOST="${SPLUNK_REST_HOST:-localhost}"
 SPLUNK_REST_PORT="${SPLUNK_REST_PORT:-8089}"
 CACERT="$SCRIPT_DIR/splunk-provisioning/custom_tls/default/certs/cacert.pem"
-APP_DIR="/opt/splunk/etc/apps/triage_alerts"
 
 # The stanza names come from default/, so adding an alert there needs no change
 # here and the two cannot drift apart.
@@ -69,10 +68,10 @@ if ! docker inspect "$SPLUNK_CONTAINER" >/dev/null 2>&1; then
   exit 0
 fi
 
-docker exec -u root "$SPLUNK_CONTAINER" mkdir -p "$APP_DIR/local"
-docker cp "$LOCAL_DIR/savedsearches.conf" "$SPLUNK_CONTAINER:$APP_DIR/local/savedsearches.conf"
-docker exec -u root "$SPLUNK_CONTAINER" chown -R splunk:splunk "$APP_DIR"
-
+# The app folder is bind-mounted into the container, so the file written above
+# is already there and only the reload is needed. Copying it in or changing its
+# owner from inside the container would change the owner of the repo's own
+# files on the host.
 http_code=$(curl -s --cacert "$CACERT" -o /dev/null -w '%{http_code}' \
   -u "admin:${SPLUNK_PASSWORD}" -X POST \
   "https://${SPLUNK_REST_HOST}:${SPLUNK_REST_PORT}/services/apps/local/triage_alerts/_reload")
@@ -80,6 +79,6 @@ http_code=$(curl -s --cacert "$CACERT" -o /dev/null -w '%{http_code}' \
 if [[ "$http_code" == 2* ]]; then
   echo "Loaded into Splunk."
 else
-  echo "Copied, but Splunk did not reload (HTTP $http_code). Restart Splunk to pick it up." >&2
+  echo "Wrote the file, but Splunk did not reload (HTTP $http_code). Restart Splunk to pick it up." >&2
   exit 1
 fi
