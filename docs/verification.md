@@ -874,6 +874,24 @@ triggers throughout, including for runs that provably invoked the email action,
 so it does not answer whether an alert fired. `scheduler.log` and `python.log`
 do.
 
+## Restart loop alert verification
+
+Measured 2026-09-28 against `docker/splunk-provisioning/triage_alerts`, with the
+agent restarted for real rather than with synthetic events. Every start sends a
+first beat with an uptime of zero, and the alert counts those over thirty
+minutes.
+
+| Property | How it was checked | Result |
+|---|---|---|
+| Quiet with no restarts | the search over the thirty minutes before the test | 0 starts, does not fire |
+| The search matches real starts | the same search over the previous day | 3 starts found |
+| A restart loop is detected | agent started and stopped three times, writes off | 3 starts, condition true |
+| The scheduled run fires | `scheduler.log` at the next five-minute run | `status=success`, `alert_actions="email"` |
+| The email arrives with the count | the recipient's inbox | subject `Action needed: triage agent is restarting repeatedly`, body says it started 3 times |
+
+The last row needed a real send. As the heartbeat section above explains,
+`sendemail` logs before it sends, so only the inbox confirms delivery.
+
 ## Delivery failure alert verification
 
 Measured 2026-08-22 against `docker/splunk-provisioning/triage_alerts`. Two

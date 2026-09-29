@@ -187,7 +187,9 @@ different app.
 Then set who receives the alerts. Add `SPLUNK_ALERT_EMAIL` to `docker/.env` and
 run `docker/provision-splunk-alerts.sh`. It writes the recipient into the app's
 `local/savedsearches.conf`, which this repo does not track, then loads it into
-the running Splunk.
+the running Splunk. Change these alerts in the repo's files and re-run the
+script, not in Splunk's UI. The files belong to your user, so Splunk cannot save
+edits made there.
 
 The searches, their schedules and their wording all ship in `default/`. Only the
 address is deployment-specific, and it lives in `.env` alongside the other

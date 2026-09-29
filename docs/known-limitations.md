@@ -269,7 +269,7 @@ deployment precondition rather than code.
 
 ### The alerts that watch the agent have one delivery path
 
-All three Splunk alerts reach a person by email, through one SMTP account. If
+All four Splunk alerts reach a person by email, through one SMTP account. If
 that credential is revoked, if the scheduler is disabled, or if the searches are
 deleted, no alert is sent and nothing records that.
 

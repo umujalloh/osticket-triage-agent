@@ -214,8 +214,9 @@ paging about an incident from hours ago is worse than a note asking someone to
 look.
 
 **The agent stops entirely.** It writes a liveness event to Splunk every minute.
-Three saved searches ship with the repo and alert by email when those events
-stop, when pages keep failing to a destination, and when Slack posts do.
+Four saved searches ship with the repo and alert by email when those events
+stop, when the agent keeps restarting, when pages keep failing to a destination,
+and when Slack posts do.
 
 ---
 
