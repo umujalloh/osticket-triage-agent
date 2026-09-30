@@ -32,6 +32,8 @@ from fastapi.testclient import TestClient
 
 import main
 import idempotency as store
+from classifier import ClassificationError
+from slack_client import SlackError
 from schemas import Category, Confidence, Severity, TicketClassification
 
 failed = []
@@ -178,6 +180,52 @@ with store._connect() as conn:
                  "WHERE ticket_id = '5'")
 fresh, stale = store.unfinished_payloads(3600)
 check("is dropped rather than acted on", fresh + stale, [])
+
+print()
+print("a ticket Claude could not classify is not picked up again")
+print()
+
+# The review channel has told a person to handle it by hand, so neither the
+# next start nor a repeat delivery may classify it again and act on it.
+unclassified = new_ticket()
+store.claim_ticket(unclassified)
+store.save_payload(unclassified, payload_for(unclassified))
+
+def classify_fails(**kwargs):
+    raise ClassificationError("auth_failure", "key rejected")
+
+working_classify = main.classify_ticket
+main.classify_ticket = classify_fails
+acted["posts"].clear()
+main.begin_processing(unclassified)
+main.process_ticket(payload_for(unclassified))
+main.classify_ticket = working_classify
+
+check("its review post goes out", acted["posts"], ["review"])
+check("  it owes nothing", main.outstanding_actions(unclassified), [])
+fresh, stale = store.unfinished_payloads(3600)
+check("  and the next start will not pick it up",
+      [p["ticket_id"] for p in fresh + stale], [])
+
+# A review post that fails has told nobody, so the ticket has to stay
+# unfinished for the next start to try again.
+unposted = new_ticket()
+store.claim_ticket(unposted)
+store.save_payload(unposted, payload_for(unposted))
+
+def slack_down(channel, text):
+    raise SlackError("server_down", "Slack unreachable")
+
+working_post = main.post_alert
+main.post_alert = slack_down
+main.classify_ticket = classify_fails
+main.begin_processing(unposted)
+main.process_ticket(payload_for(unposted))
+main.classify_ticket = working_classify
+main.post_alert = working_post
+
+check("a failed review post leaves the ticket for the next start",
+      [p["ticket_id"] for p in store.unfinished_payloads(3600)[0]], [unposted])
 
 print()
 print("a store that fails does not strand the ticket")

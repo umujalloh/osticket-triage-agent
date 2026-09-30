@@ -300,6 +300,9 @@ def outstanding_actions(ticket_id) -> list:
     """
     classification = stored_classification(ticket_id)
     if classification is None:
+        # Handed to a person after a failed classification, so nothing is owed.
+        if completed_actions(ticket_id)["handed_to_review"]:
+            return []
         # Claimed, and nothing decided, so nothing was done either.
         return [UNDECIDED]
 
@@ -459,6 +462,10 @@ def _handle_classification_failure(ticket_id, payload, failure_type, error):
         failure_type=failure_type,
     )
     _post(ticket_id, REVIEW, text, mention=False)
+    # Marked only once the review post has gone out, so a failed post leaves
+    # the ticket for the next start to try again.
+    if completed_actions(ticket_id)["slack_posted"]:
+        mark_done(ticket_id, "handed_to_review")
 
 def _audit_failed(ticket_id, event):
     """A Splunk write that failed, recorded on the console only.

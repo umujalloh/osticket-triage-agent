@@ -63,6 +63,13 @@ store.claim_ticket(2)
 check("a claim on its own is still undecided",
       main.outstanding_actions(2), [main.UNDECIDED])
 
+# Claude could not classify it, and the review channel has told a person. The
+# person owns it now, so a repeat delivery or the next start must not act on it.
+store.claim_ticket(90)
+store.mark_done(90, "handed_to_review")
+check("a ticket handed to review after a failed classification owes nothing",
+      main.outstanding_actions(90), [])
+
 print()
 print("A confident critical, which selects all five actions")
 print()

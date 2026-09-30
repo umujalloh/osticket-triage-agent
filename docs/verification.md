@@ -311,15 +311,17 @@ wiring below, where the note write is driven through the store three times.
 
 ## Resume verification
 
-Measured 2026-08-20, sixteen checks, all passing, against a temporary database.
-Nothing here reaches Claude, Slack, PagerDuty, osTicket or Splunk. It exercises
-the decision a repeat delivery lands on, which is one of three: a duplicate to
-refuse, a ticket to pick up, or a ticket another run is working on now.
+Measured 2026-09-29, seventeen checks, all passing, against a temporary
+database. Nothing here reaches Claude, Slack, PagerDuty, osTicket or Splunk. It
+exercises the decision a repeat delivery lands on, which is one of three: a
+duplicate to refuse, a ticket to pick up, or a ticket another run is working on
+now.
 
 | Property | How it was checked | Result |
 |---|---|---|
 | A ticket never seen is undecided | `outstanding_actions(1)` | `["classified"]` |
 | A claim with no decision is undecided | claim only, then read | `["classified"]` |
+| A ticket handed to review owes nothing | claim, then mark `handed_to_review` | `[]` |
 | A decision lists the actions its row selects | a confident critical, nothing done | all five |
 | What happened drops off the list | mark `paged`, read again | four left |
 | A finished ticket has nothing outstanding | mark all five | `[]` |
@@ -386,12 +388,14 @@ staged. What re-sends them in the deployment is the retry queue below.
 
 ## Recovery verification
 
-Measured 2026-08-22, twenty-four checks offline plus one live run. The offline
-checks replace every outbound client and skip Claude through the resume path,
-so nothing leaves the machine. Four of them cover a store that fails while the
-agent is accepting a ticket, since a mark left set there refuses that ticket
-for the life of the process. Four more cover one ticket failing partway through
-the backlog, which must not stop the tickets behind it.
+Measured 2026-09-29, twenty-eight checks offline, plus one live run on
+2026-08-22. The offline checks replace every outbound client and skip Claude
+through the resume path, so nothing leaves the machine. Four of them cover a
+store that fails while the agent is accepting a ticket, since a mark left set
+there refuses that ticket for the life of the process. Four more cover one
+ticket failing partway through the backlog, which must not stop the tickets
+behind it. Four more cover a ticket Claude could not classify, which is handed
+to review once and never picked up again, unless the review post itself failed.
 
 | Property | How it was checked | Result |
 |---|---|---|
@@ -406,6 +410,10 @@ the backlog, which must not stop the tickets behind it.
 | And records the abandonment | the same ticket | `interrupted_past_recovery_window` |
 | And is not rescanned | after abandoning | body cleared |
 | An unreadable body is dropped | column set to invalid JSON | not acted on |
+| A failed classification goes to review | Claude stubbed to raise `auth_failure` | posted to review |
+| And owes nothing afterwards | the same ticket | no outstanding actions |
+| And the next start will not pick it up | after the run | body cleared |
+| A failed review post leaves it for the next start | Slack stubbed to fail as well | body kept |
 
 ### A real interrupted ticket, 2026-08-22, ticket 32
 

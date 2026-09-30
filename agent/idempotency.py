@@ -23,8 +23,13 @@ DB_PATH = os.getenv(
 # because a resumed ticket has to know whether the first attempt's audit write
 # landed: re-logging records a decision that was made once as though it were
 # made twice, and skipping it loses the record when the first write failed.
+#
+# handed_to_review marks a ticket Claude could not classify. The review channel
+# has told a person to handle it, so the agent must not pick it up again at the
+# next start or on a repeat delivery and act on it behind that person's back.
 ACTIONS = ("classification_audited", "note_written", "priority_set",
-           "slack_posted", "paged", "paged_fallback", "routed")
+           "slack_posted", "paged", "paged_fallback", "routed",
+           "handed_to_review")
 
 # Every column beyond the two the table is created with. Actions are flags; the
 # classification is the decision itself, held so a resumed ticket finishes on
