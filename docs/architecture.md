@@ -1,5 +1,18 @@
 # osTicket AI Triage Agent: Architecture
  
+**Contents**
+ 
+1. [Purpose and Problem](#1-purpose-and-problem)
+2. [System Components](#2-system-components)
+3. [Ticket Lifecycle and Data Flow](#3-ticket-lifecycle-and-data-flow)
+4. [Threat Model](#4-threat-model)
+5. [Classification Model](#5-classification-model)
+6. [Failure Modes for the Claude Dependency](#6-failure-modes-for-the-claude-dependency)
+7. [Action Layer](#7-action-layer)
+8. [Trust Boundaries and Least Privilege](#8-trust-boundaries-and-least-privilege)
+9. [Observability and Audit](#9-observability-and-audit)
+10. [Deployment Preconditions](#10-deployment-preconditions)
+ 
 ## 1. Purpose and Problem
  
 Most security incidents in small and mid-sized organizations don't arrive labeled as security incidents. They arrive as ordinary helpdesk tickets: "my browser is acting weird," "I clicked a link and now my computer is slow," "I keep getting locked out of my account." These sit in the same queue as printer problems and password resets, waiting for someone to decide which ones are security relevant and which are routine.
@@ -24,11 +37,11 @@ This document covers the design across all three phases.
  
 **osTicket:** An open-source helpdesk system with a MySQL database where tickets live. Users submit a ticket here when they have an issue. The agent writes back to osTicket, posting an internal note, setting a priority that decides where the ticket sits in the Open queue, and moving a `security_question` into the security department. It does not call the agent itself; the plugin below does.
  
-**The triage plugin:** PHP that runs inside osTicket, in `osticket-plugin/`. It listens for the ticket-created signal, signs the payload, and posts it to the agent. It also registers the endpoints the agent calls back on. One returns a ticket's number for the ticket number check, and three write to the ticket, because osTicket's own API cannot change the priority or department of an existing ticket. Both directions are signed, each with its own secret. It owns delivery when the agent cannot be reached, which Section 7 covers.
+**The triage plugin:** PHP that runs inside osTicket, in `osticket-plugin/`. It listens for the ticket-created signal, signs the payload, and posts it to the agent. It also registers the endpoints the agent calls back on. One returns a ticket's number for the ticket number check, and three write to the ticket, because osTicket's own API cannot change the priority or department of an existing ticket. Both directions are signed, each with its own secret. It owns delivery when the agent cannot be reached, which [Section 7](#7-action-layer) covers.
 
 **The triage agent:** The FastAPI service, in `agent/`, and the orchestrator. It receives the webhook from the plugin and sends the ticket to Claude for classification. A pre-defined action table decides what happens next. It pages PagerDuty when the row calls for it, queries Splunk for enrichment, then writes back to osTicket and posts to Slack.
 
-**The idempotency store:** A SQLite file beside the agent, one row per ticket it has accepted, holding the classification, a flag per action taken and the webhook body while the ticket is unfinished. It survives a restart. Section 7 covers how the agent uses it, and Section 8 what it holds at rest.
+**The idempotency store:** A SQLite file beside the agent, one row per ticket it has accepted, holding the classification, a flag per action taken and the webhook body while the ticket is unfinished. It survives a restart. [Section 7](#7-action-layer) covers how the agent uses it, and [Section 8](#8-trust-boundaries-and-least-privilege) what it holds at rest.
  
 **Claude API:** An external LLM, used for classification only. It receives the ticket text from the agent and returns a category, a severity, a confidence, and any hostname, username or source IP the ticket explicitly names. It runs no queries and writes nothing.
  
@@ -38,9 +51,9 @@ This document covers the design across all three phases.
  
 **PagerDuty:** On-call paging. The agent pages on a critical security incident and nothing else. Those pages land in one of two services, WAKE at high confidence and NOTIFY at low confidence.
  
-**Inside vs outside:** osTicket, the agent, and Splunk run inside my own infrastructure. Claude, PagerDuty, and Slack are external services. That split is the trust boundary, which is covered in Section 8.
+**Inside vs outside:** osTicket, the agent, and Splunk run inside my own infrastructure. Claude, PagerDuty, and Slack are external services. That split is the trust boundary, which is covered in [Section 8](#8-trust-boundaries-and-least-privilege).
  
-**Deployment:** Everything runs on one machine. osTicket, its MySQL database and Splunk are Docker containers defined in `docker/`. The agent runs beside them as an ordinary process on the host, not a container. Section 8 covers what that exposes and why the agent binds differently from the containers.
+**Deployment:** Everything runs on one machine. osTicket, its MySQL database and Splunk are Docker containers defined in `docker/`. The agent runs beside them as an ordinary process on the host, not a container. [Section 8](#8-trust-boundaries-and-least-privilege) covers what that exposes and why the agent binds differently from the containers.
  
 ---
  
@@ -54,7 +67,7 @@ When a user submits a ticket in osTicket, it goes through the following steps.
 
 3. **The ticket text is isolated:** The agent wraps the subject and message in a delimiter unique to that request and sends them to Claude as user-role content.
 
-4. **Claude classifies:** It reads the ticket text and returns a category, a severity, and a confidence. Section 5 covers how that works, and Section 6 covers what happens when Claude fails.
+4. **Claude classifies:** It reads the ticket text and returns a category, a severity, and a confidence. [Section 5](#5-classification-model) covers how that works, and [Section 6](#6-failure-modes-for-the-claude-dependency) covers what happens when Claude fails.
 
 5. **The agent looks up the actions:** It reads the action table row for that category, severity and confidence.
 
@@ -111,9 +124,9 @@ The agent reads untrusted ticket text and acts on it. Each attack below follows 
  
 **Output schema validation:** Claude must return valid JSON matching a strict schema: category, severity, confidence, and optionally a hostname, username, or source IP if the ticket text names one. Any response that does not fit is rejected, so injection that changes Claude's output still cannot produce a valid action. The entity fields carry a different risk from the closed enums, since they are free text rather than a choice from a fixed set. Each gets its own format validation, and a value that fails is dropped without blocking the rest of the classification.
  
-**The backstop:** Even if an attacker slips past the role separation and fools the classifier, the damage stops at the label. Claude only returns a classification and up to three optional entity values. It never picks an action and never writes anything. The agent takes the label, looks up the matching row in a fixed table written in code, and acts only within what its scoped credentials permit. No label, however manipulated, can trigger an action the table does not already allow. Nothing Claude returns reaches a Splunk query either, since the template is fixed and filled from identifiers the webhook supplied. Entity values come from ticket text the submitter writes, so letting them into a query would put the submitter in charge of what the agent searches for. The worst case is a wrong but allowed action, like writing a note when it should not or failing to page when it should, not a dangerous new one. The table is listed in [action-table.md](action-table.md) and explained in Section 7, and credential scoping is covered in Section 8.
+**The backstop:** Even if an attacker slips past the role separation and fools the classifier, the damage stops at the label. Claude only returns a classification and up to three optional entity values. It never picks an action and never writes anything. The agent takes the label, looks up the matching row in a fixed table written in code, and acts only within what its scoped credentials permit. No label, however manipulated, can trigger an action the table does not already allow. Nothing Claude returns reaches a Splunk query either, since the template is fixed and filled from identifiers the webhook supplied. Entity values come from ticket text the submitter writes, so letting them into a query would put the submitter in charge of what the agent searches for. The worst case is a wrong but allowed action, like writing a note when it should not or failing to page when it should, not a dangerous new one. The table and the reasoning behind each row are in [action-table.md](action-table.md), and credential scoping is covered in [Section 8](#8-trust-boundaries-and-least-privilege).
  
-**Residual risk:** None of these layers stops a ticket that is simply worded to mislead. Someone could write a real incident to sound harmless, or a harmless ticket to sound alarming, and Claude would classify the text honestly but wrongly. Those cases are covered as their own attacks, 4 and 5.
+**Residual risk:** None of these layers stops a ticket that is simply worded to mislead. Someone could write a real incident to sound harmless, or a harmless ticket to sound alarming, and Claude would classify the text honestly but wrongly. Those cases are covered as their own attacks, [4](#attack-4-false-negative-on-severity) and [5](#attack-5-false-positive-on-severity).
  
 ---
  
@@ -205,13 +218,13 @@ Anyone who can open the ticket can read its notes, and that includes every staff
  
 **Rotatable keys:** No credential is embedded in code. Every one is read from the environment at import, so a revoked credential can be replaced with a config change and a restart.
  
-**Secrets kept out of error messages:** A Slack webhook URL is itself a secret, so a failed connection is recorded by its type, never the HTTP client's error text, which quotes the URL. A PagerDuty rejection is recorded by its status code, never its body, which could quote the routing key. Section 8 covers each client.
+**Secrets kept out of error messages:** A Slack webhook URL is itself a secret, so a failed connection is recorded by its type, never the HTTP client's error text, which quotes the URL. A PagerDuty rejection is recorded by its status code, never its body, which could quote the routing key. [Section 8](#8-trust-boundaries-and-least-privilege) covers each client.
  
 **Derived deduplication key:** Every page carries a deduplication key that tells PagerDuty which incident it belongs to, and the same key is what closes an incident. If that key were the ticket id, which runs 1, 2, 3, a stolen PagerDuty routing key could close every open incident by counting upward. The agent sends an HMAC of the ticket id instead, so a stolen routing key can still raise an incident but cannot close one.
  
-**Residual risk:** Scoping does not make a stolen credential harmless. Each one can still do everything inside its scope, which Section 8 lists for every credential.
+**Residual risk:** Scoping does not make a stolen credential harmless. Each one can still do everything inside its scope, which [Section 8](#8-trust-boundaries-and-least-privilege) lists for every credential.
 
-- **osTicket webhook secret:** lets an attacker send the agent forged webhook requests. The agent refuses any whose ticket ID and random ticket number do not match a real ticket it has not already processed. An attacker who knows a ticket's number, such as one they filed themselves, can still get a forged request in before osTicket's genuine one, while osTicket's delivery of that ticket is failing or waiting in its retry queue. That request can name any requester email as verified and any submitter IP, pointing one enrichment search at someone else's activity, as Attack 3 describes. An insider who can also see other people's tickets can do the same to a real incident, which is then triaged as the forged content and never pages anyone.
+- **osTicket webhook secret:** lets an attacker send the agent forged webhook requests. The agent refuses any whose ticket ID and random ticket number do not match a real ticket it has not already processed. An attacker who knows a ticket's number, such as one they filed themselves, can still get a forged request in before osTicket's genuine one, while osTicket's delivery of that ticket is failing or waiting in its retry queue. That request can name any requester email as verified and any submitter IP, pointing one enrichment search at someone else's activity, as [Attack 3](#attack-3-indirect-data-exfiltration-via-internal-notes) describes. An insider who can also see other people's tickets can do the same to a real incident, which is then triaged as the forged content and never pages anyone.
 - **osTicket write secret:** answers the ticket number check, writes notes, sets priorities and moves tickets to the security department, and the ticket history cannot tell those changes from the agent's.
 - **Splunk search account:** reads the whole enrichment index, not only the twenty events the agent's template returns.
 - **Splunk HEC token:** cannot read or erase events in the audit index, but can append events to it that cannot be told apart from the agent's real ones.
@@ -219,7 +232,7 @@ Anyone who can open the ticket can read its notes, and that includes every staff
 - **Slack webhooks:** post messages that cannot be told from the agent's.
 - **PagerDuty routing keys:** raise incidents that look like the agent's. Together with the deduplication secret, they let an attacker compute the key for any ticket and close its incident.
  
-Nothing restricts where the agent can connect, so a compromised host can read the credentials and send them anywhere. Restricting that traffic is a deployment precondition in Section 10, not something the code can do.
+Nothing restricts where the agent can connect, so a compromised host can read the credentials and send them anywhere. Restricting that traffic is a deployment precondition in [Section 10](#10-deployment-preconditions), not something the code can do.
  
 ---
  
@@ -273,7 +286,7 @@ Claude classifies each ticket along three dimensions:
 
 There are three dimensions because they answer different questions. Folding them into one label would force a vague report of a possible account compromise to be either a routine ticket or a confident incident.
 
-Claude also extracts any hostname, username or source IP the ticket explicitly names. Sections 4 and 9 cover how the agent validates and records them.
+Claude also extracts any hostname, username or source IP the ticket explicitly names. Sections [4](#4-threat-model) and [9](#9-observability-and-audit) cover how the agent validates and records them.
 
 The rubric Claude is given is the system prompt in `agent/classifier.py`. How the classifier is evaluated and measured is in [evaluation.md](evaluation.md). What each classification triggers is in [action-table.md](action-table.md).
 
@@ -393,7 +406,7 @@ Enrichment adds context to a critical incident and never silences one, so a Splu
 
 ### When an action fails
 
-The agent's actions reach four systems, osTicket, Splunk, Slack and PagerDuty, and any of them can refuse a request or go quiet. A failure in one never cancels the rest, because a ticket that loses its note still needs its alert. A connection error, a timeout, or a destination that says it is busy or unavailable gets three attempts. Anything else fails at once. Every failure is sent to the audit log, and a Slack or PagerDuty destination that keeps failing is caught by the saved searches in Section 9.
+The agent's actions reach four systems, osTicket, Splunk, Slack and PagerDuty, and any of them can refuse a request or go quiet. A failure in one never cancels the rest, because a ticket that loses its note still needs its alert. A connection error, a timeout, or a destination that says it is busy or unavailable gets three attempts. Anything else fails at once. Every failure is sent to the audit log, and a Slack or PagerDuty destination that keeps failing is caught by the saved searches in [Section 9](#9-observability-and-audit).
 
 What happens next depends on which action failed:
 
@@ -444,9 +457,9 @@ The webhook is answered before the actions run, so a crash in between leaves osT
 
 The trust zone is osTicket, the agent and Splunk. The end user, Claude, Slack and PagerDuty are outside it.
 
-Three untrusted inputs reach the agent. The first is the ticket, its text and requester address both written by whoever filed it. The plugin's signature proves the request came from osTicket, and nothing about the ticket text. The second is Claude's answer, which the agent uses only after it passes the Pydantic model in `schemas.py`. Attack 1 covers the ticket text and Claude's answer. The third is the log data enrichment returns, which can hold values an attacker typed, such as a username on a failed sign-in. The agent writes those values into the note as plain text, and osTicket escapes them when it displays the note, so they cannot run as code. Attack 8 covers what they can still do.
+Three untrusted inputs reach the agent. The first is the ticket, its text and requester address both written by whoever filed it. The plugin's signature proves the request came from osTicket, and nothing about the ticket text. The second is Claude's answer, which the agent uses only after it passes the Pydantic model in `schemas.py`. [Attack 1](#attack-1-prompt-injection) covers the ticket text and Claude's answer. The third is the log data enrichment returns, which can hold values an attacker typed, such as a username on a failed sign-in. The agent writes those values into the note as plain text, and osTicket escapes them when it displays the note, so they cannot run as code. [Attack 8](#attack-8-log-injection-via-enrichment) covers what they can still do.
 
-osTicket is inside the zone, and in a real deployment its ticket form is open to the internet. Its plugin configuration holds both HMAC secrets, so whoever controls osTicket can submit tickets the agent accepts, choose the requester, its verified flag and the IP that enrichment searches on, and write to any ticket. Attack 2 covers the writes, Attack 3 the requester and the IP, and Attack 6 the secrets. The network layout below denies a compromised osTicket a direct route to Splunk, but a compromised osTicket can still steer what the agent searches for and read the results in the note.
+osTicket is inside the zone, and in a real deployment its ticket form is open to the internet. Its plugin configuration holds both HMAC secrets, so whoever controls osTicket can submit tickets the agent accepts, choose the requester, its verified flag and the IP that enrichment searches on, and write to any ticket. [Attack 2](#attack-2-confused-deputy) covers the writes, [Attack 3](#attack-3-indirect-data-exfiltration-via-internal-notes) the requester and the IP, and [Attack 6](#attack-6-credential-compromise) the secrets. The network layout below denies a compromised osTicket a direct route to Splunk, but a compromised osTicket can still steer what the agent searches for and read the results in the note.
 
 ### Network exposure
 
@@ -480,7 +493,7 @@ http://helpdesk.example.com/scp/tickets.php?id=14
 
 A stolen Slack webhook URL lets anyone post a message identical to a real alert, so every link is a raw URL a reader can check before opening it. Messages also stay in Slack after posting, outside the zone, which is recorded in [known-limitations.md](known-limitations.md).
 
-**A PagerDuty page** carries the severity, category and ticket number, the osTicket host as its source, and the ticket link. It carries no enrichment count, because it goes out before the agent runs enrichment. The fallback WAKE page described in Section 7 adds the confidence and leads with `alert delivery failed`. Each page also carries a deduplication key, an HMAC of the ticket ID, so a replayed event folds into the incident already open instead of paging again.
+**A PagerDuty page** carries the severity, category and ticket number, the osTicket host as its source, and the ticket link. It carries no enrichment count, because it goes out before the agent runs enrichment. The fallback WAKE page described in [Section 7](#7-action-layer) adds the confidence and leads with `alert delivery failed`. Each page also carries a deduplication key, an HMAC of the ticket ID, so a replayed event folds into the incident already open instead of paging again.
 
 Nothing a submitter wrote reaches Slack or PagerDuty. Three kinds of data are left out of both on purpose.
 
@@ -502,7 +515,7 @@ The agent's secrets sit in plain text on the same host, in `agent/.env` for the 
 
 ### Credentials
 
-The agent reads eleven secrets from `agent/.env` at import. Two optional test keys serve only the verifiers. Each secret is bound to one service, except the dedup secret. Attack 6 covers what stolen credentials allow.
+The agent reads eleven secrets from `agent/.env` at import. Two optional test keys serve only the verifiers. Each secret is bound to one service, except the dedup secret. [Attack 6](#attack-6-credential-compromise) covers what stolen credentials allow.
 
 | Secret | Used for | Scope |
 |---|---|---|
@@ -566,7 +579,7 @@ The agent records every decision and action in a Splunk index, and four Splunk s
  
 **Unreachable or refusing agent:** An agent bound to the wrong address, or one refusing every ticket because its secrets no longer match osTicket's, still sends heartbeats, so no search notices it. osTicket records the problem instead, saving each failed send to its system log and emailing its administrator, unless logging is turned off or it has no outbound mail.
  
-**Delivery:** All four searches alert by email, so they still reach someone when Slack fails. Each sends at most one email an hour. Splunk's mail settings are a deployment precondition, covered in Section 10. The searches run inside Splunk and send through one mail account, so a Splunk outage or a broken mail setup silences all four. The full reasoning for keeping them on one path is in [known-limitations.md](known-limitations.md).
+**Delivery:** All four searches alert by email, so they still reach someone when Slack fails. Each sends at most one email an hour. Splunk's mail settings are a deployment precondition, covered in [Section 10](#10-deployment-preconditions). The searches run inside Splunk and send through one mail account, so a Splunk outage or a broken mail setup silences all four. The full reasoning for keeping them on one path is in [known-limitations.md](known-limitations.md).
 
 ---
  
@@ -574,7 +587,7 @@ The agent records every decision and action in a Splunk index, and four Splunk s
  
 **Ten things the environment must provide:** The triage agent cannot enforce any of them, and the design depends on all ten, so a deployment that skips one is quietly weaker than this document describes. [setup.md](setup.md) covers what this lab configures, the security department, osTicket's cron and outbound mail, and Splunk's mail settings.
 
-1. **Turn on CAPTCHA and set client registration:** Without them, anyone on the internet can submit unlimited tickets and bury a real incident under false ones, the flood Attack 5 describes. The triage agent cannot throttle its way out, because every option either delays the flood, hides the real ticket inside a digest, or is defeated by varying the tickets, so the defense has to be at the form.
+1. **Turn on CAPTCHA and set client registration:** Without them, anyone on the internet can submit unlimited tickets and bury a real incident under false ones, the flood [Attack 5](#attack-5-false-positive-on-severity) describes. The triage agent cannot throttle its way out, because every option either delays the flood, hides the real ticket inside a digest, or is defeated by varying the tickets, so the defense has to be at the form.
 
 2. **Create a security department and name it in the plugin:** The triage agent moves `security_question` tickets into it. Create a department in osTicket, not a queue, because a queue is a saved search and a ticket cannot belong to one. Enter its exact name in the plugin's security department setting, since a blank or unmatched name makes every move fail with a 500. Then give at least one osTicket agent access to it, as their primary department or through extended access. osTicket shows agents only the departments they can access, so without this a routed ticket disappears from every view while the triage agent reports success.
 
@@ -586,10 +599,10 @@ The agent records every decision and action in a Splunk index, and four Splunk s
 
 6. **Set PagerDuty service urgency:** The triage agent pages WAKE on a confident critical and NOTIFY on an unconfident one. Set WAKE to high urgency and NOTIFY to low. PagerDuty sets urgency per service, so with NOTIFY set to high, or set to follow the event's severity, an unconfident critical wakes someone just like a confident one. The triage agent cannot read either setting, and it sends `severity: critical` to both. Whether WAKE actually interrupts anyone also depends on each responder's notification rules and on what their PagerDuty plan can send. A responder whose high-urgency rules end at email is never interrupted, and nothing the triage agent can read shows it.
 
-7. **Configure Splunk's mail settings:** The four searches in Section 9 deliver by email, so Splunk needs a mail server, an account and a from address. The triage agent cannot raise these alerts itself, because it is the thing that posts to Slack and pages PagerDuty, so whatever breaks the agent breaks its alerting too. The searches ship in `docker/splunk-provisioning/triage_alerts`, and the SMTP credential stays in Splunk's own settings so it is never committed.
+7. **Configure Splunk's mail settings:** The four searches in [Section 9](#9-observability-and-audit) deliver by email, so Splunk needs a mail server, an account and a from address. The triage agent cannot raise these alerts itself, because it is the thing that posts to Slack and pages PagerDuty, so whatever breaks the agent breaks its alerting too. The searches ship in `docker/splunk-provisioning/triage_alerts`, and the SMTP credential stays in Splunk's own settings so it is never committed.
 
 8. **Watch Splunk from outside it:** All four searches that watch the triage agent run inside Splunk, so a Splunk outage stops every one of them and nobody is told. Point an uptime check that runs outside Splunk at Splunk itself.
 
-9. **Restrict the agent's outbound traffic:** The agent needs to reach only Claude, Splunk, osTicket, Slack and PagerDuty, and nothing in the process stops it connecting anywhere else, which is the path stolen credentials would take off the host, as Attack 6 describes. Allowlist those destinations by hostname. Claude sits behind Cloudflare, and Slack and PagerDuty answer from several cloud addresses, so an IP allowlist breaks the first time one of them changes.
+9. **Restrict the agent's outbound traffic:** The agent needs to reach only Claude, Splunk, osTicket, Slack and PagerDuty, and nothing in the process stops it connecting anywhere else, which is the path stolen credentials would take off the host, as [Attack 6](#attack-6-credential-compromise) describes. Allowlist those destinations by hostname. Claude sits behind Cloudflare, and Slack and PagerDuty answer from several cloud addresses, so an IP allowlist breaks the first time one of them changes.
 
 10. **Keep the agent's console output:** When the agent cannot write an audit entry to Splunk, it prints a line to its console. For a failed note, priority or routing write, and for a lost refusal, that line is the only record. Run the agent under a service manager or container runtime that keeps its output.
