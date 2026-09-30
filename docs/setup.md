@@ -97,7 +97,9 @@ a name, set its status to Active, and on the Config tab set:
   one secret does not grant the other.
 - Security Department: the osTicket department that owns security questions.
   It must already exist and somebody must have access to it, or routed tickets
-  land where nobody can see them. Leave blank to disable routing.
+  land where nobody can see them. Leave it blank only if nothing should be
+  routed, and expect every `security_question` ticket to log a routing failure
+  while writes are on.
 - Retry Window (minutes): how long a ticket the agent never accepted keeps
   being retried before the plugin gives up and notes that on the ticket.
   Defaults to 60 when blank.

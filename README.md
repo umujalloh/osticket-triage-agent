@@ -332,16 +332,9 @@ tests/                  Labelled ticket set for the classifier evaluation
 
 ## Deployment preconditions
 
-Four things the agent cannot enforce and the design depends on. Nothing looks
-broken when they are missing, which is what makes them worth checking. Reasoning
-in [architecture.md, Section 10](docs/architecture.md#10-deployment-preconditions).
-
-- **A security department in osTicket** an agent can actually see, or routed
-  tickets vanish from every view while the agent reports success.
-- **Notifications enabled on the urgent Slack channel.** The agent cannot set
-  them and cannot detect that they are unset. The same holds for PagerDuty.
-- **Something outside the agent watching the audit index**, since the agent
-  cannot raise an alarm that its own audit trail has stopped.
-- **CAPTCHA enabled and client registration set deliberately**, or anyone can
-  submit unlimited tickets and bury a real incident under noise.
+Ten things the agent cannot enforce and the design depends on, from CAPTCHA on
+the ticket form to a Splunk watched from outside itself. Nothing looks broken
+when they are missing, which is what makes them worth checking. The full list
+and the reasoning are in
+[architecture.md, Section 10](docs/architecture.md#10-deployment-preconditions).
 

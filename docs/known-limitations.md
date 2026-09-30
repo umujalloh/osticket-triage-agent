@@ -175,7 +175,7 @@ each, so a host compromise is enough to read them and send them anywhere.
 
 The agent cannot fix this. An attacker on the host runs their own code, so what
 the agent does about its own connections is beside the point. The control has to
-be an outbound proxy, which is deployment precondition 7 rather than code.
+be an outbound proxy, which is a deployment precondition rather than code.
 
 ## Alerting
 
