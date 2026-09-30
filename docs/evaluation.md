@@ -37,13 +37,14 @@ covering seven shapes:
 ## Two pass criteria
 
 **Label accuracy** is the headline number, but it weights every disagreement
-equally and they are not equal. Classifying a critical incident as high
+equally and they are not equal. Classifying a high incident as critical
 over-pages an analyst. Classifying a real incident as routine means nobody is
 told.
 
 **The danger criterion** measures only the second kind. A run fails it if any
-ticket whose expected category is `security_incident` is classified onto a path
-that raises no alert under [action-table.md](action-table.md):
+ticket whose expected category is `security_incident` is classified onto one of
+the two paths below, where a real incident either reaches no one or is filed as
+low severity with high confidence, which skips human review:
 
 - classified `it_support` or `security_question` with `high_confidence`
 - classified `security_incident` at `low` severity with `high_confidence`

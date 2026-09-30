@@ -296,7 +296,8 @@ separately so a regression in one cannot hide behind the other.
 | Danger criterion | **0 failures in 180 classifications** |
 
 The danger criterion counts only the failures that would leave a real incident
-unalerted, ignoring disagreements that would not. Method and current results in
+unseen or marked low severity with no human review, ignoring disagreements that
+would not. Method and current results in
 [docs/evaluation.md](docs/evaluation.md).
 
 The score is a regression detector, not an estimate of real-world accuracy. What
