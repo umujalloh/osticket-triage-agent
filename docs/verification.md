@@ -388,7 +388,7 @@ staged. What re-sends them in the deployment is the retry queue below.
 
 ## Recovery verification
 
-Measured 2026-09-30, twenty-nine checks offline, plus one live run on
+Measured 2026-09-30, thirty-five checks offline, plus one live run on
 2026-08-22. The offline checks replace every outbound client and skip Claude
 through the resume path, so nothing leaves the machine. Four of them cover a
 store that fails while the agent is accepting a ticket, since a mark left set
@@ -396,6 +396,8 @@ there refuses that ticket for the life of the process. Four more cover one
 ticket failing partway through the backlog, which must not stop the tickets
 behind it. Four more cover a ticket Claude could not classify, which is handed
 to review once and never picked up again, unless the review post itself failed.
+Six more cover a repeat delivery of an unfinished ticket, which resumes on the
+request it was first accepted with, or is refused when that request is gone.
 
 | Property | How it was checked | Result |
 |---|---|---|
@@ -415,6 +417,11 @@ to review once and never picked up again, unless the review post itself failed.
 | And owes nothing afterwards | the same ticket | no outstanding actions |
 | And the next start will not pick it up | after the run | body cleared |
 | A failed review post leaves it for the next start | Slack stubbed to fail as well | body kept |
+| A repeat delivery resumes an unfinished ticket | second request with a new requester and IP | 202 |
+| On the request it was first accepted with | the same run | original requester and IP kept |
+| An abandoned ticket is refused on a repeat delivery | request for the abandoned ticket | `duplicate` |
+| So is a decided ticket with no stored body | classification kept, body gone | `duplicate` |
+| So is an undecided one past the retry window | no body, osTicket says past window | `duplicate` |
 
 ### A real interrupted ticket, 2026-08-22, ticket 32
 

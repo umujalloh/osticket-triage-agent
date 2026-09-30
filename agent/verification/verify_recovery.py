@@ -240,9 +240,9 @@ client = TestClient(main.app, raise_server_exceptions=False)
 handed_over = []
 main.process_ticket = lambda payload: handed_over.append(payload.get("ticket_id"))
 
-def deliver(ticket_id):
+def deliver(ticket_id, **changes):
     """Sends one signed webhook the way osTicket does."""
-    body = json.dumps({**payload_for(ticket_id),
+    body = json.dumps({**payload_for(ticket_id), **changes,
                        "created_at": datetime.now(timezone.utc).isoformat()}).encode()
     return client.post(
         "/webhook/ticket", content=body,
@@ -275,6 +275,53 @@ check("  so the retry is accepted once the store recovers",
       deliver(interrupted).status_code, 202)
 check("  and the work is handed over", handed_over, [interrupted])
 
+print()
+print("a resumed ticket keeps the request it was first accepted with")
+print()
+
+# A second request for an unfinished ticket only shows that work is owed. If
+# its requester and IP replaced the stored ones, anyone holding the webhook
+# secret could point enrichment at someone else.
+resumed = new_ticket()
+store.claim_ticket(resumed)
+store.save_classification(resumed, CRITICAL)
+store.save_payload(resumed, payload_for(resumed))
+
+received = []
+main.process_ticket = lambda payload: received.append(payload)
+reply = deliver(resumed, requester="someone.else@example.com",
+                submitter_ip="198.51.100.9")
+
+check("a repeat delivery of an unfinished ticket is resumed", reply.status_code, 202)
+check("  on the requester it was first accepted with",
+      received[0].get("requester") if received else None, "someone@example.com")
+check("  and the submitter IP it was first accepted with",
+      received[0].get("submitter_ip") if received else None, "192.0.2.1")
+
+# Abandoned before it was ever classified, so only the handed-to-review mark
+# stops a later request from being taken as the ticket's first body.
+abandoned = new_ticket()
+store.claim_ticket(abandoned)
+store.save_payload(abandoned, payload_for(abandoned))
+main._abandon_interrupted(abandoned)
+check("an abandoned ticket is refused on a repeat delivery",
+      deliver(abandoned, requester="someone.else@example.com").json().get("status"),
+      "duplicate")
+# A decided ticket whose body was dropped has nothing safe to resume on.
+bodiless = new_ticket()
+store.claim_ticket(bodiless)
+store.save_classification(bodiless, CRITICAL)
+check("  and so is a decided ticket with no stored body",
+      deliver(bodiless).json().get("status"), "duplicate")
+# An undecided ticket with no body takes the new one only inside osTicket's
+# retry window, where a genuine resend of a first body that failed to save
+# can still arrive.
+undecided = new_ticket()
+store.claim_ticket(undecided)
+main.lookup_number = lambda ticket_id: ("465581", True)
+check("  and so is an undecided one past the retry window",
+      deliver(undecided).json().get("status"), "duplicate")
+main.lookup_number = lambda ticket_id: ("465581", False)
 print()
 print("one ticket failing does not strand the ones behind it")
 print()

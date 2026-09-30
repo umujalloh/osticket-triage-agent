@@ -17,8 +17,8 @@ from action_table import actions_for, PRIORITY_FOR_SEVERITY, REVIEW, WAKE
 from classifier import classify_ticket, ClassificationError
 from idempotency import (
     claim_ticket, clear_payload, completed_actions, is_known_ticket, mark_done,
-    save_classification, save_payload, stored_classification, ticket_key,
-    unfinished_payloads,
+    save_classification, save_payload, stored_classification, stored_payload,
+    ticket_key, unfinished_payloads,
 )
 from note_builder import build_abandoned_note, build_note
 from osticket_client import (
@@ -166,6 +166,9 @@ def _abandon_interrupted(ticket_id, ticket_number=None):
 
     _post(ticket_id, REVIEW,
           build_abandoned_message(ticket_id, ticket_number), mention=False)
+    # Its body is already gone, so it cannot be resumed safely. Marked whether
+    # or not the post went out, so a later request for it is refused.
+    mark_done(ticket_id, "handed_to_review")
 
 def _report_recovery(task):
     """Says so when recovery dies rather than finishes.
@@ -293,11 +296,12 @@ def outstanding_actions(ticket_id) -> list:
     channel post fails, so a ticket without one is the ordinary case rather than
     an unfinished one.
     """
+    # A person owns a ticket handed to review, after a failed classification or
+    # past the recovery window, so nothing is owed whatever was decided.
+    if completed_actions(ticket_id)["handed_to_review"]:
+        return []
     classification = stored_classification(ticket_id)
     if classification is None:
-        # Handed to a person after a failed classification, so nothing is owed.
-        if completed_actions(ticket_id)["handed_to_review"]:
-            return []
         # Claimed, and nothing decided, so nothing was done either.
         return [UNDECIDED]
 
@@ -909,6 +913,25 @@ async def receive_ticket(request: Request, background_tasks: BackgroundTasks):
         )
         return JSONResponse(status_code=200,
                             content={"status": "duplicate", "ticket_id": ticket_id})
+
+    # A resume finishes the ticket on the request it was first accepted with.
+    # The new request only shows the ticket is still owed work. Its requester,
+    # verified flag and IP must not replace the original's, or anyone holding
+    # the webhook secret could point enrichment at someone else. With no stored
+    # body there is nothing safe to resume on, except a ticket never decided,
+    # whose first body failed to save and which osTicket is sending again
+    # within its retry window.
+    if not claimed:
+        original = stored_payload(ticket_id)
+        if original is not None:
+            payload = original
+        elif outstanding != [UNDECIDED] or past_window:
+            background_tasks.add_task(
+                log_request_rejected, reason="duplicate", source_ip=source_ip,
+                ticket_id=ticket_id
+            )
+            return JSONResponse(status_code=200,
+                                content={"status": "duplicate", "ticket_id": ticket_id})
 
     # Last gate, and the only one that sees the other runs in this process. A
     # ticket still being worked on has actions outstanding and would read as

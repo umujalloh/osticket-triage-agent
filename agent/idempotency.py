@@ -200,6 +200,24 @@ def save_payload(ticket_id, payload):
             (json.dumps(payload), ticket_key(ticket_id)),
         )
 
+def stored_payload(ticket_id):
+    """The body a ticket was first accepted with, or None if none is kept.
+
+    An unreadable body counts as none, the same as in unfinished_payloads.
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT payload FROM processed_tickets WHERE ticket_id = ?",
+            (ticket_key(ticket_id),),
+        ).fetchone()
+    if row is None or row["payload"] is None:
+        return None
+    try:
+        payload = json.loads(row["payload"])
+    except (TypeError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
 def clear_payload(ticket_id):
     """Drops the stored body once the ticket needs it no longer.
 
