@@ -65,10 +65,13 @@ docker compose up -d --build
 
 `ost-config.php` holds the database credentials and osTicket's secret salt, so
 it is not committed. Each install generates its own. Only the installer needs it
-writable, so tighten it back down now that the install is finished:
+writable, so tighten it back down now that the install is finished. osTicket
+reads it as `www-data` (uid 33), so give it to that user and keep it from
+everyone else. This needs root:
 
 ```bash
-chmod 0644 ost-config.php
+sudo chown 33:"$(id -g)" ost-config.php
+sudo chmod 640 ost-config.php
 ```
 
 ## 2. Plugin configuration

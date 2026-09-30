@@ -24,6 +24,9 @@ openssl x509 -req -in server.csr -CA cacert.pem -CAkey ca-key.pem -CAcreateseria
   -extfile <(printf "subjectAltName=DNS:localhost,IP:127.0.0.1")
 
 cat server-cert.pem server-key.pem cacert.pem > server.pem
+# It holds the private key, so only its owner reads it. cat leaves it at the
+# umask's mode, which on most hosts lets every local account read it.
+chmod 600 server.pem
 rm server.csr server-cert.pem server-key.pem
 
 echo "Generated unique Splunk CA and server cert in $CERT_DIR"
