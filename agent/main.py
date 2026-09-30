@@ -162,12 +162,7 @@ def _abandon_interrupted(ticket_id, ticket_number=None):
     # The note lands before the post, so a reader following the link finds the
     # ticket already carrying its explanation.
     if not completed_actions(ticket_id)["note_written"]:
-        try:
-            write_note(ticket_id=int(ticket_id), note=build_abandoned_note(),
-                       title="Triage did not finish")
-        except Exception as e:
-            print(f"Ticket {ticket_id}: could not write the abandoned note "
-                  f"({type(e).__name__}: {e})")
+        _send_note(ticket_id, build_abandoned_note(), title="Triage did not finish")
 
     _post(ticket_id, REVIEW,
           build_abandoned_message(ticket_id, ticket_number), mention=False)
@@ -752,10 +747,17 @@ def _write_ticket_note(ticket_id, classification, outcome, events, query, audite
         print(f"Ticket {ticket_id}: note already written, skipping")
         return
 
-    body = build_note(classification, outcome, events, query, audited)
+    _send_note(ticket_id, build_note(classification, outcome, events, query, audited))
 
+def _send_note(ticket_id, body, title="AI Triage"):
+    """Writes one note and records the outcome, whichever note it is.
+
+    Shared by the triage note and the note on a ticket abandoned past the
+    recovery window, so both are audited and both set the `note_written` flag
+    their callers check first.
+    """
     try:
-        result = write_note(ticket_id=int(ticket_id), note=body)
+        result = write_note(ticket_id=int(ticket_id), note=body, title=title)
     except OsTicketWriteError as e:
         audit_ok = log_note_failure(ticket_id, e.failure_type, str(e))
         print(f"Ticket {ticket_id}: note write failed ({e.failure_type})")

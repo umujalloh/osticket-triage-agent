@@ -388,7 +388,7 @@ staged. What re-sends them in the deployment is the retry queue below.
 
 ## Recovery verification
 
-Measured 2026-09-29, twenty-eight checks offline, plus one live run on
+Measured 2026-09-30, twenty-nine checks offline, plus one live run on
 2026-08-22. The offline checks replace every outbound client and skip Claude
 through the resume path, so nothing leaves the machine. Four of them cover a
 store that fails while the agent is accepting a ticket, since a mark left set
@@ -406,6 +406,7 @@ to review once and never picked up again, unless the review post itself failed.
 | It does not repeat what was done | the same run | note not rewritten |
 | A ticket past the window is not completed | backdated two hours | no actions, no alert |
 | And says so on the ticket | the same ticket | note, "did not finish" |
+| And records that note like any other | the same ticket | `note_written` set |
 | And tells the review channel | the same ticket | posted to review |
 | And records the abandonment | the same ticket | `interrupted_past_recovery_window` |
 | And is not rescanned | after abandoning | body cleared |

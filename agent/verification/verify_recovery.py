@@ -161,6 +161,10 @@ check("  nothing is triaged for it", acted["priorities"], [])
 check("  a note explains why", len(acted["notes"]), 1)
 check("  the note says triage did not finish",
       "did not finish" in acted["notes"][0].get("note", ""), True)
+# Recorded like any other note, so the audit trail shows it and a later pass
+# cannot write it a second time.
+check("  and the note is recorded as written",
+      main.completed_actions(4)["note_written"], True)
 # The same answer a classification failure gets. The agent never decided
 # anything, so it cannot know whether this was a critical incident, and a note
 # nobody opens is not enough on a ticket that might have been one.

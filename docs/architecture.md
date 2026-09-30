@@ -525,7 +525,7 @@ The agent keeps its secrets out of error messages. A Slack webhook URL is itself
  
 ## 9. Observability and Audit
  
-The agent records its decisions and actions in a Splunk index, and four Splunk searches watch the agent itself.
+The agent records every decision and action in a Splunk index, and four Splunk searches watch the agent itself.
  
 ### The audit record
  
