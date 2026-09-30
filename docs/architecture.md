@@ -327,7 +327,7 @@ A ticket can point toward `security_incident` and still be `low_confidence`. Une
  
 ## 6. Failure Modes for the Claude Dependency
 
-When Claude cannot classify a ticket, the agent fails safe. It never assigns a default classification, because a guessed label would decide how the ticket is escalated, and a guessed low severity would keep a real incident quiet.
+When Claude cannot classify a ticket, the agent fails safe. It never assigns a default classification, because a guessed label would decide how the ticket is escalated, and a guessed low severity would keep a real incident quiet. Instead it logs the failure type to Splunk and, with writes on, posts to the review channel. It does nothing else, because the page, the note, the priority and enrichment all come from a classification, and this ticket has none.
 
 ### Failure types
 
@@ -344,11 +344,7 @@ Every failure is logged as one of six types, so each kind can be counted over ti
 
 ### Retries
 
-A retried failure gets up to three attempts, with a wait before each retry. A classification that fails validation is discarded whole. Keeping the fields that passed would mean acting on output the schema was built to reject.
-
-### What the agent does
-
-When classification fails on a ticket, the agent logs the failure type to Splunk and posts a message to the review channel as shown in Section 8. It does nothing else, because the page, the note, the priority and enrichment all come from a classification, and this ticket has none.
+A retryable failure gets up to three attempts. A rate limit waits 20 seconds, then 40, and a server failure waits 5, then 15. A classification that fails validation is discarded whole, because keeping the fields that passed would mean acting on output the schema was built to reject.
 
 ---
 
