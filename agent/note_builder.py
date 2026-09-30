@@ -74,7 +74,7 @@ def _finish(lines, audited):
 
     A failed classification audit write means nothing outside this ticket
     explains how it was classified, so the ticket carries that itself. osTicket
-    is reachable when Splunk is not. architecture.md, Section 9.
+    does not depend on Splunk. architecture.md, Section 9.
     """
     if not audited:
         lines += ["", "No audit record."]

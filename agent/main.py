@@ -461,13 +461,12 @@ def _handle_classification_failure(ticket_id, payload, failure_type, error):
     _post(ticket_id, REVIEW, text, mention=False)
 
 def _audit_failed(ticket_id, event):
-    """A Splunk write that failed after the thing it records already happened.
+    """A Splunk write that failed, recorded on the console only.
 
-    The note is on the ticket, the priority is set, the message is in the
-    channel, so the evidence exists and only the audit index is missing it. That
-    is a fact about a component rather than about this ticket, and it reaches a
-    person through the deployment's own watch on the audit index rather than
-    through an alert per ticket. architecture.md, Section 9.
+    A completed action still shows in the note, priority or channel post. For a
+    failed note, priority or routing write, this line is the only record.
+    Nothing alerts per ticket. A Splunk that refuses every write also stops the
+    heartbeat, which the deployment alerts on. architecture.md, Section 9.
     """
     print(f"Ticket {ticket_id}: audit write failed ({event})")
 

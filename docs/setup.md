@@ -203,9 +203,8 @@ real-time search capability. The script is safe to re-run and skips a user that
 already exists. This value goes into `agent/.env` in Section 4 as well.
 
 Splunk must be running when the agent processes a ticket. If it is not, the
-audit write fails and the agent prints a "needs human review" line for that
-ticket, since a decision with no audit trail can't be trusted to have been
-recorded correctly.
+audit write fails and the agent prints an `audit write failed` line for that
+ticket, and the ticket note ends with `No audit record.`
 
 ## 4. Agent environment
 

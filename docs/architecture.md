@@ -529,29 +529,48 @@ The agent keeps its secrets out of error messages. A Slack webhook URL is itself
  
 ## 9. Observability and Audit
  
-**Audit logging:** Every request the agent accepts or rejects, every classification, and every enrichment query is logged to Splunk continuously, at every step. It is exempt from the kill switch, because visibility matters most during the incidents that make you flip it. The index sits on a separate credential from osTicket, so a compromised osTicket key can tamper with tickets but cannot reach the record of what the agent decided.
+The agent records its decisions and actions in a Splunk index, and four Splunk searches watch the agent itself.
  
-**What is logged:** Every entry carries the ticket ID, the status and a timestamp. A classification entry adds the category, severity and confidence, the ticket subject, whether osTicket authenticated the submitter as the requester address, and any hostname, username or IP the classifier extracted. The authentication flag is there because it decides whether the email was eligible to be searched, and the extracted values are recorded without ever being queried. That is enough to reconstruct what the agent did to any ticket and why.
+### The audit record
  
-**Reconciliation:** After an incident the audit index answers what the agent decided about any ticket and when. Alerting continuously on a disagreement was considered and not built. The page and the channel post go out at classification time, so a priority changed afterwards hides nothing, and osTicket does not log priority changes at all, so a difference carries no actor and would fire on ordinary work.
+**What is logged:** Entries go to the `osticket_triage` index under the sourcetype `osticket:triage:audit`. Each one carries a status and a timestamp. Audit logging runs whether writes are on or off, because while writes are off it is the only record of what the agent decides. A skipped entry records why it was skipped, which for an action means writes are off, and a failed entry records the failure type and error. The table lists what each successful entry records.
  
-**Rejected requests:** Every refusal is logged with its reason and the requesting IP, so probing and replay leave a trace. A request is refused when the signature fails, when the body is not a JSON object, when the timestamp falls outside the freshness window, when it names no usable ticket ID, when it fails the ticket number check, when the ticket was already accepted, or when that ticket is still being worked on. Nothing from the body is recorded when the signature is what failed, since the body is not parsed until the signature passes. These writes are queued rather than made inline, so a slow write cannot delay the response and forged requests cannot be used to stall the rejection path.
+| Event | Status | Records |
+|---|---|---|
+| Refused request | `request_rejected` | the reason, the requesting IP, and the ticket ID if a signed request carried a valid one |
+| Classification | `classification_complete`, `classification_failed` | category, severity and confidence, the ticket subject, whether osTicket authenticated the submitter as the requester, and any hostname, username or IP extracted from the text, which no search uses |
+| Enrichment | `enrichment_complete`, `enrichment_skipped`, `enrichment_failed` | the events returned |
+| Note | `note_written`, `note_skipped`, `note_failed` | whether the agent's note was already on the ticket |
+| Priority | `priority_set`, `priority_skipped`, `priority_failed` | the priority before and after |
+| Routing | `routed`, `routing_skipped`, `routing_failed` | the department before and after, and whether the ticket was already there |
+| Slack post | `slack_posted`, `slack_skipped`, `slack_failed` | the channel, and whether the post mentioned `@here` |
+| Page | `paged`, `page_skipped`, `page_failed` | the destination, and whether it was a fallback page |
+| Human review | `human_review` | why the ticket needs a person |
+| Resumed ticket | `triage_resumed` | the actions still outstanding |
+| Heartbeat | `heartbeat` | the agent's uptime and the kill switch state |
  
-**Audit write failure:** A failed Splunk write does not stop the actions the table selected. Stopping would leave a critical incident unhandled and unannounced with only a console line to show for it, and Splunk being briefly unavailable during a restart must not mean the agent quietly stops alerting. What the failure changes is the record, and there are two cases.
-
-A failed classification write means the decision itself is unrecorded, so nothing anywhere explains why the ticket was labelled what it was. The agent writes that fact into the ticket note. osTicket is reachable when Splunk is not, and every row of the table writes a note, so it is the one carrier available in every case.
-
-A failed action write means Splunk has no record of something that left its own artifact. The note is on the ticket, the priority is set, the message is in the channel, so this goes to the console and no further. It is also why only the classification case reaches the note, since the note is written before the priority and the channel post and their audit results are not known yet.
-
-Neither case posts to a channel. The test is whether a message asks someone to do something about a particular ticket. A failed classification does, which is why Section 6 posts one. A failed audit write does not, because the ticket received everything the table selected and what is missing is one fact about a component rather than one fact per ticket, so an outage would repeat it once for every ticket that arrived. A system cannot alert on the absence of data using the system that is absent, so detecting that the audit pipeline is down has to come from outside.
-
-**Heartbeat:** Every other event in the index is written because a ticket arrived, so the index goes silent whenever the helpdesk does. An idle night and a dead process produce exactly the same silence. The agent therefore writes one small event every sixty seconds, carrying its uptime and the kill switch state. They arrive whether or not tickets do, so if they stop, the agent has stopped. A Splunk search runs every five minutes, and ten minutes with no beat sends one email. It then holds off for an hour, since an agent that stays down would otherwise send twelve.
-
-The beat is sent once with no retry, unlike every other audit write. The next one covers a missed beat, and a Splunk that will not take this event cannot raise an alarm about it either. An agent that keeps crashing and restarting still sends beats, so that alert stays quiet. Every start sends a first beat with an uptime of zero, so a second search counts those that reach Splunk and emails when the agent starts three or more times in thirty minutes. The heartbeat runs only while the agent is serving. Importing the module does not start it, which is what lets the verifiers exercise the agent without writing beats to the Splunk index.
-
-This does not cover an agent that is alive and beating but unreachable from osTicket. A wrong bind address looks perfectly healthy from inside the process. osTicket catches that instead, writing the failed send to its system log and raising an admin alert.
-
-**Destination failures:** A revoked webhook or a rotated routing key fails on every ticket, not just one. The agent counts nothing and trips no breaker, since a component that watches itself is unreliable exactly when it breaks. Two searches over the audit index do it instead, one for pages and one for Slack posts. They use no rate, which a few tickets a day cannot produce, and fire when a destination has two failures with nothing succeeding after them. The next success clears them. Both alert by email, because an alert about Slack cannot travel through Slack.
+**Refused requests:** Every request the webhook's checks refuse is sent to the index, so probing and replay leave a trace, and anyone who can reach the webhook can add these entries. The `reason` is one of `invalid_signature`, `malformed_body`, `stale_timestamp`, `missing_ticket_id`, `invalid_ticket_id`, `missing_ticket_number`, `ticket_number_mismatch`, `ticket_not_found`, `ticket_past_retry_window`, `osticket_unreachable`, `duplicate` or `in_flight`. Nothing from the body is recorded when the signature fails, because the body is unverified. A request refused for its signature, its body or its ticket ID records no ticket ID, and a stale request records the ID as sent, unvalidated. Each entry is written after the response is sent, so a slow Splunk cannot delay the answer.
+ 
+**When an audit write fails:** The actions still run, because stopping would leave a critical incident unhandled while Splunk is briefly down, and for a completed action, the note, priority, department, channel post or page shows it happened anyway. If the classification entry is lost, nothing outside the ticket explains how it was labeled, so the agent ends the ticket note with `No audit record.` When writes are off or the note also fails, the agent's console is the only record of the missing audit write. A lost failure or refusal entry leaves only a console line, unless the agent also reported that failure in the note, in Slack or by page.
+ 
+### Watching the agent
+ 
+| Search | Alerts when | Runs every |
+|---|---|---|
+| Triage agent is not reporting | no heartbeat for 10 minutes | 5 minutes |
+| Triage agent is restarting repeatedly | three or more starts in 30 minutes | 5 minutes |
+| Triage paging is failing | two or more failed pages to a destination, and the latest page to it failed | 5 minutes |
+| Triage Slack posts are failing | two or more failed posts to a channel, and the latest post to it failed | 15 minutes |
+ 
+**Heartbeat:** Every other entry is written because a ticket arrived, so the index alone cannot tell a quiet helpdesk from a stopped agent. The agent writes a beat every sixty seconds by default, and the search alerts when they stop. Beats also stop when the agent cannot write to a running Splunk at all, such as after its HEC token is revoked, so the same alert catches a broken audit pipeline within about fifteen minutes. A beat shows only that the process is running, so an agent stuck on its tickets still beats and raises no alert.
+ 
+**Restart loop:** An agent that keeps crashing and being restarted still beats, so the heartbeat alert stays quiet. Every start sends a first beat with an uptime of zero, and the search counts those that reach Splunk.
+ 
+**Destination failures:** A revoked Slack webhook or a rotated PagerDuty routing key makes every page or post to it fail, and the agent does not track that. An alert on failures per hour would never fire for the pager, which is used only for critical incidents. So each search alerts when a destination has failed at least twice and its latest attempt failed, and it clears on the next success.
+ 
+**Unreachable or refusing agent:** An agent bound to the wrong address, or one refusing every ticket because its secrets no longer match osTicket's, still sends heartbeats, so no search notices it. osTicket records the problem instead, saving each failed send to its system log and emailing its administrator, unless logging is turned off or it has no outbound mail.
+ 
+**Delivery:** All four searches alert by email, so they still reach someone when Slack fails. Each sends at most one email an hour. Splunk's mail settings are a deployment precondition, covered in Section 10. The searches run inside Splunk and send through one mail account, so a Splunk outage or a broken mail setup silences all four. The full reasoning for keeping them on one path is in [known-limitations.md](known-limitations.md).
 
 ---
  
