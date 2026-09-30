@@ -254,7 +254,7 @@ enrichment and ahead of the audit writes.
 
 | | |
 |---|---|
-| Offline checks, run in CI on every push | **133** across 7 verifiers |
+| Offline checks, run in CI on every push | **137** across 7 verifiers |
 | Checks against a live stack | **90** across 3 verifiers |
 | Real tickets used in live runs | **16** |
 

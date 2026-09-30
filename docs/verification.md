@@ -580,7 +580,7 @@ Reproduce with `./venv/bin/python verification/verify_prompt_isolation.py` from
 
 ## Action table verification
 
-Measured 2026-08-19, thirty-one checks, all passing. The table is the contract
+Measured 2026-09-30, thirty-five checks, all passing. The table is the contract
 between classification and action, so every row is compared as a whole `Actions`
 object rather than field by field. A row that gets one field wrong fails on that
 row instead of hiding behind the fields it gets right.
@@ -590,6 +590,8 @@ row instead of hiding behind the fields it gets right.
 | Every documented row matches the code | 30 rows from `docs/action-table.md` | all match |
 | Every category has a row | each `schemas.Category` member looked up | no gaps |
 | An unknown category is refused | a category with no row | raises |
+| The schema refuses pairs the rubric forbids | `it_support` at critical, `unclear` at high confidence | both refused, a critical incident still accepted |
+| The schema refuses a field the tool does not define | an extra `action` field | refused |
 
 An earlier version returned `human_review` for an unknown category at low
 confidence, which reads as safe and is not. It would have let a category the

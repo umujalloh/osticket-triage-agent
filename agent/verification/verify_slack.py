@@ -84,7 +84,7 @@ check("  no mention renders none",
       "<!here>" in slack.build_message(15, "465581", high, slack.INCIDENTS), False)
 
 print("review channel shows the reason, not the severity")
-unclear = classification("unclear", "high", "high_confidence")
+unclear = classification("unclear", "high", "low_confidence")
 unclear_msg = slack.build_message(15, "465581", unclear, slack.REVIEW)
 check("  unclear names the category", "*unclear*" in unclear_msg, True)
 # Severity is a guess on a ticket nobody could place. Matched as the bolded

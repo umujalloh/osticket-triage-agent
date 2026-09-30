@@ -335,6 +335,8 @@ Confidence describes the ticket, not how sure the classifier is.
 `low_confidence`: the ticket is vague, could fit more than one category, or describes something the user cannot account for. An `unclear` ticket is always `low_confidence`.
 
 A ticket can point toward `security_incident` and still be `low_confidence`. Unexplained behavior is enough to classify a ticket as a security incident, but not enough to make that classification confident, since the ticket does not say what actually happened.
+
+The schema enforces both combination rules. A classification that pairs `critical` with anything but `security_incident`, or `unclear` with `high_confidence`, fails validation as `bad_output` and goes to the review channel like any other failed classification.
  
 ---
  

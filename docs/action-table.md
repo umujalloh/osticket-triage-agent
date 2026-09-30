@@ -39,6 +39,10 @@ could not place reaches PagerDuty at low urgency rather than not at all.
 | it_support | any | low | review | none | Write note, set priority from severity |
 | unclear | any | any | review | none | Write note, set priority from severity |
 
+The schema in `agent/schemas.py` refuses `critical` outside a
+`security_incident` and an `unclear` ticket at high confidence, so neither
+pairing reaches the table.
+
 Priority comes from severity through osTicket's own names: critical sets
 `emergency`, high sets `high`, medium sets `normal` and low sets `low`.
 
@@ -58,8 +62,8 @@ already contained. They need working, not interrupting over. It is the
 only channel carrying more than one severity, so a reader has to sort
 within it.
 
-**review** carries `unclear` at any confidence, and the tickets the
-classifier did categorize but was not sure about. `unclear` and low
+**review** carries every `unclear` ticket, and the tickets the classifier
+did categorize but was not sure about. `unclear` and low
 confidence are the same signal on two axes: both say nobody has
 established what the ticket is. Keeping them together means the channel
 can be owned by a rotation or a dedicated analyst, rather than mixed in

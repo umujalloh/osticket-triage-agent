@@ -2,7 +2,7 @@ import json
 from dotenv import load_dotenv
 load_dotenv()
 
-from classifier import classify_ticket
+from classifier import ClassificationError, classify_ticket
 
 with open("../tests/eval_tickets.json") as f:
     tickets = json.load(f)
@@ -17,10 +17,14 @@ classification_passed = 0
 entity_passed = 0
 
 for i, ticket in enumerate(tickets, start=1):
-    result = classify_ticket(
-        subject=ticket["subject"],
-        message=ticket["message"]
-    )
+    try:
+        result = classify_ticket(
+            subject=ticket["subject"],
+            message=ticket["message"]
+        )
+    except ClassificationError as e:
+        print(f"[{i}] FAIL (classification failed: {e.failure_type}) - {ticket['subject']}")
+        continue
 
     category_match = result.category.value == ticket["expected_category"]
     severity_match = result.severity.value == ticket["expected_severity"]
