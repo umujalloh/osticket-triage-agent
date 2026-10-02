@@ -66,7 +66,7 @@ print("unclear: review at either confidence, because the category is the signal"
 row("unclear", "medium", "high_confidence", channel=REVIEW, human_review=True)
 row("unclear", "medium", "low_confidence", channel=REVIEW, human_review=True)
 
-print("the override quietens the escalation and changes nothing else")
+print("low confidence quietens the escalation and changes nothing else")
 low_critical = actions_for(Category.security_incident, Severity.critical,
                            Confidence.low_confidence)
 check("  a low-confidence critical still writes its note", low_critical.write_note, True)

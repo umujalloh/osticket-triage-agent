@@ -107,8 +107,8 @@ def actions_for(category, severity, confidence) -> Actions:
     if category not in HANDLED_CATEGORIES:
         raise ValueError(f"No action table row for category {category!r}")
 
-    # The override, applied before any row. It changes how loudly a ticket is
-    # escalated and nothing else. See the override rule in docs/action-table.md.
+    # Records that a person should look at this ticket. It changes no other
+    # field, and the channel the row already selects is what reaches someone.
     human_review = (category == Category.unclear
                     or confidence == Confidence.low_confidence)
 
@@ -121,7 +121,6 @@ def actions_for(category, severity, confidence) -> Actions:
         set_priority=True,
         channel=_channel_for(category, severity, confidence),
         mention=_mentions(category, severity, confidence),
-        # The override quietens the page rather than withholding it.
         page=_page_for(category, severity, confidence),
         route_security_queue=category == Category.security_question,
         human_review=human_review,
