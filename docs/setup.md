@@ -155,11 +155,24 @@ certificate from its first boot, so it needs to exist beforehand. The
 output is gitignored and not committed. See
 [`splunk_logger.py`](../agent/splunk_logger.py).
 
+Splunk reads the key as uid 41812 inside its container, so give the file to that
+user. This needs root:
+
+```bash
+sudo chown 41812:41812 docker/splunk-provisioning/custom_tls/default/certs/server.pem
+```
+
 Enrichment searches the BOTSv3 dataset, which is not committed. Download the
 BOTSv3 data set app and unpack it to `docker/splunk-apps/botsv3_data_set`, which
 [docker-compose.yml](../docker/docker-compose.yml) mounts into the container as a
 Splunk app. Skipping this leaves the rest of the pipeline working; enrichment
 simply returns no results.
+
+BOTSv3 keeps its index inside the app, so Splunk has to write to that folder:
+
+```bash
+sudo chown -R 41812:41812 docker/splunk-apps/botsv3_data_set
+```
 
 Then run `docker compose up -d --build`.
 
@@ -193,8 +206,8 @@ Then set who receives the alerts. Add `SPLUNK_ALERT_EMAIL` to `docker/.env` and
 run `docker/provision-splunk-alerts.sh`. It writes the recipient into the app's
 `local/savedsearches.conf`, which this repo does not track, then loads it into
 the running Splunk. Change these alerts in the repo's files and re-run the
-script, not in Splunk's UI. The files belong to your user, so Splunk cannot save
-edits made there.
+script, not in Splunk's UI. Splunk mounts the app read-only, so it cannot save
+edits made in its UI.
 
 The searches, their schedules and their wording all ship in `default/`. Only the
 address is deployment-specific, and it lives in `.env` alongside the other

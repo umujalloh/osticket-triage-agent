@@ -30,3 +30,6 @@ chmod 600 server.pem
 rm server.csr server-cert.pem server-key.pem
 
 echo "Generated unique Splunk CA and server cert in $CERT_DIR"
+# Splunk runs as uid 41812 in its container and must read the key. Changing a
+# file's owner needs root, so the script prints the step instead of running it.
+echo "Now give the key to Splunk: sudo chown 41812:41812 $CERT_DIR/server.pem"
