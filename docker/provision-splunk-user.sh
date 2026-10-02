@@ -26,14 +26,25 @@ SPLUNK_REST_HOST="${SPLUNK_REST_HOST:-localhost}"
 SPLUNK_REST_PORT="${SPLUNK_REST_PORT:-8089}"
 CACERT="$SCRIPT_DIR/splunk-provisioning/custom_tls/default/certs/cacert.pem"
 
+# Quotes a value for a curl config file, which reads backslash escapes inside
+# double quotes.
+curl_quote() {
+  local s=${1//\\/\\\\}
+  printf '"%s"' "${s//\"/\\\"}"
+}
+
 echo "Creating Splunk user 'triage_agent' with role 'triage_enrichment'..."
 
-response=$(curl -s --cacert "$CACERT" -w '\n%{http_code}' \
-  -u "admin:${SPLUNK_PASSWORD}" \
-  "https://${SPLUNK_REST_HOST}:${SPLUNK_REST_PORT}/services/authentication/users" \
-  -d name=triage_agent \
-  -d password="${SPLUNK_AGENT_PASSWORD}" \
-  -d roles=triage_enrichment)
+# Both passwords reach curl as a config on stdin. On the command line they would
+# show in the process list to every account on the machine. printf is a shell
+# builtin, so no process ever holds them in its arguments.
+response=$(printf 'user = %s\ndata-urlencode = %s\n' \
+    "$(curl_quote "admin:${SPLUNK_PASSWORD}")" \
+    "$(curl_quote "password=${SPLUNK_AGENT_PASSWORD}")" |
+  curl -s --cacert "$CACERT" -w '\n%{http_code}' -K - \
+    "https://${SPLUNK_REST_HOST}:${SPLUNK_REST_PORT}/services/authentication/users" \
+    -d name=triage_agent \
+    -d roles=triage_enrichment)
 
 http_code=$(echo "$response" | tail -n1)
 body=$(echo "$response" | sed '$d')

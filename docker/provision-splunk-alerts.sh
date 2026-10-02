@@ -68,13 +68,23 @@ if ! docker inspect "$SPLUNK_CONTAINER" >/dev/null 2>&1; then
   exit 0
 fi
 
-# The app folder is bind-mounted into the container, so the file written above
-# is already there and only the reload is needed. Copying it in or changing its
-# owner from inside the container would change the owner of the repo's own
-# files on the host.
-http_code=$(curl -s --cacert "$CACERT" -o /dev/null -w '%{http_code}' \
-  -u "admin:${SPLUNK_PASSWORD}" -X POST \
-  "https://${SPLUNK_REST_HOST}:${SPLUNK_REST_PORT}/services/apps/local/triage_alerts/_reload")
+# The app folder is bind-mounted into the container read-only, so the file
+# written above is already there and only the reload is needed.
+#
+# The admin password reaches curl as a config on stdin. On the command line it
+# would show in the process list to every account on the machine. printf is a
+# shell builtin, so no process ever holds it in its arguments.
+
+# Quotes a value for a curl config file, which reads backslash escapes inside
+# double quotes.
+curl_quote() {
+  local s=${1//\\/\\\\}
+  printf '"%s"' "${s//\"/\\\"}"
+}
+
+http_code=$(printf 'user = %s\n' "$(curl_quote "admin:${SPLUNK_PASSWORD}")" |
+  curl -s --cacert "$CACERT" -o /dev/null -w '%{http_code}' -K - -X POST \
+    "https://${SPLUNK_REST_HOST}:${SPLUNK_REST_PORT}/services/apps/local/triage_alerts/_reload")
 
 if [[ "$http_code" == 2* ]]; then
   echo "Loaded into Splunk."
