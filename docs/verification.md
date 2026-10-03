@@ -802,8 +802,8 @@ for the duplicate cases, and an unprocessed one would be claimed and queue real
 work. Set `TRIAGE_WEBHOOK_URL` if the agent is not on `127.0.0.1:8000`, and note
 that this is the address the agent bound to rather than the one osTicket uses.
 It also needs osTicket running and the agent's `.env` in place, because it looks
-up ticket numbers through the plugin, and ticket 1 present and never processed,
-which is the old-ticket case.
+up ticket numbers through the plugin, and ticket 1 present, never processed and
+past the plugin's retry window plus five minutes, which is the old-ticket case.
 
 ### A forged claim does not block the real ticket, 2026-09-27, ticket 38
 

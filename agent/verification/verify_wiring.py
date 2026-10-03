@@ -130,8 +130,11 @@ def run_case(name, enable_writes, **overrides):
     env.update({"WIRING_CASE": name, "ENABLE_WRITES": enable_writes,
                 "TRIAGE_STATE_DB": STORE})
     # Alerts go to the test channel, so the real ones carry only real alerts.
+    # Urgent included, since the page-before-audit case posts a confident
+    # critical with an @here.
     test_hook = os.getenv("SLACK_WEBHOOK_TEST")
     if test_hook:
+        env["SLACK_WEBHOOK_URGENT"] = test_hook
         env["SLACK_WEBHOOK_INCIDENTS"] = test_hook
         env["SLACK_WEBHOOK_REVIEW"] = test_hook
     # Same for pages, so the real service holds nothing but real pages.

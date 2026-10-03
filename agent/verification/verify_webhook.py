@@ -42,13 +42,21 @@ if _found is None:
     raise SystemExit(f"osTicket has no ticket {PROCESSED_TICKET_ID}")
 PROCESSED_NUMBER = _found[0]
 
-# Ticket 1 predates the agent and was never processed, so it is past the retry
-# window and unknown to the store, which is the case the age check refuses.
+# Ticket 1 is the one osTicket's installer creates, and the agent never
+# processed it, which is the case the age check refuses. It only counts as old
+# once it is past the retry window. Sent any earlier, the request would be
+# accepted, and the agent would classify ticket 1 and write to it for real.
 OLD_TICKET_ID = 1
 _old = lookup_number(OLD_TICKET_ID)
 if _old is None:
     raise SystemExit(f"osTicket has no ticket {OLD_TICKET_ID}")
-OLD_NUMBER = _old[0]
+OLD_NUMBER, _old_past_window = _old
+if not _old_past_window:
+    raise SystemExit(
+        f"Ticket {OLD_TICKET_ID} is not yet past the plugin's retry window, so the "
+        "old-ticket case would be accepted and act on it. Run this again once "
+        "the window plus five minutes has passed since osTicket was installed."
+    )
 
 def send(payload, secret=SECRET, signature=None, sign=True, raw=None):
     body = raw if raw is not None else json.dumps(payload).encode()
