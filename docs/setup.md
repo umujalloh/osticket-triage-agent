@@ -260,13 +260,14 @@ From `agent/`.
    - `TRIAGE_WEBHOOK_URL`, with the `docker0` address the agent binds to in
      step 4, usually `http://172.17.0.1:8000/webhook/ticket`.
      `verify_webhook.py` sends here.
-3. Run the offline verifiers, the same seven CI runs. Each prints a last line
-   starting `All N checks passed`, 143 in total, and anything else is a
+3. Run the offline verifiers, the same eight CI runs. Each prints a last line
+   starting `All N checks passed`, 164 in total, and anything else is a
    failure.
 
    ```bash
    for v in verify_action_table verify_idempotency verify_resume verify_recovery \
-            verify_page_reporting verify_prompt_isolation verify_note; do
+            verify_page_reporting verify_prompt_isolation verify_note \
+            verify_enrichment_query; do
      ./venv/bin/python verification/$v.py | tail -1
    done
    ```

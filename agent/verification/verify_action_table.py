@@ -135,6 +135,22 @@ except ValidationError:
     extra_refused = True
 check("  a field the tool does not define is refused", extra_refused, True)
 
+print("an extracted value must match its whole pattern")
+# A pattern ending in $ also matches before a trailing newline, so a value with
+# one would pass a partial match and carry the newline into the audit log.
+def extracted(hostname, username):
+    c = TicketClassification(category="it_support", severity="low",
+                             confidence="high_confidence",
+                             hostname=hostname, username=username)
+    return c.hostname, c.username
+
+check("  the same values without a newline are kept",
+      extracted("BGIST-L", "bgist"), ("BGIST-L", "bgist"))
+check("  a hostname with a trailing newline is dropped",
+      extracted("BGIST-L\n", "bgist")[0], None)
+check("  a username with a trailing newline is dropped",
+      extracted("BGIST-L", "bgist\n")[1], None)
+
 print()
 if failed:
     print(f"FAILED: {', '.join(failed)}")

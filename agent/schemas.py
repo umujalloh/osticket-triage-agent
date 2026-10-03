@@ -69,7 +69,7 @@ class TicketClassification(BaseModel):
     def validate_hostname(cls, v):
         if v is None:
             return v
-        if not HOSTNAME_PATTERN.match(v):
+        if not HOSTNAME_PATTERN.fullmatch(v):
             return None
         return v
 
@@ -78,7 +78,7 @@ class TicketClassification(BaseModel):
     def validate_username(cls, v):
         if v is None:
             return v
-        if not USERNAME_PATTERN.match(v):
+        if not USERNAME_PATTERN.fullmatch(v):
             return None
         return v
 

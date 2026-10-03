@@ -80,7 +80,7 @@ def build_enrichment_query(submitter_email=None, submitter_ip=None,
     # Fail closed. Anything other than a literal True, including a missing or
     # non-boolean field in the webhook payload, leaves the email out.
     if (requester_verified is True and submitter_email
-            and EMAIL_PATTERN.match(submitter_email)):
+            and EMAIL_PATTERN.fullmatch(submitter_email)):
         clauses.append(f'"{submitter_email}"')
 
     if submitter_ip and _is_valid_ip(submitter_ip):

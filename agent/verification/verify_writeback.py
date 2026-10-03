@@ -12,16 +12,21 @@ import requests
 
 URL_BASE = os.getenv("OSTICKET_WRITE_URL")
 SECRET = os.getenv("TRIAGE_WRITE_SECRET")
-if not URL_BASE or not SECRET:
-    raise SystemExit("OSTICKET_WRITE_URL and TRIAGE_WRITE_SECRET must both be set")
+# The webhook's own secret, which must not sign a write. architecture.md,
+# Attack 6.
+WEBHOOK_SECRET = os.getenv("TRIAGE_HMAC_SECRET")
+if not URL_BASE or not SECRET or not WEBHOOK_SECRET:
+    raise SystemExit("OSTICKET_WRITE_URL, TRIAGE_WRITE_SECRET and "
+                     "TRIAGE_HMAC_SECRET must all be set")
 
 if len(sys.argv) != 2 or not sys.argv[1].isdigit():
     raise SystemExit(
         "usage: python verification/verify_writeback.py <ticket_id>\n\n"
-        "Exercises the plugin's write endpoints against a running stack. Two\n"
-        "cases change the ticket you name, writing a real note and setting its\n"
-        "priority, and the endpoints have no undo, so pick a ticket you don't\n"
-        "mind marking. Reproduces the table in docs/verification.md."
+        "Exercises the plugin's write endpoints against a running stack. Three\n"
+        "cases change the ticket you name. They write a real note, move it to\n"
+        "the security department and set its priority, and the endpoints have\n"
+        "no undo, so pick a ticket you don't mind marking. Reproduces the table\n"
+        "in docs/verification.md."
     )
 
 TICKET_ID = int(sys.argv[1])
@@ -79,6 +84,8 @@ check("  wrong signature is rejected",
       post("/note", note_payload(), signature="sha256=" + "0" * 64).status_code, 401)
 check("  wrong secret is rejected",
       post("/note", note_payload(), secret="not-the-secret").status_code, 401)
+check("  the webhook's secret is rejected",
+      post("/note", note_payload(), secret=WEBHOOK_SECRET).status_code, 401)
 check("  stale timestamp is rejected",
       post("/note", note_payload(created_at=STALE)).status_code, 401)
 check("  missing note is rejected",
@@ -176,4 +183,4 @@ if failed:
     print(f"FAILED: {', '.join(failed)}")
     sys.exit(1)
 print(f"All {ran} checks passed. Ticket {TICKET_ID} carries one agent note, "
-      f"whether or not it already had one, and its priority was changed.")
+      f"whether or not it already had one, and its priority was set.")
