@@ -63,6 +63,9 @@ row("it_support", "low", "high_confidence")
 row("it_support", "low", "low_confidence", channel=REVIEW, human_review=True)
 
 print("unclear: review at either confidence, because the category is the signal")
+# The schema refuses unclear at high confidence, so this pair only reaches the
+# table if that check is ever loosened. The table still sends it to review, so
+# the action layer does not rely on the schema alone.
 row("unclear", "medium", "high_confidence", channel=REVIEW, human_review=True)
 row("unclear", "medium", "low_confidence", channel=REVIEW, human_review=True)
 

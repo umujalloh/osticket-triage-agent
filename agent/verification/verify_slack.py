@@ -210,6 +210,7 @@ check("  and it still raises", "OUTCOME=raised" in out, True)
 
 print("live delivery, to the test channel only")
 test_hook = os.getenv("SLACK_WEBHOOK_TEST")
+delivered = bool(test_hook)
 if not test_hook:
     print("SKIP  SLACK_WEBHOOK_TEST is not set, delivery not checked")
 else:
@@ -220,4 +221,5 @@ print()
 if failed:
     print(f"FAILED: {', '.join(failed)}")
     sys.exit(1)
-print(f"All {ran} checks passed. One message was posted to the test channel.")
+print(f"All {ran} checks passed. " + ("One message was posted to the test channel."
+      if delivered else "Delivery was skipped, so nothing was posted."))

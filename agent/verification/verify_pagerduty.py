@@ -170,6 +170,7 @@ check("  and names the destination", "nowhere" in out, True)
 
 print("live delivery, to the test service only")
 test_key = os.getenv("PAGERDUTY_ROUTING_KEY_TEST")
+delivered = bool(test_key)
 if not test_key:
     print("SKIP  PAGERDUTY_ROUTING_KEY_TEST is not set, delivery not checked")
 else:
@@ -187,4 +188,5 @@ print()
 if failed:
     print(f"FAILED: {', '.join(failed)}")
     sys.exit(1)
-print(f"All {ran} checks passed. Two pages were sent to the test service.")
+print(f"All {ran} checks passed. " + ("Two pages were queued for the test service."
+      if delivered else "Delivery was skipped, so no page was sent."))
