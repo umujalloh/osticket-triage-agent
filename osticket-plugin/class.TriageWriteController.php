@@ -7,12 +7,15 @@ require_once(INCLUDE_DIR . 'class.dynamic_forms.php');
 require_once(INCLUDE_DIR . 'class.http.php');
 
 /**
- * The agent's only way to write into osTicket.
+ * The agent's only way to write into osTicket, and to check a ticket before
+ * acting on it.
  *
- * osTicket's own API creates tickets and nothing else, so notes and priority
- * are unreachable through it. This endpoint exists to close that gap, and the
- * scoping the architecture claims is enforced by what it implements: two
- * operations, on one ticket, named in an authenticated request body.
+ * osTicket's own API creates tickets, threads emailed replies and runs cron.
+ * It cannot change the priority or department of an existing ticket. This
+ * controller exists to close that gap, and handles the agent's note too, so
+ * every write takes one signed path. It does only these three writes and one
+ * lookup of a ticket's number, each on one ticket named in a signed request,
+ * so the write secret can do nothing else.
  */
 class TriageWriteController {
 
@@ -34,7 +37,7 @@ class TriageWriteController {
     }
 
     function postNote() {
-        $payload = $this->authenticatedPayload();
+        $payload = $this->authenticatedPayload('note');
         list($ticket_id, $ticket) = $this->requireTicket($payload);
 
         $note = isset($payload['note']) ? $payload['note'] : null;
@@ -76,7 +79,7 @@ class TriageWriteController {
     }
 
     function postPriority() {
-        $payload = $this->authenticatedPayload();
+        $payload = $this->authenticatedPayload('priority');
         list($ticket_id, $ticket) = $this->requireTicket($payload);
 
         $name = isset($payload['priority']) ? $payload['priority'] : null;
@@ -106,6 +109,11 @@ class TriageWriteController {
         if (!$updated)
             Http::response(500, 'This ticket has no priority field to set');
 
+        // osTicket has no priority event, so the change is logged the way core
+        // logs any dynamic form field change. The endpoint writes it rather
+        // than the agent, so anything calling this endpoint leaves the record.
+        $ticket->logEvent('edited', array('fields' => array('Priority' => $name)));
+
         $this->respond(array(
             'status' => 'priority_set',
             'ticket_id' => $ticket_id,
@@ -115,7 +123,7 @@ class TriageWriteController {
     }
 
     function postDepartment() {
-        $payload = $this->authenticatedPayload();
+        $payload = $this->authenticatedPayload('department');
         list($ticket_id, $ticket) = $this->requireTicket($payload);
 
         // The target is configured here rather than sent by the agent, so this
@@ -170,13 +178,44 @@ class TriageWriteController {
         ));
     }
 
+    function postNumber() {
+        $payload = $this->authenticatedPayload('number');
+        list($ticket_id, $ticket) = $this->requireTicket($payload);
+
+        // The agent asks this before it claims a ticket, and claims it only if
+        // the number it was sent matches. A forged webhook can name any ticket
+        // ID, but has to guess the random number osTicket gave the real ticket.
+        //
+        // A genuine delivery always arrives within the retry window, so an
+        // older ticket can only be named by a forged request. The window counts
+        // from the first failed send, not the ticket's creation, and a cron run
+        // can take about two minutes to send its batch of 25, so five minutes
+        // of margin covers both.
+        $window = (int) $this->config->get('triage-retry-window');
+        if ($window <= 0)
+            $window = TriagePlugin::DEFAULT_RETRY_WINDOW;
+        $res = db_query(
+            "SELECT created < DATE_SUB(NOW(), INTERVAL " . ($window + 5) . " MINUTE) "
+            . "AS expired FROM " . TABLE_PREFIX . "ticket WHERE ticket_id = " . (int) $ticket_id,
+            false
+        );
+        if (!$res || !($row = db_fetch_array($res)))
+            Http::response(500, 'Could not read the ticket age');
+
+        $this->respond(array(
+            'ticket_id' => $ticket_id,
+            'number' => $ticket->getNumber(),
+            'past_retry_window' => (bool) $row['expired'],
+        ));
+    }
+
     /**
      * Verifies the request and returns its body, or ends the request.
      *
      * Shared by every operation so they cannot drift apart, which is the way
      * a second endpoint usually ends up weaker than the first.
      */
-    private function authenticatedPayload() {
+    private function authenticatedPayload($operation) {
         $secret = $this->config->get('triage-write-secret');
         if (!$secret)
             Http::response(500, 'Triage write secret is not configured');
@@ -194,6 +233,13 @@ class TriageWriteController {
 
         if (!$this->isFresh(isset($payload['created_at']) ? $payload['created_at'] : null))
             Http::response(401, 'Request timestamp is stale or invalid');
+
+        // The signature covers the body, not the URL it was sent to, so a
+        // captured request could otherwise be replayed to another endpoint
+        // within the freshness window. Naming the operation inside the signed
+        // body ties each request to the one endpoint it was meant for.
+        if (!isset($payload['operation']) || $payload['operation'] !== $operation)
+            Http::response(400, 'Request is not for this operation');
 
         return $payload;
     }

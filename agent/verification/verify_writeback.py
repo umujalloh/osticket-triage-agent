@@ -31,6 +31,10 @@ TICKET_ID = int(sys.argv[1])
 ABSENT_TICKET_ID = 99999
 
 def post(operation, payload, secret=SECRET, signature=None, sign=True):
+    # Each endpoint refuses a body naming a different operation, so the
+    # helper adds the right one unless a case sets its own.
+    payload = dict(payload)
+    payload.setdefault("operation", operation.lstrip("/"))
     body = json.dumps(payload).encode()
     headers = {"Content-Type": "application/json"}
     if signature is not None:
@@ -158,6 +162,14 @@ if response.status_code == 200:
         print("FAIL  the response reports the new priority")
     else:
         print("PASS  the response reports the new priority")
+
+print("operation binding")
+check("  a request signed for one endpoint is refused at another",
+      post("/department", {"ticket_id": TICKET_ID, "operation": "number",
+                           "created_at": now()}).status_code, 400)
+check("  a request naming no operation is refused",
+      post("/priority", {"ticket_id": TICKET_ID, "priority": "normal",
+                         "operation": None, "created_at": now()}).status_code, 400)
 
 print()
 if failed:

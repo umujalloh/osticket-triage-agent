@@ -1,3 +1,5 @@
+import hashlib
+import hmac
 import os
 import time
 from urllib.parse import urlparse
@@ -23,6 +25,14 @@ ROUTING_KEYS = {
     NOTIFY: os.getenv("PAGERDUTY_ROUTING_KEY_NOTIFY"),
 }
 OSTICKET_BASE_URL = os.getenv("OSTICKET_BASE_URL")
+
+# The secret behind the deduplication key. It has to be set even when writes
+# are off, because a page is built before send_page checks the switch. It is
+# not one of the shared secrets. Rotating those would change the dedup key of
+# an incident that is already open.
+PAGERDUTY_DEDUP_SECRET = os.getenv("PAGERDUTY_DEDUP_SECRET")
+if not PAGERDUTY_DEDUP_SECRET:
+    raise RuntimeError("PAGERDUTY_DEDUP_SECRET is not set")
 
 # Asserted only when writes are on, the same exception the Slack webhooks get and
 # for the same reason. Nothing is ever sent with the kill switch off, so a
@@ -58,6 +68,24 @@ class PagerDutyError(Exception):
 def _ticket_url(ticket_id) -> str:
     return f"{OSTICKET_BASE_URL.rstrip('/')}/scp/tickets.php?id={ticket_id}"
 
+def _dedup_key(ticket_id) -> str:
+    """The deduplication key for a ticket.
+
+    The Events API resolves and acknowledges an incident on the routing key and
+    the dedup key. Ticket ids are small consecutive integers, so using one
+    directly would let anyone holding a stolen routing key close real incidents
+    by counting from one. The HMAC leaves nothing to count.
+
+    The same ticket always produces the same key. The WAKE and NOTIFY pages for
+    one ticket share it, and the service they arrive at is what keeps them
+    apart.
+    """
+    return hmac.new(
+        PAGERDUTY_DEDUP_SECRET.encode(),
+        str(ticket_id).encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
 def build_page(ticket_id, ticket_number, classification) -> dict:
     """The page for a ticket the table said to page on.
 
@@ -67,7 +95,7 @@ def build_page(ticket_id, ticket_number, classification) -> dict:
     No enrichment result, because the page is sent before enrichment runs. A
     count would have been the only field that varies between one page and the
     next, and waiting for it put the pager behind a Splunk call that can retry
-    for a minute and a half. The enrichment lands on the ticket a moment later,
+    for over a minute. The enrichment lands on the ticket a moment later,
     which is where a woken responder is going anyway.
     """
     summary = (f"{classification.severity.value} {classification.category.value}"
@@ -100,9 +128,10 @@ def build_fallback_page(ticket_id, ticket_number, classification) -> dict:
 def _event(ticket_id, summary, severity) -> dict:
     """Assembles the request body.
 
-    dedup_key is the ticket id, so a replay PagerDuty sees twice attaches to the
-    open incident instead of waking someone again. The idempotency store is the
-    first guard; this is the one that still holds when the store is wrong.
+    dedup_key is derived from the ticket id, so a replay PagerDuty sees twice
+    attaches to the open incident instead of waking someone again. The
+    idempotency store is the first guard; this is the one that still holds when
+    the store is wrong. _dedup_key has the reason it is derived.
 
     The link's text is the URL itself rather than a friendly label. Anyone
     holding the routing key can create a convincing incident, so a responder
@@ -112,7 +141,7 @@ def _event(ticket_id, summary, severity) -> dict:
     url = _ticket_url(ticket_id)
     return {
         "event_action": "trigger",
-        "dedup_key": str(ticket_id),
+        "dedup_key": _dedup_key(ticket_id),
         "payload": {
             "summary": summary,
             "severity": PAGERDUTY_SEVERITY[severity],
@@ -120,6 +149,9 @@ def _event(ticket_id, summary, severity) -> dict:
         },
         "links": [{"href": url, "text": url}],
     }
+
+# No wait after the last attempt, since no call follows it.
+ATTEMPTS = 3
 
 def send_page(destination: str, event: dict) -> str:
     """Sends one page to the destination it is handed. Returns DONE, or SKIPPED
@@ -131,7 +163,7 @@ def send_page(destination: str, event: dict) -> str:
     Raises PagerDutyError on failure and never reports a page that did not
     happen. The routing key travels in the body rather than the URL, so an
     exception carrying the request URL is safe here in a way it is not for a
-    Slack webhook. Response text is still truncated, since a rejection can
+    Slack webhook. The response body is never recorded, since a rejection can
     quote the field it rejected.
     """
     if not writes_enabled():
@@ -141,12 +173,13 @@ def send_page(destination: str, event: dict) -> str:
 
     body = dict(event, routing_key=ROUTING_KEYS[destination])
     last_error = None
-    for attempt in range(3):
+    for attempt in range(ATTEMPTS):
         try:
             response = requests.post(PAGERDUTY_EVENTS_URL, json=body, timeout=10)
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
             last_error = ("server_down", f"Could not reach PagerDuty for the {destination} service")
-            time.sleep([2, 5, 10][attempt])
+            if attempt < ATTEMPTS - 1:
+                time.sleep([2, 5][attempt])
             continue
         except requests.exceptions.RequestException as e:
             raise PagerDutyError("unknown", f"{type(e).__name__} sending the {destination} page")
@@ -159,12 +192,18 @@ def send_page(destination: str, event: dict) -> str:
         if response.status_code in (400, 401, 403, 404):
             raise PagerDutyError(
                 "bad_request",
-                f"PagerDuty refused the {destination} page: HTTP {response.status_code} "
-                f"{response.text[:100]}",
+                f"PagerDuty refused the {destination} page: HTTP {response.status_code}",
             )
         if response.status_code == 429:
             last_error = ("rate_limited", f"PagerDuty rate limited the {destination} service")
-            time.sleep([5, 15, 30][attempt])
+            if attempt < ATTEMPTS - 1:
+                time.sleep([5, 15][attempt])
+            continue
+        # A 503 says the service is down for now, so a later attempt can get past it.
+        if response.status_code == 503:
+            last_error = ("server_down", f"PagerDuty is unavailable for the {destination} service")
+            if attempt < ATTEMPTS - 1:
+                time.sleep([2, 5][attempt])
             continue
         raise PagerDutyError(
             "unknown", f"Unexpected PagerDuty response for {destination}: HTTP {response.status_code}"

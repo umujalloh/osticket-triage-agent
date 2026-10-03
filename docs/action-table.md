@@ -1,129 +1,120 @@
 # Action Table
 
-This table is the contract between classification and action. Claude
-outputs category, severity, and confidence. The agent looks up the
-matching row here and runs exactly that action. Claude never decides
-the action itself.
+This table is the contract between classification and action. Claude classifies
+each ticket by category, severity and confidence. The agent looks up the
+matching row in `agent/action_table.py` and takes the actions it names. Claude
+never chooses an action, so a manipulated classification can only reach a row
+that already exists. Section 5 of
+[architecture.md](architecture.md#5-classification-model) defines the three
+dimensions,
+[Section 6](architecture.md#6-failure-modes-for-the-claude-dependency) covers
+what happens when Claude cannot classify a ticket, and
+[Section 7](architecture.md#7-action-layer) covers how the agent carries these
+actions out.
 
-**Override rule, applies before any row below:** any ticket classified
-`low` confidence routes to human review, regardless of category or
-severity. This prevents a real incident that reads as vague from being
-missed or silently mishandled.
+The columns run in the order the agent acts, and every row writes an internal
+note on the ticket and sets its priority.
 
-**Human review is an outcome, not a label.** It means all of the
-following: the ticket is posted to the channel its row selects, the
-internal note is written so any enrichment is on the ticket when someone
-opens it, the priority is set from severity so the queue sorts
-correctly, and an audit event records why. On a critical it also pages,
-quietly. The override changes how loudly a ticket is escalated and
-nothing else about how it is handled.
+| Category | Severity | Confidence | Page | Enrich | Route | Channel | Mention |
+|---|---|---|---|---|---|---|---|
+| security_incident | critical | high | WAKE | yes | no | urgent | yes |
+| security_incident | critical | low | NOTIFY | yes | no | urgent | no |
+| security_incident | high | any | none | no | no | incidents | no |
+| security_incident | medium | any | none | no | no | incidents | no |
+| security_incident | low | any | none | no | no | incidents | no |
+| security_question | any | high | none | no | yes | none | no |
+| security_question | any | low | none | no | yes | review | no |
+| it_support | any | high | none | no | no | none | no |
+| it_support | any | low | none | no | no | review | no |
+| unclear | any | low | none | no | no | review | no |
 
-Confidence gates interruption, not visibility. Gating the channel post
-on confidence would mean the less the system understands a ticket, the
-quieter it becomes, which is backwards for a security tool. Waking
-someone is what needs certainty, which is why a critical the classifier
-could not place reaches PagerDuty at low urgency rather than not at all.
+The agent checks everything Claude returns against a strict schema in
+`agent/schemas.py` before acting on it. That schema refuses `critical` on
+anything but a security incident, and `unclear` at high confidence, so neither
+reaches this table.
 
-## Table
+## How a row is decided
 
-| Category | Severity | Confidence | Channel | Page | Ticket actions |
-|---|---|---|---|---|---|
-| security_incident | critical | high | urgent, `@here` | WAKE | Write enrichment note, set priority critical |
-| security_incident | critical | low | urgent | NOTIFY | Write enrichment note, set priority critical |
-| security_incident | high | any | incidents | none | Write note, set priority high |
-| security_incident | medium | any | incidents | none | Write note, set priority medium |
-| security_incident | low | any | incidents | none | Write note, set priority low |
-| security_question | any | high | none | none | Write note, route to the security department, set priority from severity |
-| security_question | any | low | review | none | Write note, route to the security department, set priority from severity |
-| it_support | any | high | none | none | Write note, set priority from severity |
-| it_support | any | low | review | none | Write note, set priority from severity |
-| unclear | any | any | review | none | Write note, set priority from severity |
+**Category** decides where the ticket goes. A security incident reaches a Slack
+channel. A security question moves to the security department. An `it_support`
+ticket stays in the osTicket department it was filed in and reaches no channel,
+unless the classifier marked it low confidence.
 
-Three channels, and the line between the first two is the same line the
-severity rubric already draws.
+**Severity** decides how loudly a ticket escalates. Critical means someone
+unauthorized holds access right now, or destructive action has already been
+carried out, which is what justifies interrupting a person, so those rows page
+and reach the urgent channel. A security incident below critical means nobody
+holds access and nothing has been destroyed, so those rows reach the incidents
+channel and interrupt nobody. For a security question or an `it_support` ticket,
+severity still sets the ticket priority but changes no alert.
 
-**urgent** carries critical security incidents only, at either
-confidence. Critical means someone unauthorized holds access right now,
-or destructive action has already been carried out. That is what
-justifies interrupting people, which is why it is the only channel that
-mentions at all, and only on the row the classifier was confident about.
+**Confidence** decides how much interruption a ticket earns. Waking the on-call
+and mentioning the channel are the only actions that need a confident label. On
+a critical, high confidence pages WAKE and mentions `@here`, and low confidence
+pages NOTIFY with no mention. The rubric puts behavior the user cannot explain
+at low confidence, which is how many compromises first appear, so every
+low-confidence ticket still reaches a channel and is flagged for human review in
+the audit log.
 
-**incidents** carries high, medium, and low security incidents. In every
-one of those, nobody currently holds access: an attempt that failed, a
-compromise the ticket suspects but cannot establish, or something
-already contained. They need working, not interrupting over. It is the
-only channel carrying more than one severity, so a reader has to sort
-within it.
+## Channels
 
-**review** carries `unclear` at any confidence, and the tickets the
-classifier did categorise but was not sure about. `unclear` and low
-confidence are the same signal on two axes: both say nobody has
-established what the ticket is. Keeping them together means the channel
-can be owned by a rotation or a dedicated analyst, rather than mixed in
-with tickets that only need action.
+**urgent** carries only critical security incidents, at either confidence. It is
+the only channel holding tickets the agent paged on, and the only one that gets
+an `@here`, the Slack mention that notifies whoever is active in the channel at
+that moment.
 
-## Design notes
+**incidents** carries high, medium and low security incidents. They wait for an
+analyst working the queue instead of interrupting someone.
 
-**Why severity only fully branches for `security_incident`.** Severity's
-only job in this system is to decide alert level: which channel a ticket
-reaches, whether it mentions, and whether it pages at all. Only security
-incidents ever justify interrupting a human.
-For `security_question` and `it_support`, severity still sets the
-osTicket priority field but does not change whether an alert fires.
+**review** carries every `unclear` ticket and every low-confidence ticket that
+is not a security incident. In both, nothing in the ticket settles what it is,
+because it is vague, could fit more than one category, or describes something
+the user cannot account for. Tickets Claude never classified, and tickets
+abandoned past the recovery window, also post there, which Section 6 covers.
+They are sent to one channel so a person can triage them. That channel needs an
+analyst actively working it, because an unread review channel is where an
+unreported breach sits unseen.
 
-**Mention and page reach different people.** A page tasks the one person
-on call. A mention tells the rest of the team a critical incident is in
-progress.
+## Pages
 
-Every critical security incident pages. Confidence decides which of two
-PagerDuty services it reaches, not whether it reaches one. WAKE is a high
-urgency service and is meant to interrupt. NOTIFY is a low urgency
-service and creates an incident somebody owns without waking them.
+PagerDuty sets urgency per service, so the agent uses two.
 
-Only the confident row also mentions. Once a critical at low confidence
-pages NOTIFY, an `@here` would be the loudest signal on the
-classification the agent is least sure of, and it would shout at the
-whole team about something one person already owns. So the confident
-case has two independent delivery paths, which is deliberate for the
-highest severity class, and the other has one that nobody has to answer
-at three in the morning.
+**WAKE** must be the high urgency service, the one that interrupts whoever is on
+call. Only critical security incidents at high confidence reach it, and those at
+low confidence whose Slack post failed.
 
-**Why alerting and priority both exist.** They serve different readers.
-A channel post is push: it reaches whoever is watching, once, and then
-scrolls away. Priority is pull: it orders the queue for whoever sits
-down to work tickets later and never saw the post. It also means that if
-Slack fails completely, the queue is still ordered correctly, so a
-delivery failure degrades to nobody being pushed rather than nothing
-indicating urgency.
+**NOTIFY** must be the low urgency service, which notifies the on-call without
+waking them and leaves a PagerDuty incident they have to acknowledge. Only
+critical security incidents at low confidence reach it.
 
-**Assumptions worth revisiting.** Two, with the trigger for each.
+## Enrichment
 
-The review channel is assumed to be read. If it fills with low-confidence
-routine tickets and stops being read, `unclear` moves up to the incidents
-channel, because it is the only thing in review that could be an
-unreported breach.
+Only critical security incidents are enriched, at either confidence. A critical
+needs someone acting now, and the search saves the responder the time it would
+take to pull the same context out of Splunk by hand. Confidence does not gate
+it, because the tickets at low confidence are where a reviewer most needs
+context. Lower severities do not get it because nobody is acting immediately,
+and because enrichment is the one path that brings Splunk data back onto a
+ticket, which
+[Attack 3](architecture.md#attack-3-indirect-data-exfiltration-via-internal-notes)
+and [Attack 8](architecture.md#attack-8-log-injection-via-enrichment) cover. An
+eligible ticket still runs no search when nothing can safely be queried, which
+Section 7 covers.
 
-`@here` is assumed to stay rare, which holds only while critical
-incidents are rare. If the urgent channel feels noisy, the fix is the
-severity rubric rather than the notification rule, because a system
-producing frequent criticals has a classification problem.
+## Priority
 
-**Order of actions** is not part of this table. A page runs before
-everything, including enrichment, and the channel post runs after the
-ticket writes, for reasons in
-[architecture.md, Section 7](architecture.md#7-action-layer-and-phasing).
+Priority comes from severity, using osTicket's own names. Critical sets
+`emergency`, high sets `high`, medium sets `normal`, and low sets `low`.
+Priority keeps urgency on the ticket for whoever works the queue after the Slack
+channel post has scrolled away or failed to send.
 
-**Why `security_question` routes differently from `it_support`.**
-Category changes who should review the ticket, not just how urgent it
-is. A security question needs someone with security context, even at
-low urgency. General helpdesk queues don't guarantee that. The
-security department this depends on is one of the deployment
-preconditions in
-[architecture.md, Section 10](architecture.md#10-deployment-preconditions).
+## Route
 
-**Enrichment scope.** Splunk enrichment triggers on security_incident +
-critical, at either confidence. High, medium, and low severity security
-incidents are handled without enrichment. Confidence gates how loudly a
-ticket escalates, not the query, because the tickets that read as
-uncertain are the ones a reviewer most needs context for. Reasoning in
-[architecture.md, Section 7](architecture.md#7-action-layer-and-phasing).
+Only a security question routes, at either confidence. It moves to the security
+department named in the plugin's configuration, because a security question
+needs someone with security context and a general helpdesk queue does not
+guarantee that. Security incidents are not routed, because routing is the one
+action that can hide a ticket, since osTicket shows a staff member only the
+departments they can access. They reach the security team through their Slack
+channel, and a critical also pages, while helpdesk staff in their original
+department can still see them.

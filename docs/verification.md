@@ -105,7 +105,7 @@ destination addresses, accounts and applications. Its last line is the query tha
 produced them, `index=botsv3 ("bgist@froth.ly" OR "172.21.0.1") earliest=0`,
 which names only the verified requester address and the IP the server observed.
 
-The three screenshots in [the README](../README.md#example) are this run.
+The three screenshots in [the README](../README.md#a-triaged-ticket) are this run.
 
 ### Acting through a Splunk outage, 2026-08-18, ticket 18
 
@@ -190,7 +190,7 @@ bytes across 20 events.
 
 ## Write-back endpoint verification
 
-Measured 2026-08-23 against the running stack, twenty-five checks, all passing.
+Measured 2026-09-28 against the running stack, twenty-seven checks, all passing.
 
 | Request | Result |
 |---|---|
@@ -208,6 +208,13 @@ Measured 2026-08-23 against the running stack, twenty-five checks, all passing.
 | Signed, valid, department | 200, `status: routed` |
 | Signed, valid, department again | 200, `status: already_routed` |
 | Signed, department named in the body | 200, moved where the config says |
+| Signed for the ticket number check, sent to the department endpoint | 400 |
+| Signed, no operation named | 400 |
+
+The last two cases cover replay across endpoints. The department endpoint reads
+only the ticket ID, so without the operation named inside the body, a captured
+request for any other endpoint could have been replayed there to move a ticket
+to the security department.
 
 The successful write was confirmed in the database rather than from the response
 code: an internal thread entry on ticket 11, type N, poster `Triage Agent`.
@@ -223,6 +230,31 @@ it with the one note it already had.
 Reproduce with `./venv/bin/python verification/verify_writeback.py <ticket_id>`
 from `agent/`. It writes a real note to a ticket that has none, and the endpoint
 has no delete operation, so name a ticket you don't mind marking.
+
+### The priority change is recorded, 2026-09-11, ticket 33
+
+Run by hand. `verify_writeback.py` speaks HTTP only and cannot read the
+database, so this is not one of the checks in the table above.
+
+osTicket has no priority event, so the endpoint logs the change the way core
+logs any dynamic form field change. Before these requests, ticket 33's history
+held `created` and `overdue` and nothing else.
+
+| Request | Result |
+|---|---|
+| Signed, valid, `priority: high` | 200, `from: low`, `to: high` |
+| Signed, valid, `priority: low` | 200, `from: high`, `to: low` |
+
+Each one added a row to `ost_thread_event`:
+
+```
+77  edited  2026-09-11 16:28:30  {"fields":{"Priority":"low"}}
+76  edited  2026-09-11 16:26:20  {"fields":{"Priority":"high"}}
+```
+
+The row is written by the endpoint rather than by the agent, so anything calling
+it leaves one. Restoring the priority added a second event instead of removing
+the first.
 
 ## Idempotency store verification
 
@@ -279,15 +311,17 @@ wiring below, where the note write is driven through the store three times.
 
 ## Resume verification
 
-Measured 2026-08-20, sixteen checks, all passing, against a temporary database.
-Nothing here reaches Claude, Slack, PagerDuty, osTicket or Splunk. It exercises
-the decision a repeat delivery lands on, which is one of three: a duplicate to
-refuse, a ticket to pick up, or a ticket another run is working on now.
+Measured 2026-09-29, seventeen checks, all passing, against a temporary
+database. Nothing here reaches Claude, Slack, PagerDuty, osTicket or Splunk. It
+exercises the decision a repeat delivery lands on, which is one of three: a
+duplicate to refuse, a ticket to pick up, or a ticket another run is working on
+now.
 
 | Property | How it was checked | Result |
 |---|---|---|
 | A ticket never seen is undecided | `outstanding_actions(1)` | `["classified"]` |
 | A claim with no decision is undecided | claim only, then read | `["classified"]` |
+| A ticket handed to review owes nothing | claim, then mark `handed_to_review` | `[]` |
 | A decision lists the actions its row selects | a confident critical, nothing done | all five |
 | What happened drops off the list | mark `paged`, read again | four left |
 | A finished ticket has nothing outstanding | mark all five | `[]` |
@@ -354,12 +388,16 @@ staged. What re-sends them in the deployment is the retry queue below.
 
 ## Recovery verification
 
-Measured 2026-08-22, twenty-four checks offline plus one live run. The offline
-checks replace every outbound client and skip Claude through the resume path,
-so nothing leaves the machine. Four of them cover a store that fails while the
-agent is accepting a ticket, since a mark left set there refuses that ticket
-for the life of the process. Four more cover one ticket failing partway through
-the backlog, which must not stop the tickets behind it.
+Measured 2026-09-30, thirty-five checks offline, plus one live run on
+2026-08-22. The offline checks replace every outbound client and skip Claude
+through the resume path, so nothing leaves the machine. Four of them cover a
+store that fails while the agent is accepting a ticket, since a mark left set
+there refuses that ticket for the life of the process. Four more cover one
+ticket failing partway through the backlog, which must not stop the tickets
+behind it. Four more cover a ticket Claude could not classify, which is handed
+to review once and never picked up again, unless the review post itself failed.
+Six more cover a repeat delivery of an unfinished ticket, which resumes on the
+request it was first accepted with, or is refused when that request is gone.
 
 | Property | How it was checked | Result |
 |---|---|---|
@@ -370,10 +408,20 @@ the backlog, which must not stop the tickets behind it.
 | It does not repeat what was done | the same run | note not rewritten |
 | A ticket past the window is not completed | backdated two hours | no actions, no alert |
 | And says so on the ticket | the same ticket | note, "did not finish" |
+| And records that note like any other | the same ticket | `note_written` set |
 | And tells the review channel | the same ticket | posted to review |
 | And records the abandonment | the same ticket | `interrupted_past_recovery_window` |
 | And is not rescanned | after abandoning | body cleared |
 | An unreadable body is dropped | column set to invalid JSON | not acted on |
+| A failed classification goes to review | Claude stubbed to raise `auth_failure` | posted to review |
+| And owes nothing afterwards | the same ticket | no outstanding actions |
+| And the next start will not pick it up | after the run | body cleared |
+| A failed review post leaves it for the next start | Slack stubbed to fail as well | body kept |
+| A repeat delivery resumes an unfinished ticket | second request with a new requester and IP | 202 |
+| On the request it was first accepted with | the same run | original requester and IP kept |
+| An abandoned ticket is refused on a repeat delivery | request for the abandoned ticket | `duplicate` |
+| So is a decided ticket with no stored body | classification kept, body gone | `duplicate` |
+| So is an undecided one past the retry window | no body, osTicket says past window | `duplicate` |
 
 ### A real interrupted ticket, 2026-08-22, ticket 32
 
@@ -510,9 +558,36 @@ the handler and the signal wiring by sending the signal directly. Running
 `api/cron.php` on a schedule is a deployment step, in
 [architecture.md, Section 10](architecture.md#10-deployment-preconditions).
 
+## Prompt isolation verification
+
+Measured 2026-09-08, eight checks, all passing. The ticket reaches Claude inside
+a delimiter, and the system prompt tells it to treat everything in that block as
+data rather than as instructions. The delimiter used to be the fixed string
+`<ticket>`, so a body containing it closed the block early and left the rest of
+that ticket reading as though it came from the operator. The delimiter is now
+generated per request.
+
+| Property | How it was checked | Result |
+|---|---|---|
+| A hostile body cannot close the block | a message carrying `</ticket>` and `<ticket>` | closed once, by the generated delimiter |
+| The delimiter is not reused | fifty wraps compared | fifty distinct |
+| The old fixed delimiter is never used | the same fifty | absent |
+| The ticket is not altered | subject and message compared byte for byte | unchanged |
+
+The last property is what keeps the fix honest. Stripping the delimiter out of
+the body would pass the first three and change what the agent classifies, so the
+text Claude read would no longer be the text the store keeps and the audit log
+records.
+
+The checks were run against the previous construction before being trusted. Two
+of them fail on it, finding two closing delimiters where there should be one.
+
+Reproduce with `./venv/bin/python verification/verify_prompt_isolation.py` from
+`agent/`. Nothing is written and no network call is made.
+
 ## Action table verification
 
-Measured 2026-08-19, thirty-one checks, all passing. The table is the contract
+Measured 2026-09-30, thirty-five checks, all passing. The table is the contract
 between classification and action, so every row is compared as a whole `Actions`
 object rather than field by field. A row that gets one field wrong fails on that
 row instead of hiding behind the fields it gets right.
@@ -522,6 +597,8 @@ row instead of hiding behind the fields it gets right.
 | Every documented row matches the code | 30 rows from `docs/action-table.md` | all match |
 | Every category has a row | each `schemas.Category` member looked up | no gaps |
 | An unknown category is refused | a category with no row | raises |
+| The schema refuses pairs the rubric forbids | `it_support` at critical, `unclear` at high confidence | both refused, a critical incident still accepted |
+| The schema refuses a field the tool does not define | an extra `action` field | refused |
 
 An earlier version returned `human_review` for an unknown category at low
 confidence, which reads as safe and is not. It would have let a category the
@@ -560,13 +637,13 @@ different failures, and fails if that string appears anywhere in the child
 process output.
 
 Reproduce with `./venv/bin/python verification/verify_slack.py` from `agent/`. One case takes
-about 17 seconds because it exhausts three retries against an unreachable host.
+about 7 seconds because it makes three attempts against an unreachable host.
 The delivery case needs `SLACK_WEBHOOK_TEST` set and skips without it, so a run
 reporting forty-four checks skipped delivery rather than proving it.
 
 ## Paging verification
 
-Measured 2026-08-19, twenty-nine checks, all passing.
+Measured 2026-09-11, thirty checks, all passing.
 
 | Property | How it was checked | Result |
 |---|---|---|
@@ -574,7 +651,8 @@ Measured 2026-08-19, twenty-nine checks, all passing.
 | An unknown destination is refused | `send_page` with a name the table never produces | raises before posting |
 | It claims nothing about enrichment | the built page | no events, enrichment or identifier wording |
 | Severity maps to PagerDuty's | every `Severity` member | all four mapped |
-| The dedup key is the ticket id | the built event | `"15"` |
+| The dedup key is not the ticket id | the built event | an HMAC, not `"15"` |
+| One ticket always gives the same key | `build_page` called twice | keys match |
 | The link text is the URL itself | the `links` entry | text equals href |
 | No enrichment output crosses | the payload | no `custom_details` |
 | The fallback leads with the failure | `build_fallback_page` | "alert delivery failed" first |
@@ -587,7 +665,7 @@ Measured 2026-08-19, twenty-nine checks, all passing.
 The routing key sits in the request body rather than the URL, so the usual
 danger of a client library echoing the URL does not apply here. What can still
 expose it is a rejection quoting the field it refused, which is why the canary
-is the key itself and why the response body is truncated before it is logged.
+is the key itself and why the response body is never recorded.
 
 Reproduce with `./venv/bin/python verification/verify_pagerduty.py` from `agent/`. The
 delivery case needs `PAGERDUTY_ROUTING_KEY_TEST` and skips without it.
@@ -669,11 +747,11 @@ destinations when those are configured.
 
 ## Webhook gate verification
 
-Measured 2026-08-23, twenty checks across nineteen requests, all passing. The
-duplicate request is asserted twice, on its status code and on the reason it
-gives. The endpoint osTicket calls is the only part of the agent an outsider can
-reach, and a request that fails any check here is refused before the agent does
-any work.
+Measured 2026-09-28, twenty-four checks across twenty-three requests, all
+passing. The duplicate request is asserted twice, on its status code and on the
+reason it gives. The endpoint osTicket calls is the only part of the agent an
+outsider can reach, and a request that fails any check here is refused before
+the agent does any work.
 
 | Request | Result |
 |---|---|
@@ -694,6 +772,10 @@ any work.
 | Ticket ID `true` | 400 |
 | Ticket ID a list | 400 |
 | Ticket ID an object | 400 |
+| Ticket number that does not match osTicket's | 403 |
+| Ticket osTicket does not have | 403 |
+| Ticket number missing | 400 |
+| Right number for a ticket past the retry window the agent never processed | 403 |
 | Ticket ID already processed | 200, `status: duplicate` |
 | The same request again | 200, `status: duplicate` |
 
@@ -705,7 +787,9 @@ A timestamp five minutes in the future is refused because the freshness window
 allows 60 seconds of clock skew and no more, so a replay cannot buy itself a
 window by claiming to be from ahead. A boolean ticket ID is refused explicitly,
 because `isinstance(True, int)` is true in Python and it would otherwise pass
-the numeric check.
+the numeric check. A ticket that fails the ticket number check is refused before
+the store is touched, so a forged request never marks its ticket ID as taken and
+the real ticket is still accepted when it arrives.
 
 The accepted path is not exercised here. A `202` queues classification, a note,
 an alert and possibly a page against a real ticket, so proving it belongs with
@@ -717,6 +801,19 @@ from `agent/`, naming a ticket the agent has already processed. That ID is used
 for the duplicate cases, and an unprocessed one would be claimed and queue real
 work. Set `TRIAGE_WEBHOOK_URL` if the agent is not on `127.0.0.1:8000`, and note
 that this is the address the agent bound to rather than the one osTicket uses.
+It also needs osTicket running and the agent's `.env` in place, because it looks
+up ticket numbers through the plugin, and ticket 1 present, never processed and
+past the plugin's retry window plus five minutes, which is the old-ticket case.
+
+### A forged claim does not block the real ticket, 2026-09-27, ticket 38
+
+Run by hand against the running stack, with writes off. A signed request
+claimed ticket 38 with a made-up number before the ticket existed. The agent
+refused it with 403 and the store gained no row for ticket 38. A ticket then
+filed through the osTicket web form was given ID 38, and osTicket's own request
+for it was accepted with 202 and classified. The lookup back to osTicket ran
+while osTicket was still waiting on that request, so the check works inside a
+live submission.
 
 ## Heartbeat and the agent-down alert
 
@@ -795,6 +892,24 @@ triggers throughout, including for runs that provably invoked the email action,
 so it does not answer whether an alert fired. `scheduler.log` and `python.log`
 do.
 
+## Restart loop alert verification
+
+Measured 2026-09-28 against `docker/splunk-provisioning/triage_alerts`, with the
+agent restarted for real rather than with synthetic events. Every start sends a
+first beat with an uptime of zero, and the alert counts those over thirty
+minutes.
+
+| Property | How it was checked | Result |
+|---|---|---|
+| Quiet with no restarts | the search over the thirty minutes before the test | 0 starts, does not fire |
+| The search matches real starts | the same search over the previous day | 3 starts found |
+| A restart loop is detected | agent started and stopped three times, writes off | 3 starts, condition true |
+| The scheduled run fires | `scheduler.log` at the next five-minute run | `status=success`, `alert_actions="email"` |
+| The email arrives with the count | the recipient's inbox | subject `Action needed: triage agent is restarting repeatedly`, body says it started 3 times |
+
+The last row needed a real send. As the heartbeat section above explains,
+`sendemail` logs before it sends, so only the inbox confirms delivery.
+
 ## Delivery failure alert verification
 
 Measured 2026-08-22 against `docker/splunk-provisioning/triage_alerts`. Two
@@ -822,9 +937,41 @@ Two alerts did not fire during that run, both correctly. The heartbeat alert
 declined because the agent was up and beating. The paging alert was inside its
 one hour suppression window from a firing nine minutes earlier.
 
+## Note link verification
+
+Measured 2026-09-28, twelve checks, all passing. An attacker can choose some of
+the log values the agent copies into the note, and osTicket turns anything in a
+plain-text note that matches its link pattern into a live link.
+`verify_note.py` builds a note from hostile values and checks it against a copy
+of that pattern, taken from `Format::clickableurls` in osTicket's
+`include/class.format.php`.
+
+| Value in the logs | In the note |
+|---|---|
+| `https://evil.example/reset` | `https[:]//evil.example/reset` |
+| `www.evil.example` | `www[.]evil.example` |
+| `WWW.evil.example` | `WWW[.]evil.example` |
+| `ftp://files.example/x` | `ftp[:]//files.example/x` |
+| `alice@example.com` | `alice[@]example.com` |
+| A 180-character sentence | cut to 100 characters, ending `(cut)` |
+| `bob.smith`, `192.0.2.7` | unchanged |
+
+The pattern links every raw value except the uppercase `WWW.` one, which
+osTicket's case-sensitive pattern leaves alone. It finds nothing in the built
+note. The `Search:` line is left as the agent built it, so an analyst can paste
+it into Splunk, and it holds only values the agent validated.
+
+The same note was also run once through osTicket's own `Format::htmlchars` and
+`Format::clickableurls` inside the container. It produced no links, and the raw
+values from the table put through the same code produced four, all but the
+uppercase `WWW.` one.
+
+Reproduce with `./venv/bin/python verification/verify_note.py` from `agent/`.
+Nothing is written and no network call is made.
+
 ## Not yet verified
 
-Four things this file does not cover, listed so the sections above are not read
+Three things this file does not cover, listed so the sections above are not read
 as a complete picture.
 
 The fallback page. `needs_fallback_page` is the most intricate condition in the
@@ -841,7 +988,4 @@ dead audit endpoint. What no run has produced is the delay itself, an osTicket
 or Splunk call that hangs to its full timeout rather than refusing at once, so
 the numbers this ordering exists to avoid are arithmetic from the retry
 constants rather than measurements.
-
-An end-to-end run on the current ordering. The ticket 20 table above records the
-old one.
 

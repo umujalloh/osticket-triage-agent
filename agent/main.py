@@ -2,6 +2,7 @@ import asyncio
 import hmac
 import hashlib
 import os
+import re
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -15,13 +16,14 @@ load_dotenv()
 from action_table import actions_for, PRIORITY_FOR_SEVERITY, REVIEW, WAKE
 from classifier import classify_ticket, ClassificationError
 from idempotency import (
-    claim_ticket, clear_payload, completed_actions, mark_done, save_classification,
-    save_payload, stored_classification, ticket_key, unfinished_payloads,
+    claim_ticket, clear_payload, completed_actions, is_known_ticket, mark_done,
+    save_classification, save_payload, stored_classification, stored_payload,
+    ticket_key, unfinished_payloads,
 )
 from note_builder import build_abandoned_note, build_note
 from osticket_client import (
     write_note, set_priority, route_to_security, OsTicketWriteError, SKIPPED,
-    ALREADY_WRITTEN, ALREADY_ROUTED,
+    ALREADY_WRITTEN, ALREADY_ROUTED, lookup_number,
 )
 from pagerduty_client import (
     build_page, build_fallback_page, send_page, PagerDutyError,
@@ -160,15 +162,13 @@ def _abandon_interrupted(ticket_id, ticket_number=None):
     # The note lands before the post, so a reader following the link finds the
     # ticket already carrying its explanation.
     if not completed_actions(ticket_id)["note_written"]:
-        try:
-            write_note(ticket_id=int(ticket_id), note=build_abandoned_note(),
-                       title="Triage did not finish")
-        except Exception as e:
-            print(f"Ticket {ticket_id}: could not write the abandoned note "
-                  f"({type(e).__name__}: {e})")
+        _send_note(ticket_id, build_abandoned_note(), title="Triage did not finish")
 
     _post(ticket_id, REVIEW,
           build_abandoned_message(ticket_id, ticket_number), mention=False)
+    # Its body is already gone, so it cannot be resumed safely. Marked whether
+    # or not the post went out, so a later request for it is refused.
+    mark_done(ticket_id, "handed_to_review")
 
 def _report_recovery(task):
     """Says so when recovery dies rather than finishes.
@@ -203,7 +203,10 @@ async def lifespan(app: FastAPI):
         beat.cancel()
         recover.cancel()
 
-app = FastAPI(lifespan=lifespan)
+# FastAPI serves interactive docs and the API schema by default, with no
+# authentication. They are turned off, so the signed webhook is the only route.
+app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None,
+              openapi_url=None)
 
 print(f"Effectful writes are {'ENABLED' if writes_enabled() else 'DISABLED'}")
 
@@ -232,6 +235,11 @@ def verify_signature(raw_body: bytes, signature_header: str) -> bool:
 
 REPLAY_WINDOW_SECONDS = 300
 CLOCK_SKEW_TOLERANCE_SECONDS = 60
+
+# A ticket number goes into Slack alerts and PagerDuty pages as text, and Slack
+# reads < > and & as markup. Only up to 32 letters, digits and hyphens are let
+# through, and alerts and pages show the ticket ID for anything else.
+PLAIN_TICKET_NUMBER = re.compile(r"[A-Za-z0-9-]{1,32}")
 
 def is_fresh(created_at) -> bool:
     if not created_at:
@@ -288,6 +296,10 @@ def outstanding_actions(ticket_id) -> list:
     channel post fails, so a ticket without one is the ordinary case rather than
     an unfinished one.
     """
+    # A person owns a ticket handed to review, after a failed classification or
+    # past the recovery window, so nothing is owed whatever was decided.
+    if completed_actions(ticket_id)["handed_to_review"]:
+        return []
     classification = stored_classification(ticket_id)
     if classification is None:
         # Claimed, and nothing decided, so nothing was done either.
@@ -449,15 +461,18 @@ def _handle_classification_failure(ticket_id, payload, failure_type, error):
         failure_type=failure_type,
     )
     _post(ticket_id, REVIEW, text, mention=False)
+    # Marked only once the review post has gone out, so a failed post leaves
+    # the ticket for the next start to try again.
+    if completed_actions(ticket_id)["slack_posted"]:
+        mark_done(ticket_id, "handed_to_review")
 
 def _audit_failed(ticket_id, event):
-    """A Splunk write that failed after the thing it records already happened.
+    """A Splunk write that failed, recorded on the console only.
 
-    The note is on the ticket, the priority is set, the message is in the
-    channel, so the evidence exists and only the audit index is missing it. That
-    is a fact about a component rather than about this ticket, and it reaches a
-    person through the deployment's own watch on the audit index rather than
-    through an alert per ticket. architecture.md, Section 9.
+    A completed action still shows in the note, priority or channel post. For a
+    failed note, priority or routing write, this line is the only record.
+    Nothing alerts per ticket. A Splunk that refuses every write also stops the
+    heartbeat, which the deployment alerts on. architecture.md, Section 9.
     """
     print(f"Ticket {ticket_id}: audit write failed ({event})")
 
@@ -736,10 +751,17 @@ def _write_ticket_note(ticket_id, classification, outcome, events, query, audite
         print(f"Ticket {ticket_id}: note already written, skipping")
         return
 
-    body = build_note(classification, outcome, events, query, audited)
+    _send_note(ticket_id, build_note(classification, outcome, events, query, audited))
 
+def _send_note(ticket_id, body, title="AI Triage"):
+    """Writes one note and records the outcome, whichever note it is.
+
+    Shared by the triage note and the note on a ticket abandoned past the
+    recovery window, so both are audited and both set the `note_written` flag
+    their callers check first.
+    """
     try:
-        result = write_note(ticket_id=int(ticket_id), note=body)
+        result = write_note(ticket_id=int(ticket_id), note=body, title=title)
     except OsTicketWriteError as e:
         audit_ok = log_note_failure(ticket_id, e.failure_type, str(e))
         print(f"Ticket {ticket_id}: note write failed ({e.failure_type})")
@@ -808,15 +830,68 @@ async def receive_ticket(request: Request, background_tasks: BackgroundTasks):
         )
         return JSONResponse(status_code=400, content={"detail": "ticket_id is required"})
 
-    # A bool is not a ticket identifier, and isinstance(True, int) is True, so
-    # it has to be rejected explicitly rather than by the type check below.
-    if isinstance(ticket_id, bool) or not isinstance(ticket_id, (int, str)):
+    # osTicket sends its internal ticket ID as an integer, and it goes into the
+    # ticket link in every alert and page. A bool has to be rejected
+    # explicitly, because isinstance(True, int) is True.
+    if (isinstance(ticket_id, bool) or not isinstance(ticket_id, int)
+            or ticket_id < 1):
         background_tasks.add_task(
             log_request_rejected, reason="invalid_ticket_id", source_ip=source_ip
         )
         return JSONResponse(
-            status_code=400, content={"detail": "ticket_id must be a number or string"}
+            status_code=400, content={"detail": "ticket_id must be a positive integer"}
         )
+
+    # osTicket gives each ticket an ID in order and a random ticket number,
+    # so the next ID is easy to guess. Without this check a forged request
+    # could claim an ID before the real ticket exists, and the real ticket
+    # would then be resumed under the forged request's classification. The
+    # number is compared as sent, before the plain-number check below may
+    # drop it.
+    sent_number = payload.get("ticket_number")
+    if not isinstance(sent_number, str) or not sent_number:
+        background_tasks.add_task(
+            log_request_rejected, reason="missing_ticket_number",
+            source_ip=source_ip, ticket_id=ticket_id
+        )
+        return JSONResponse(status_code=400,
+                            content={"detail": "ticket_number is required"})
+    try:
+        found = await asyncio.to_thread(lookup_number, ticket_id)
+    except OsTicketWriteError:
+        background_tasks.add_task(
+            log_request_rejected, reason="osticket_unreachable",
+            source_ip=source_ip, ticket_id=ticket_id
+        )
+        # 503 so the plugin keeps the ticket in its retry queue.
+        return JSONResponse(status_code=503,
+                            content={"detail": "Could not confirm the ticket with osTicket"})
+    real_number, past_window = found if found else (None, False)
+    if real_number != sent_number:
+        reason = "ticket_not_found" if real_number is None else "ticket_number_mismatch"
+        background_tasks.add_task(
+            log_request_rejected, reason=reason, source_ip=source_ip,
+            ticket_id=ticket_id
+        )
+        return JSONResponse(status_code=403,
+                            content={"detail": "Ticket does not match osTicket"})
+
+    # A ticket past osTicket's retry window can no longer arrive genuinely, so
+    # one the store has never seen is refused. Without this a forged request
+    # would have unlimited time to guess an old ticket's number. The answer is
+    # the same as a wrong number, so a correct guess cannot be told apart.
+    if past_window and not is_known_ticket(ticket_id):
+        background_tasks.add_task(
+            log_request_rejected, reason="ticket_past_retry_window",
+            source_ip=source_ip, ticket_id=ticket_id
+        )
+        return JSONResponse(status_code=403,
+                            content={"detail": "Ticket does not match osTicket"})
+
+    # A ticket number that is not plain is dropped, so alerts and pages show
+    # the ticket ID instead.
+    if not PLAIN_TICKET_NUMBER.fullmatch(sent_number):
+        payload["ticket_number"] = None
 
     # Claiming and starting are separate. The claim is the store's record that
     # this ticket was accepted once; starting is this process saying it is
@@ -838,6 +913,25 @@ async def receive_ticket(request: Request, background_tasks: BackgroundTasks):
         )
         return JSONResponse(status_code=200,
                             content={"status": "duplicate", "ticket_id": ticket_id})
+
+    # A resume finishes the ticket on the request it was first accepted with.
+    # The new request only shows the ticket is still owed work. Its requester,
+    # verified flag and IP must not replace the original's, or anyone holding
+    # the webhook secret could point enrichment at someone else. With no stored
+    # body there is nothing safe to resume on, except a ticket never decided,
+    # whose first body failed to save and which osTicket is sending again
+    # within its retry window.
+    if not claimed:
+        original = stored_payload(ticket_id)
+        if original is not None:
+            payload = original
+        elif outstanding != [UNDECIDED] or past_window:
+            background_tasks.add_task(
+                log_request_rejected, reason="duplicate", source_ip=source_ip,
+                ticket_id=ticket_id
+            )
+            return JSONResponse(status_code=200,
+                                content={"status": "duplicate", "ticket_id": ticket_id})
 
     # Last gate, and the only one that sees the other runs in this process. A
     # ticket still being worked on has actions outstanding and would read as

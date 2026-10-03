@@ -33,7 +33,6 @@ SPLUNK_CONTAINER="${SPLUNK_CONTAINER:-osticket-triage-splunk-1}"
 SPLUNK_REST_HOST="${SPLUNK_REST_HOST:-localhost}"
 SPLUNK_REST_PORT="${SPLUNK_REST_PORT:-8089}"
 CACERT="$SCRIPT_DIR/splunk-provisioning/custom_tls/default/certs/cacert.pem"
-APP_DIR="/opt/splunk/etc/apps/triage_alerts"
 
 # The stanza names come from default/, so adding an alert there needs no change
 # here and the two cannot drift apart.
@@ -69,17 +68,27 @@ if ! docker inspect "$SPLUNK_CONTAINER" >/dev/null 2>&1; then
   exit 0
 fi
 
-docker exec -u root "$SPLUNK_CONTAINER" mkdir -p "$APP_DIR/local"
-docker cp "$LOCAL_DIR/savedsearches.conf" "$SPLUNK_CONTAINER:$APP_DIR/local/savedsearches.conf"
-docker exec -u root "$SPLUNK_CONTAINER" chown -R splunk:splunk "$APP_DIR"
+# The app folder is bind-mounted into the container read-only, so the file
+# written above is already there and only the reload is needed.
+#
+# The admin password reaches curl as a config on stdin. On the command line it
+# would show in the process list to every account on the machine. printf is a
+# shell builtin, so no process ever holds it in its arguments.
 
-http_code=$(curl -s --cacert "$CACERT" -o /dev/null -w '%{http_code}' \
-  -u "admin:${SPLUNK_PASSWORD}" -X POST \
-  "https://${SPLUNK_REST_HOST}:${SPLUNK_REST_PORT}/services/apps/local/triage_alerts/_reload")
+# Quotes a value for a curl config file, which reads backslash escapes inside
+# double quotes.
+curl_quote() {
+  local s=${1//\\/\\\\}
+  printf '"%s"' "${s//\"/\\\"}"
+}
+
+http_code=$(printf 'user = %s\n' "$(curl_quote "admin:${SPLUNK_PASSWORD}")" |
+  curl -s --cacert "$CACERT" -o /dev/null -w '%{http_code}' -K - -X POST \
+    "https://${SPLUNK_REST_HOST}:${SPLUNK_REST_PORT}/services/apps/local/triage_alerts/_reload")
 
 if [[ "$http_code" == 2* ]]; then
   echo "Loaded into Splunk."
 else
-  echo "Copied, but Splunk did not reload (HTTP $http_code). Restart Splunk to pick it up." >&2
+  echo "Wrote the file, but Splunk did not reload (HTTP $http_code). Restart Splunk to pick it up." >&2
   exit 1
 fi

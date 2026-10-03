@@ -32,6 +32,8 @@ from fastapi.testclient import TestClient
 
 import main
 import idempotency as store
+from classifier import ClassificationError
+from slack_client import SlackError
 from schemas import Category, Confidence, Severity, TicketClassification
 
 failed = []
@@ -56,6 +58,9 @@ main.set_priority = lambda **kw: acted["priorities"].append(kw) or {
 main.route_to_security = lambda **kw: {"outcome": "routed", "from": "a", "to": "b"}
 main.send_page = lambda destination, event: "queued"
 main.enrich_ticket = lambda **kw: []
+# The webhook confirms each ticket with osTicket before claiming it. Offline,
+# osTicket agrees with the number every test ticket here carries.
+main.lookup_number = lambda ticket_id: ("465581", False)
 for name in [n for n in dir(main) if n.startswith("log_")]:
     setattr(main, name, lambda *a, **kw: True)
 
@@ -156,6 +161,10 @@ check("  nothing is triaged for it", acted["priorities"], [])
 check("  a note explains why", len(acted["notes"]), 1)
 check("  the note says triage did not finish",
       "did not finish" in acted["notes"][0].get("note", ""), True)
+# Recorded like any other note, so the audit trail shows it and a later pass
+# cannot write it a second time.
+check("  and the note is recorded as written",
+      main.completed_actions(4)["note_written"], True)
 # The same answer a classification failure gets. The agent never decided
 # anything, so it cannot know whether this was a critical incident, and a note
 # nobody opens is not enough on a ticket that might have been one.
@@ -177,6 +186,52 @@ fresh, stale = store.unfinished_payloads(3600)
 check("is dropped rather than acted on", fresh + stale, [])
 
 print()
+print("a ticket Claude could not classify is not picked up again")
+print()
+
+# The review channel has told a person to handle it by hand, so neither the
+# next start nor a repeat delivery may classify it again and act on it.
+unclassified = new_ticket()
+store.claim_ticket(unclassified)
+store.save_payload(unclassified, payload_for(unclassified))
+
+def classify_fails(**kwargs):
+    raise ClassificationError("auth_failure", "key rejected")
+
+working_classify = main.classify_ticket
+main.classify_ticket = classify_fails
+acted["posts"].clear()
+main.begin_processing(unclassified)
+main.process_ticket(payload_for(unclassified))
+main.classify_ticket = working_classify
+
+check("its review post goes out", acted["posts"], ["review"])
+check("  it owes nothing", main.outstanding_actions(unclassified), [])
+fresh, stale = store.unfinished_payloads(3600)
+check("  and the next start will not pick it up",
+      [p["ticket_id"] for p in fresh + stale], [])
+
+# A review post that fails has told nobody, so the ticket has to stay
+# unfinished for the next start to try again.
+unposted = new_ticket()
+store.claim_ticket(unposted)
+store.save_payload(unposted, payload_for(unposted))
+
+def slack_down(channel, text):
+    raise SlackError("server_down", "Slack unreachable")
+
+working_post = main.post_alert
+main.post_alert = slack_down
+main.classify_ticket = classify_fails
+main.begin_processing(unposted)
+main.process_ticket(payload_for(unposted))
+main.classify_ticket = working_classify
+main.post_alert = working_post
+
+check("a failed review post leaves the ticket for the next start",
+      [p["ticket_id"] for p in store.unfinished_payloads(3600)[0]], [unposted])
+
+print()
 print("a store that fails does not strand the ticket")
 print()
 
@@ -185,9 +240,9 @@ client = TestClient(main.app, raise_server_exceptions=False)
 handed_over = []
 main.process_ticket = lambda payload: handed_over.append(payload.get("ticket_id"))
 
-def deliver(ticket_id):
+def deliver(ticket_id, **changes):
     """Sends one signed webhook the way osTicket does."""
-    body = json.dumps({**payload_for(ticket_id),
+    body = json.dumps({**payload_for(ticket_id), **changes,
                        "created_at": datetime.now(timezone.utc).isoformat()}).encode()
     return client.post(
         "/webhook/ticket", content=body,
@@ -220,6 +275,53 @@ check("  so the retry is accepted once the store recovers",
       deliver(interrupted).status_code, 202)
 check("  and the work is handed over", handed_over, [interrupted])
 
+print()
+print("a resumed ticket keeps the request it was first accepted with")
+print()
+
+# A second request for an unfinished ticket only shows that work is owed. If
+# its requester and IP replaced the stored ones, anyone holding the webhook
+# secret could point enrichment at someone else.
+resumed = new_ticket()
+store.claim_ticket(resumed)
+store.save_classification(resumed, CRITICAL)
+store.save_payload(resumed, payload_for(resumed))
+
+received = []
+main.process_ticket = lambda payload: received.append(payload)
+reply = deliver(resumed, requester="someone.else@example.com",
+                submitter_ip="198.51.100.9")
+
+check("a repeat delivery of an unfinished ticket is resumed", reply.status_code, 202)
+check("  on the requester it was first accepted with",
+      received[0].get("requester") if received else None, "someone@example.com")
+check("  and the submitter IP it was first accepted with",
+      received[0].get("submitter_ip") if received else None, "192.0.2.1")
+
+# Abandoned before it was ever classified, so only the handed-to-review mark
+# stops a later request from being taken as the ticket's first body.
+abandoned = new_ticket()
+store.claim_ticket(abandoned)
+store.save_payload(abandoned, payload_for(abandoned))
+main._abandon_interrupted(abandoned)
+check("an abandoned ticket is refused on a repeat delivery",
+      deliver(abandoned, requester="someone.else@example.com").json().get("status"),
+      "duplicate")
+# A decided ticket whose body was dropped has nothing safe to resume on.
+bodiless = new_ticket()
+store.claim_ticket(bodiless)
+store.save_classification(bodiless, CRITICAL)
+check("  and so is a decided ticket with no stored body",
+      deliver(bodiless).json().get("status"), "duplicate")
+# An undecided ticket with no body takes the new one only inside osTicket's
+# retry window, where a genuine resend of a first body that failed to save
+# can still arrive.
+undecided = new_ticket()
+store.claim_ticket(undecided)
+main.lookup_number = lambda ticket_id: ("465581", True)
+check("  and so is an undecided one past the retry window",
+      deliver(undecided).json().get("status"), "duplicate")
+main.lookup_number = lambda ticket_id: ("465581", False)
 print()
 print("one ticket failing does not strand the ones behind it")
 print()

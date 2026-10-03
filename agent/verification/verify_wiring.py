@@ -130,8 +130,11 @@ def run_case(name, enable_writes, **overrides):
     env.update({"WIRING_CASE": name, "ENABLE_WRITES": enable_writes,
                 "TRIAGE_STATE_DB": STORE})
     # Alerts go to the test channel, so the real ones carry only real alerts.
+    # Urgent included, since the page-before-audit case posts a confident
+    # critical with an @here.
     test_hook = os.getenv("SLACK_WEBHOOK_TEST")
     if test_hook:
+        env["SLACK_WEBHOOK_URGENT"] = test_hook
         env["SLACK_WEBHOOK_INCIDENTS"] = test_hook
         env["SLACK_WEBHOOK_REVIEW"] = test_hook
     # Same for pages, so the real service holds nothing but real pages.
@@ -165,6 +168,8 @@ from itertools import product
 
 from action_table import actions_for
 from main import needs_fallback_page
+from pydantic import ValidationError
+
 from schemas import Category, Confidence, Severity, TicketClassification
 
 pages, fallbacks = [], []
@@ -174,8 +179,12 @@ for cat, sev, conf in product(Category, Severity, Confidence):
     except Exception:
         continue
     row = f"{cat.value}/{sev.value}/{conf.value}"
-    classification = TicketClassification(category=cat.value, severity=sev.value,
-                                          confidence=conf.value)
+    try:
+        classification = TicketClassification(category=cat.value, severity=sev.value,
+                                              confidence=conf.value)
+    except ValidationError:
+        # A pair the rubric forbids never reaches the table.
+        continue
     if acts.page:
         pages.append(row)
     if needs_fallback_page(classification, acts):

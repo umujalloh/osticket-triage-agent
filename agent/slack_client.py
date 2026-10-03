@@ -135,6 +135,9 @@ def build_failure_message(ticket_id, ticket_number, failure_type) -> str:
             f"  ·  {failure_type}")
     return "\n".join([head, _ticket_url(ticket_id)])
 
+# No wait after the last attempt, since no call follows it.
+ATTEMPTS = 3
+
 def post_alert(channel: str, text: str) -> str:
     """Posts one alert. Returns DONE, or SKIPPED when writes are off.
 
@@ -149,13 +152,14 @@ def post_alert(channel: str, text: str) -> str:
 
     url = WEBHOOKS[channel]
     last_error = None
-    for attempt in range(3):
+    for attempt in range(ATTEMPTS):
         try:
             response = requests.post(url, json={"text": text}, timeout=10)
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
             # The exception text embeds the URL, so only its type is reported.
             last_error = ("server_down", f"Could not reach Slack for the {channel} channel")
-            time.sleep([2, 5, 10][attempt])
+            if attempt < ATTEMPTS - 1:
+                time.sleep([2, 5][attempt])
             continue
         except requests.exceptions.RequestException as e:
             raise SlackError("unknown", f"{type(e).__name__} posting to the {channel} channel")
@@ -172,7 +176,14 @@ def post_alert(channel: str, text: str) -> str:
             )
         if response.status_code == 429:
             last_error = ("rate_limited", f"Slack rate limited the {channel} channel")
-            time.sleep([5, 15, 30][attempt])
+            if attempt < ATTEMPTS - 1:
+                time.sleep([5, 15][attempt])
+            continue
+        # A 503 says the service is down for now, so a later attempt can get past it.
+        if response.status_code == 503:
+            last_error = ("server_down", f"Slack is unavailable for the {channel} channel")
+            if attempt < ATTEMPTS - 1:
+                time.sleep([2, 5][attempt])
             continue
         raise SlackError(
             "unknown", f"Unexpected Slack response for {channel}: HTTP {response.status_code}"

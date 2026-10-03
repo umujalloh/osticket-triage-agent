@@ -15,7 +15,9 @@ from action_table import (
     HANDLED_CATEGORIES, INCIDENTS, NOTIFY, PRIORITY_FOR_SEVERITY, REVIEW,
     URGENT, WAKE, Actions, actions_for,
 )
-from schemas import Category, Confidence, Severity
+from pydantic import ValidationError
+
+from schemas import Category, Confidence, Severity, TicketClassification
 
 failed = []
 ran = 0
@@ -64,7 +66,7 @@ print("unclear: review at either confidence, because the category is the signal"
 row("unclear", "medium", "high_confidence", channel=REVIEW, human_review=True)
 row("unclear", "medium", "low_confidence", channel=REVIEW, human_review=True)
 
-print("the override quietens the escalation and changes nothing else")
+print("low confidence quietens the escalation and changes nothing else")
 low_critical = actions_for(Category.security_incident, Severity.critical,
                            Confidence.low_confidence)
 check("  a low-confidence critical still writes its note", low_critical.write_note, True)
@@ -103,6 +105,32 @@ try:
     check("  raises on a category with no row", "no exception", "ValueError")
 except ValueError:
     check("  raises on a category with no row", "ValueError", "ValueError")
+
+print("the schema refuses pairs the rubric forbids")
+
+def accepted(category, severity, confidence):
+    try:
+        TicketClassification(category=category, severity=severity,
+                             confidence=confidence)
+        return True
+    except ValidationError:
+        return False
+
+# Either of these would reach the table only if Claude broke the rubric. A
+# refusal becomes bad_output, which goes to review and is never acted on.
+check("  critical outside a security incident is refused",
+      accepted("it_support", "critical", "high_confidence"), False)
+check("  an unclear ticket at high confidence is refused",
+      accepted("unclear", "medium", "high_confidence"), False)
+check("  a critical security incident is still accepted",
+      accepted("security_incident", "critical", "low_confidence"), True)
+try:
+    TicketClassification(category="it_support", severity="low",
+                         confidence="high_confidence", action="close")
+    extra_refused = False
+except ValidationError:
+    extra_refused = True
+check("  a field the tool does not define is refused", extra_refused, True)
 
 print()
 if failed:

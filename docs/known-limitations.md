@@ -102,15 +102,15 @@ guest submission, which is osTicket's default.
 ### submitter_ip is the container gateway in this lab
 
 osTicket records the address it observes on the connection, and the browser
-reaches osTicket through the Docker bridge, so all nine tickets created to date
-record `172.21.0.1`. That address appears nowhere in BOTSv3, so the IP clause
-matches nothing here. A deployment reached directly, or through a reverse proxy
-declared in osTicket's trusted proxy setting, would record real client
-addresses.
+reaches osTicket through the gateway of its Docker network. Tickets filed now
+record `172.22.0.1`, and tickets filed before the networks were split record
+the old network's `172.21.0.1`. Neither address appears in BOTSv3, so the IP
+clause matches nothing here. A deployment reached directly, or through a
+reverse proxy declared in osTicket's trusted proxy setting, would record real
+client addresses.
 
 Together with the limitation above, a guest ticket in this lab produces a query
-that returns zero events. The pipeline runs correctly, there is simply nothing
-for it to match.
+that returns zero events. The pipeline runs correctly and has nothing to match.
 
 ### The idempotency store assumes one agent process
 
@@ -166,6 +166,16 @@ sits in a file on the host in plain text.
 
 That is acceptable for a single-machine lab and is not how a production
 deployment should hold it.
+
+### Nothing restricts where the agent can connect
+
+The agent is a host process under uvicorn, not a container, and its outbound
+traffic is unrestricted. It reaches five destinations and holds a credential for
+each, so a host compromise is enough to read them and send them anywhere.
+
+The agent cannot fix this. An attacker on the host runs their own code, so what
+the agent does about its own connections is beside the point. The control has to
+be an outbound proxy, which is a deployment precondition rather than code.
 
 ## Alerting
 
@@ -259,7 +269,7 @@ deployment precondition rather than code.
 
 ### The alerts that watch the agent have one delivery path
 
-All three Splunk alerts reach a person by email, through one SMTP account. If
+All four Splunk alerts reach a person by email, through one SMTP account. If
 that credential is revoked, if the scheduler is disabled, or if the searches are
 deleted, no alert is sent and nothing records that.
 
