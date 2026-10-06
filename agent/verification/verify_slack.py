@@ -45,6 +45,8 @@ if CASE == "live":
     print(f"OUTCOME={slack.post_alert(slack.URGENT, text)}")
     sys.exit(0)
 
+import inspect
+
 from schemas import EnrichmentOutcome, TicketClassification
 import slack_client as slack
 
@@ -166,6 +168,33 @@ check("  carries no severity icon",
 check("  never mentions the channel", "<!here>" in fail_msg, False)
 check("  falls back to the ticket id when there is no number",
       "#15" in slack.build_failure_message(15, None, "auth_failure"), True)
+
+# The README promises that nothing the submitter wrote reaches Slack. A
+# classification carries the hostname, username and IP Claude extracted from
+# the ticket text, so alerts are built from one carrying marker values on every
+# Slack channel, and the builders are held to the inputs they take today.
+print("nothing the submitter wrote reaches an alert")
+extracted = TicketClassification(
+    category="security_incident", severity="critical", confidence="high_confidence",
+    hostname="MARKER-HOST", username="marker.user", source_ip="203.0.113.77")
+if (extracted.hostname, extracted.username, extracted.source_ip) != \
+        ("MARKER-HOST", "marker.user", "203.0.113.77"):
+    sys.exit("validation dropped a marker, so the check below would test nothing")
+built = [slack.build_message(15, "465581", extracted, chan, mention=True,
+                             outcome=EnrichmentOutcome.completed, event_count=20,
+                             page="wake")
+         for chan in (slack.URGENT, slack.INCIDENTS, slack.REVIEW)]
+check("  extracted values never appear in an alert",
+      any(m in text for text in built
+          for m in ("MARKER-HOST", "marker.user", "203.0.113.77")), False)
+check("  the builders take no other input",
+      (list(inspect.signature(slack.build_message).parameters),
+       list(inspect.signature(slack.build_failure_message).parameters),
+       list(inspect.signature(slack.build_abandoned_message).parameters)),
+      (["ticket_id", "ticket_number", "classification", "channel", "mention",
+        "outcome", "event_count", "page", "paged"],
+       ["ticket_id", "ticket_number", "failure_type"],
+       ["ticket_id", "ticket_number"]))
 
 def run_case(name, **env_overrides):
     env = dict(os.environ)

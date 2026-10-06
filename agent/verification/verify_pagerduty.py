@@ -60,6 +60,9 @@ if CASE in ("live", "live_notify"):
     print(f"OUTCOME={pd.send_page(destination, pd.build_page(15, 'VERIFY', c))}")
     sys.exit(0)
 
+import inspect
+import json
+
 import pagerduty_client as pd
 from schemas import Severity, TicketClassification
 
@@ -135,6 +138,29 @@ print("every severity maps to a pagerduty severity")
 for sev in Severity:
     check(f"  {sev.value}", sev in pd.PAGERDUTY_SEVERITY, True)
 
+# The README promises that nothing the submitter wrote reaches PagerDuty. A
+# classification carries the hostname, username and IP Claude extracted from
+# the ticket text, so both pages are built from one carrying marker values and
+# the whole event body is searched, and the builders are held to the inputs
+# they take today.
+print("nothing the submitter wrote reaches a page")
+extracted = TicketClassification(
+    category="security_incident", severity="critical", confidence="low_confidence",
+    hostname="MARKER-HOST", username="marker.user", source_ip="203.0.113.77")
+if (extracted.hostname, extracted.username, extracted.source_ip) != \
+        ("MARKER-HOST", "marker.user", "203.0.113.77"):
+    sys.exit("validation dropped a marker, so the check below would test nothing")
+bodies = json.dumps([pd.build_page(15, "465581", extracted),
+                     pd.build_fallback_page(15, "465581", extracted)])
+check("  extracted values never appear in a page",
+      any(m in bodies for m in ("MARKER-HOST", "marker.user", "203.0.113.77")),
+      False)
+check("  the builders take no other input",
+      (list(inspect.signature(pd.build_page).parameters),
+       list(inspect.signature(pd.build_fallback_page).parameters)),
+      (["ticket_id", "ticket_number", "classification"],
+       ["ticket_id", "ticket_number", "classification"]))
+
 def run_case(name, **env_overrides):
     env = dict(os.environ)
     env["PAGERDUTY_CASE"] = name
@@ -168,7 +194,7 @@ out = run_case("bad_destination", ENABLE_WRITES="true")
 check("  it raises rather than posting", "OUTCOME=raised" in out, True)
 check("  and names the destination", "nowhere" in out, True)
 
-print("live delivery, to the test service only")
+print("live delivery, to the test PagerDuty service only")
 test_key = os.getenv("PAGERDUTY_ROUTING_KEY_TEST")
 delivered = bool(test_key)
 if not test_key:
@@ -176,10 +202,10 @@ if not test_key:
 else:
     out = run_case("live", ENABLE_WRITES="true", PAGERDUTY_ROUTING_KEY_WAKE=test_key)
     check("  a real page is queued", f"OUTCOME={pd.DONE}" in out, True)
-    # Both destinations go to the one test service, so this proves delivery and
-    # not urgency. Urgency is a property of the service in PagerDuty, which the
-    # agent can neither read nor set, so it is a deployment precondition rather
-    # than something a check here could assert.
+    # Both destinations go to the one test PagerDuty service, so this proves
+    # delivery and not urgency. Urgency is a property of the PagerDuty service,
+    # which the agent can neither read nor set, so it is a deployment
+    # precondition rather than something a check here could assert.
     out = run_case("live_notify", ENABLE_WRITES="true",
                    PAGERDUTY_ROUTING_KEY_NOTIFY=test_key)
     check("  so is a page to the other destination", f"OUTCOME={pd.DONE}" in out, True)
@@ -188,5 +214,6 @@ print()
 if failed:
     print(f"FAILED: {', '.join(failed)}")
     sys.exit(1)
-print(f"All {ran} checks passed. " + ("Two pages were queued for the test service."
-      if delivered else "Delivery was skipped, so no page was sent."))
+print(f"All {ran} checks passed. "
+      + ("Two pages were queued for the test PagerDuty service." if delivered
+         else "Delivery was skipped, so no page was sent."))
