@@ -132,6 +132,10 @@ if os.environ.get("WIRING_CASE"):
 
 STORE = os.path.join(tempfile.mkdtemp(prefix="triage-wiring-"), "state.db")
 
+# Every case's output, so the closing line can report what the run actually
+# did to the ticket instead of what it was meant to do.
+outputs = []
+
 def run_case(name, enable_writes, **overrides):
     env = dict(os.environ)
     env.update({"WIRING_CASE": name, "ENABLE_WRITES": enable_writes,
@@ -156,6 +160,7 @@ def run_case(name, enable_writes, **overrides):
         print(result.stdout)
         print(result.stderr)
         raise SystemExit(f"case {name} exited {result.returncode}")
+    outputs.append(result.stdout)
     return result.stdout
 
 failed = []
@@ -320,10 +325,42 @@ check("the page does not wait for enrichment either",
       paged_at < ordered.find("enrichment") if "enrichment" in ordered else True)
 
 print()
+
+# Counted from the agent's own console lines, so this reports what reached the
+# ticket, Slack and PagerDuty, whatever state the ticket started in. Printed
+# before the result, because a failing run has still acted on all three.
+import re
+
+said = "\n".join(outputs)
+prefix = re.escape(f"Ticket {TICKET_ID}: ")
+notes = len(re.findall(prefix + r"note written$", said, re.M))
+notes_present = len(re.findall(prefix + r"note already present$", said, re.M))
+priorities = re.findall(prefix + r"priority (\S+) to (\S+)$", said, re.M)
+moved = len(re.findall(prefix + r"routed to ", said))
+already_in = len(re.findall(prefix + r"already in ", said))
+alerts = re.findall(prefix + r"slack posted to (\S+)$", said, re.M)
+pages = len(re.findall(prefix + r"paged ", said))
+slack_to = ("the test Slack channel" if os.getenv("SLACK_WEBHOOK_TEST")
+            else "the real Slack channels")
+pages_to = ("the test PagerDuty service" if os.getenv("PAGERDUTY_ROUTING_KEY_TEST")
+            else "the real PagerDuty services")
+if moved:
+    move = "moved to the security department"
+elif already_in:
+    move = "already in the security department"
+else:
+    move = "not moved"
+
+print(f"On ticket {TICKET_ID}: {notes} note(s) written"
+      f"{f' ({notes_present} already present)' if notes_present else ''}, "
+      f"priority set {len(priorities)} time(s)"
+      f"{' (' + ', '.join(f'{a} to {b}' for a, b in priorities) + ')' if priorities else ''}, "
+      f"{move}.")
+print(f"{len(alerts)} Slack alert(s) sent to {slack_to}"
+      f"{' (' + ', '.join(alerts) + ')' if alerts else ''}, "
+      f"and {pages} page(s) to {pages_to}.")
+print()
 if failed:
     print(f"FAILED: {', '.join(failed)}")
     sys.exit(1)
 print(f"All {ran} checks passed.")
-print(f"Ticket {TICKET_ID} gained exactly one note, one priority change and one "
-      f"alert, plus one notice and one page from the cases that use their own "
-      f"stores.")
