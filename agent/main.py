@@ -37,7 +37,7 @@ from slack_client import (
 from writes import writes_enabled
 from splunk_enrichment import build_enrichment_query, enrich_ticket, EnrichmentError
 from splunk_logger import (
-    log_request_rejected, log_resumed, log_heartbeat,
+    log_request_rejected, log_resumed, log_crashed, log_heartbeat,
     log_classification, log_classification_failure,
     log_enrichment, log_enrichment_failure, log_enrichment_skipped,
     log_note_written, log_note_skipped, log_note_failure,
@@ -328,6 +328,16 @@ def process_ticket(payload: dict):
         # up on the next start.
         if not outstanding_actions(ticket_id):
             clear_payload(ticket_id)
+    except Exception as e:
+        # Raised again so the error still reaches the console. The audit event
+        # records in Splunk that this run ended on an error. A failure to write
+        # it is caught, so it cannot replace the error being reported.
+        try:
+            log_crashed(ticket_id, type(e).__name__)
+        except Exception as log_error:
+            print(f"Ticket {ticket_id}: could not record the crash "
+                  f"({type(log_error).__name__})")
+        raise
     finally:
         end_processing(ticket_id)
 

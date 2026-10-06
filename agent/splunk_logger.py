@@ -90,6 +90,21 @@ def log_resumed(ticket_id, outstanding):
         "outstanding_count": len(outstanding),
     })
 
+def log_crashed(ticket_id, error_type):
+    """A run that stopped on an error no action handled.
+
+    Every expected failure is caught and logged by the action it belongs to.
+    This is the rest, so a run that ended on an error has a record in the
+    index. Only the error's type is recorded. An unplanned error can carry
+    anything in its message, including a webhook URL or routing key from a
+    failed request, and the message still reaches the console.
+    """
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "triage_crashed",
+        "error_type": error_type,
+    })
+
 def log_classification(ticket_id, subject, classification, requester_verified):
     return _send_audit_event({
         "ticket_id": ticket_id,

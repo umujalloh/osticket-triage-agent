@@ -568,6 +568,7 @@ The agent records every decision and action in a Splunk index, and four Splunk s
 | Page | `paged`, `page_skipped`, `page_failed` | the destination, and whether it was a fallback page |
 | Human review | `human_review` | why the ticket needs a person |
 | Resumed ticket | `triage_resumed` | the actions still outstanding |
+| Crashed run | `triage_crashed` | the type of the error, which no action handled |
 | Heartbeat | `heartbeat` | the agent's uptime and the kill switch state |
  
 **Refused requests:** Every request the webhook's checks refuse is sent to the index, so probing and replay leave a trace, and anyone who can reach the webhook can add these entries. The `reason` is one of `invalid_signature`, `malformed_body`, `stale_timestamp`, `missing_ticket_id`, `invalid_ticket_id`, `missing_ticket_number`, `ticket_number_mismatch`, `ticket_not_found`, `ticket_past_retry_window`, `osticket_unreachable`, `duplicate` or `in_flight`. Nothing from the body is recorded when the signature fails, because the body is unverified. A request refused for its signature, its body or its ticket ID records no ticket ID, and a stale request records the ID as sent, unvalidated. Each entry is written after the response is sent, so a slow Splunk cannot delay the answer.

@@ -143,7 +143,11 @@ def explode(payload):
 
 main.begin_processing(9)
 real = main._process_ticket
+real_log = main.log_crashed
+# Recorded here instead of sent, so the check needs no Splunk.
+crashes = []
 main._process_ticket = explode
+main.log_crashed = lambda ticket_id, error_type: crashes.append((ticket_id, error_type))
 try:
     main.process_ticket({"ticket_id": 9})
     raised = "nothing"
@@ -151,9 +155,12 @@ except RuntimeError:
     raised = "RuntimeError"
 finally:
     main._process_ticket = real
+    main.log_crashed = real_log
 
 check("a run that raises does not swallow the error", raised, "RuntimeError")
 check("and still releases the ticket", main.begin_processing(9), True)
+check("and records the crash for the audit log, by type only",
+      crashes, [(9, "RuntimeError")])
 main.end_processing(9)
 
 print()
