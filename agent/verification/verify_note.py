@@ -1,4 +1,5 @@
-"""Checks that log values written into the note cannot become links.
+"""Checks that log values written into the note cannot become links, and that
+the note bounds their length and number.
 
 The note carries values copied from Splunk, and some of them an attacker can
 choose, such as a username typed at a sign-in page. osTicket escapes a
@@ -18,7 +19,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from note_builder import MAX_VALUE_LENGTH, build_note
+from note_builder import MAX_VALUE_LENGTH, MAX_VALUES_PER_LINE, build_note
 from schemas import (Category, Confidence, EnrichmentOutcome, Severity,
                      TicketClassification)
 
@@ -84,6 +85,21 @@ print()
 cut = LONG.strip()[:MAX_VALUE_LENGTH] + " (cut)"
 check("to the limit, and says so", cut in note, True)
 check("  and nothing past the limit survives", LONG.strip() in note, False)
+
+print()
+print("a long line is capped")
+print()
+
+# One line gathers several fields from up to twenty events, so it can hold
+# more values than events. Twenty events, each with two account fields.
+many = [event(user=f"account{n}", email=f"account{n}-mail")
+        for n in range(MAX_VALUES_PER_LINE)]
+capped = build_note(CRITICAL, EnrichmentOutcome.completed, many)
+accounts = next(line for line in capped.splitlines() if "account0" in line)
+check("at the limit", accounts.count("account"), MAX_VALUES_PER_LINE)
+check("  and says how many there were",
+      f"(first {MAX_VALUES_PER_LINE} of {2 * MAX_VALUES_PER_LINE})" in accounts,
+      True)
 
 print()
 print("ordinary values are untouched")
