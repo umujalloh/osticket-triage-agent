@@ -581,14 +581,14 @@ The agent records every decision and action in a Splunk index, and four Splunk s
 |---|---|---|
 | Triage agent is not reporting | no heartbeat for 10 minutes | 5 minutes |
 | Triage agent is restarting repeatedly | three or more starts in 30 minutes | 5 minutes |
-| Triage paging is failing | two or more failed pages to a destination, and the latest page to it failed | 5 minutes |
-| Triage Slack posts are failing | two or more failed posts to a channel, and the latest post to it failed | 15 minutes |
+| Triage paging is failing | two or more failed pages to a destination since its last successful page | 5 minutes |
+| Triage Slack posts are failing | two or more failed posts to a channel since its last successful post | 15 minutes |
  
 **Heartbeat:** Every other entry is written because a ticket arrived, so the index alone cannot tell a quiet helpdesk from a stopped agent. The agent writes a beat every sixty seconds by default, and the search alerts when they stop. Beats also stop when the agent cannot write to a running Splunk at all, such as after its HEC token is revoked, so the same alert catches a broken audit pipeline within about fifteen minutes. A beat shows only that the process is running, so an agent stuck on its tickets still beats and raises no alert.
  
 **Restart loop:** An agent that keeps crashing and being restarted still beats, so the heartbeat alert stays quiet. Every start sends a first beat with an uptime of zero, and the search counts those that reach Splunk.
  
-**Destination failures:** A revoked Slack webhook or a rotated PagerDuty routing key makes every page or post to it fail, and the agent does not track that. An alert on failures per hour would never fire for the pager, which is used only for critical incidents. So each search alerts when a destination has failed at least twice and its latest attempt failed, and it clears on the next success.
+**Destination failures:** A revoked Slack webhook or a rotated PagerDuty routing key makes every page or post to it fail, and the agent does not track that. An alert on failures per hour would never fire for the pager, which is used only for critical incidents. So each search alerts when a destination has failed at least twice since its last success, and it clears on the next success.
  
 **Unreachable or refusing agent:** An agent bound to the wrong address, or one refusing every ticket because its secrets no longer match osTicket's, still sends heartbeats, so no search notices it. osTicket records the problem instead, saving each failed send to its system log and emailing its administrator, unless logging is turned off or it has no outbound mail.
  
