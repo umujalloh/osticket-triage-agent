@@ -85,7 +85,7 @@ jobs:
             total=$((total + n))
           done
           echo "$total checks passed across 8 verifiers"
-          [ "$total" -eq 167 ] || {
-            echo "::error::expected 167 checks, got $total"
+          [ "$total" -eq 168 ] || {
+            echo "::error::expected 168 checks, got $total"
             exit 1
           }

@@ -135,6 +135,20 @@ except ValidationError:
     extra_refused = True
 check("  a field the tool does not define is refused", extra_refused, True)
 
+# The ticket an action touches comes only from the authenticated webhook.
+# Claude's output has no field for a ticket ID, so nothing in the ticket text
+# can choose which ticket the agent acts on. architecture.md, Attack 2.
+# Sent as text, and required to fail as an unknown field, so a ticket_id field
+# added later cannot pass this by rejecting the value's type instead.
+try:
+    TicketClassification(category="it_support", severity="low",
+                         confidence="high_confidence", ticket_id="5000")
+    deputy_refused = False
+except ValidationError as e:
+    deputy_refused = [(err["type"], err["loc"]) for err in e.errors()] == \
+        [("extra_forbidden", ("ticket_id",))]
+check("  a classification cannot name a ticket to act on", deputy_refused, True)
+
 print("an extracted value must match its whole pattern")
 # A pattern ending in $ also matches before a trailing newline, so a value with
 # one would pass a partial match and carry the newline into the audit log.
