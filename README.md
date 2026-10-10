@@ -214,9 +214,17 @@ paging about an incident from hours ago is worse than a note asking someone to
 look.
 
 **The agent stops entirely.** It writes a liveness event to Splunk every minute.
-Four saved searches ship with the repo and alert by email when those events
+Five saved searches ship with the repo and alert by email when those events
 stop, when the agent keeps restarting, when pages keep failing to a destination,
-and when Slack posts do.
+when Slack posts do, and when a PagerDuty routing key stops reaching a live
+PagerDuty service or cannot be checked.
+
+**A PagerDuty routing key goes dead.** PagerDuty accepts a page whose routing
+key was rotated, or whose PagerDuty service is disabled or in maintenance, and
+drops it, so nothing fails and the agent believes the page went out. Every five
+minutes the agent asks PagerDuty's REST API whether both routing keys still
+reach a live PagerDuty service, and a saved search emails within about ten
+minutes when one does not.
 
 ---
 
@@ -254,7 +262,7 @@ enrichment and ahead of the audit writes.
 
 | | |
 |---|---|
-| Offline checks, run in CI on every push | **168** across 8 verifiers |
+| Offline checks, run in CI on every push | **188** across 9 verifiers |
 | Checks against a live stack | **91** across 3 verifiers |
 | Real tickets used in live runs | **16** |
 
@@ -310,7 +318,7 @@ the evaluation cannot tell you is in
 
 ```
 agent/                  FastAPI service: webhook, classifier, enrichment, actions, audit
-agent/verification/     12 verifiers, each reproducible from one command
+agent/verification/     14 verifiers, each reproducible from one command
 docker/                 Dockerfile, compose file, Splunk provisioning and saved searches
 docs/                   Architecture, action table, evaluation, verification, limitations, setup
 osticket-plugin/        osTicket plugin: signing, delivery, retry queue, status note

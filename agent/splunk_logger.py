@@ -105,6 +105,20 @@ def log_crashed(ticket_id, error_type):
         "error_type": error_type,
     })
 
+def log_routing_key_check(destination, result, reason):
+    """Whether one PagerDuty routing key still reaches a live PagerDuty service.
+
+    Written on every check, alive or not, so the search that watches it reads
+    the latest result for each destination, and a routing key found alive
+    again clears the alert on its own.
+    """
+    return _send_audit_event({
+        "status": "routing_key_checked",
+        "destination": destination,
+        "result": result,
+        "reason": reason,
+    })
+
 def log_classification(ticket_id, subject, classification, requester_verified):
     return _send_audit_event({
         "ticket_id": ticket_id,

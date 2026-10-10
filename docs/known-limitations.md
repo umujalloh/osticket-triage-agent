@@ -220,30 +220,16 @@ Nothing in the agent changes on a paid plan. The routing key, the payload and
 the service are identical, and what a person receives is decided by their
 notification rules and their plan.
 
-### A page to a dead routing key is accepted and goes nowhere
+### A dead routing key is caught only by a periodic check
 
-PagerDuty's Events API accepted pages sent with a well-formed routing key that
-belongs to no PagerDuty service, with the same `202` and "Event processed" it
-returns for a real one, and the agent recorded them as paged. A key that was
-rotated, or whose PagerDuty service was deleted, most likely behaves the same.
-The agent then reports the page as sent, the urgent Slack alert says it paged,
-and the paging failure alert never fires, because nothing failed.
-
-One way to catch it is to ask PagerDuty's REST API every few minutes whether
-each routing key still belongs to a live PagerDuty service, and alert when one
-does not. It was left out of this build because it needs a new REST API key, and
-the read-only key this PagerDuty account can create is account-wide, so a stolen
-one would expose the whole account.
-
-A routing key that is rotated or deleted without the agent being updated, by
-mistake or by whoever controls the PagerDuty account, most likely leaves
-critical incidents reaching nobody by page, with nothing in this deployment
-saying so. The urgent Slack alert, the ticket note and the emergency priority
-still happen.
-[architecture.md, Section 10](architecture.md#10-deployment-preconditions) asks
-the deployment to update and restart the agent whenever a key is rotated, and
-[Attack 6](architecture.md#attack-6-credential-compromise) covers the threat
-from the PagerDuty account.
+PagerDuty accepts a page whose routing key is dead with the same `202` it gives
+a live one, and drops it. The agent cannot change that, so it checks each
+routing key every five minutes, and a Splunk search emails an alert within
+about ten minutes of a routing key dying, as described in
+[architecture.md, Section 9](architecture.md#watching-the-agent). A page sent
+before that alert is lost, and the urgent Slack channel post for it still says
+it paged. The REST API key is also account-level, so a stolen one can read the
+whole PagerDuty account, including users' contact details.
 
 ### Routing can hide a ticket, and the agent cannot tell
 
@@ -294,7 +280,7 @@ deployment precondition rather than code.
 
 ### The alerts that watch the agent have one delivery path
 
-All four Splunk alerts reach a person by email, through one SMTP account. If
+All five Splunk alerts reach a person by email, through one SMTP account. If
 that credential is revoked, if the scheduler is disabled, or if the searches are
 deleted, no alert is sent and nothing records that.
 

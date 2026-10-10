@@ -45,7 +45,7 @@ This document covers the design across all three phases.
  
 **Claude API:** An external LLM, used for classification only. It receives the ticket text from the agent and returns a category, a severity, a confidence, and any hostname, username or source IP the ticket explicitly names. It runs no queries and writes nothing.
  
-**Splunk:** The SIEM. It has three roles. It returns enrichment data when the agent runs a pre-defined, read-only query template against a single named index. It stores the audit trail of everything the agent decides and does. It also runs the four saved searches that watch the agent, alerting when it stops reporting, when it keeps restarting, when paging fails, or when Slack posts fail.
+**Splunk:** The SIEM. It has three roles. It returns enrichment data when the agent runs a pre-defined, read-only query template against a single named index. It stores the audit trail of everything the agent decides and does. It also runs the five saved searches that watch the agent, alerting when it stops reporting, when it keeps restarting, when Slack posts fail, when paging fails, or when a PagerDuty routing key stops reaching a live service.
  
 **Slack:** The team chat, and where a ticket goes when a human needs to see it. The agent sends every security incident, every unclear ticket and every low-confidence ticket to the urgent, incidents or review channel, as the [action table](action-table.md) decides. A ticket Claude never classified, or one interrupted and given up on past the recovery window, goes to the review channel directly.
  
@@ -232,10 +232,11 @@ The agent reads untrusted ticket text and acts on it. Each attack below follows 
 - **Claude key:** spends against the console limit. Exhausting it leaves every ticket in the review channel with no classification.
 - **Slack webhooks:** post messages that cannot be told from the agent's.
 - **PagerDuty routing keys:** raise incidents that look like the agent's. Together with the deduplication secret, they let an attacker compute the key for any ticket and close its incident.
+- **PagerDuty REST API key:** reads the whole PagerDuty account, including users' contact details. It is read-only, so it cannot create, change or close anything.
  
 Nothing restricts where the agent can connect, so a compromised host can read the credentials and send them anywhere. Restricting that traffic is a deployment precondition in [Section 10](#10-deployment-preconditions), not something the code can do.
  
-Beyond the agent's own credentials, whoever holds an admin login for osTicket, Splunk, Slack or PagerDuty can switch off the part of the system that service runs. A revoked Slack webhook makes posts fail and fires the Slack failure alert, and a revoked Splunk HEC token stops the heartbeat, so both are noticed. Disabling the osTicket plugin or the Splunk alerts produces no failure the agent or its alerts can see. PagerDuty accepted pages to a routing key that belongs to no PagerDuty service, so a deleted PagerDuty service or a rotated key most likely leaves the agent reporting pages that reached nobody, as [known-limitations.md](known-limitations.md#a-page-to-a-dead-routing-key-is-accepted-and-goes-nowhere) describes. The design trusts whoever holds these logins.
+The design trusts whoever holds an admin login for osTicket, Splunk, Slack or PagerDuty, and each of them can switch off the part of the system that service runs. Disabling the osTicket plugin or the Splunk alerts produces no failure the agent or its alerts can see. A revoked Splunk HEC token stops the heartbeat and fires the agent-down alert, a revoked Slack webhook makes posts fail and fires the Slack failure alert, and a rotated PagerDuty routing key or a disabled PagerDuty service fails the routing key check and fires its alert. A PagerDuty admin can leave an escalation policy with nobody on call, or add an event rule that suppresses the agent's pages, and the routing key check still reads both routing keys as alive.
  
 ---
  
@@ -529,7 +530,7 @@ The agent's secrets sit in plain text on the same host, in `agent/.env` for the 
 
 ### Credentials
 
-The agent reads eleven secrets from `agent/.env` at import. Two optional test keys serve only the verifiers. Each secret is bound to one service, except the dedup secret. [Attack 6](#attack-6-credential-compromise) covers what stolen credentials allow.
+The agent reads twelve secrets from `agent/.env` at import. Two optional test keys serve only the verifiers. Each secret is bound to one service, except the dedup secret and the PagerDuty REST API key, which reads the whole account. [Attack 6](#attack-6-credential-compromise) covers what stolen credentials allow.
 
 | Secret | Used for | Scope |
 |---|---|---|
@@ -540,6 +541,7 @@ The agent reads eleven secrets from `agent/.env` at import. Two optional test ke
 | `ANTHROPIC_API_KEY` | Classification | Unscoped in code, bounded by the organization's spend limit. |
 | `SLACK_WEBHOOK_URGENT`, `_INCIDENTS`, `_REVIEW` | Alerts | One channel each, bound by Slack. |
 | `PAGERDUTY_ROUTING_KEY_WAKE`, `_NOTIFY` | Pages | One service each. |
+| `PAGERDUTY_API_KEY` | Checking the routing keys | The whole PagerDuty account, read-only. |
 | `PAGERDUTY_DEDUP_SECRET` | Deriving deduplication keys | Grants no access on its own. It keeps deduplication keys unguessable, so a stolen routing key alone cannot close incidents. |
 
 osTicket's own API creates tickets, threads emailed replies into existing tickets and runs cron. It cannot change the priority or department of an existing ticket, so the agent holds no osTicket API key. The plugin registers four endpoints on osTicket's API signal instead. They return a ticket's number for the ticket number check, post an internal note to a ticket, set the priority to `low`, `normal`, `high` or `emergency`, and move a ticket to the security department. The agent sends no department name in the request body when a ticket needs to be moved, and the plugin takes the department from its own configuration, so a stolen write secret can move a ticket only into that one department. Every request must carry a valid signature, checked with `hash_equals`, and a timestamp no more than five minutes old, with 60 seconds of clock skew allowed. It must also name its operation inside the signed body, so a captured request cannot be replayed to a different endpoint. The ticket number check is signed with the same write secret, so a secret that differs between the agent and the plugin stops every ticket from being triaged, not only its writes.
@@ -552,7 +554,7 @@ The agent keeps its secrets out of error messages. A Slack webhook URL is itself
  
 ## 9. Observability and Audit
  
-The agent records every decision and action in a Splunk index, and four Splunk searches watch the agent itself.
+The agent records every decision and action in a Splunk index, and five Splunk searches watch the agent itself.
  
 ### The audit record
  
@@ -572,6 +574,7 @@ The agent records every decision and action in a Splunk index, and four Splunk s
 | Resumed ticket | `triage_resumed` | the actions still outstanding |
 | Crashed run | `triage_crashed` | the type of the error, which no action handled |
 | Heartbeat | `heartbeat` | the agent's uptime and the kill switch state |
+| Routing key check | `routing_key_checked` | the destination, whether its routing key is alive, dead or unchecked, and why |
  
 **Refused requests:** Every request the webhook's checks refuse is sent to the index, so probing and replay leave a trace, and anyone who can reach the webhook can add these entries. The `reason` is one of `invalid_signature`, `malformed_body`, `stale_timestamp`, `missing_ticket_id`, `invalid_ticket_id`, `missing_ticket_number`, `ticket_number_mismatch`, `ticket_not_found`, `ticket_past_retry_window`, `osticket_unreachable`, `duplicate` or `in_flight`. Nothing from the body is recorded when the signature fails, because the body is unverified. A request refused for its signature, its body or its ticket ID records no ticket ID, and a stale request records the ID as sent, unvalidated. Each entry is written after the response is sent, so a slow Splunk cannot delay the answer.
  
@@ -585,16 +588,19 @@ The agent records every decision and action in a Splunk index, and four Splunk s
 | Triage agent is restarting repeatedly | three or more starts in 30 minutes | 5 minutes |
 | Triage paging is failing | two or more failed pages to a destination since its last successful page | 5 minutes |
 | Triage Slack posts are failing | two or more failed posts to a channel since its last successful post | 15 minutes |
+| Triage paging may reach nobody | the latest check in the last hour finds either PagerDuty routing key dead or unchecked | 5 minutes |
  
 **Heartbeat:** Every other entry is written because a ticket arrived, so the index alone cannot tell a quiet helpdesk from a stopped agent. The agent writes a beat every sixty seconds by default, and the search alerts when they stop. Beats also stop when the agent cannot write to a running Splunk at all, such as after its HEC token is revoked, so the same alert catches a broken audit pipeline within about fifteen minutes. A beat shows only that the process is running, so an agent stuck on its tickets still beats and raises no alert.
  
 **Restart loop:** An agent that keeps crashing and being restarted still beats, so the heartbeat alert stays quiet. Every start sends a first beat with an uptime of zero, and the search counts those that reach Splunk.
  
-**Destination failures:** A revoked Slack webhook makes every post to it fail, and a PagerDuty outage makes every page fail. The agent does not track either. PagerDuty accepted pages sent to a routing key that belongs to no PagerDuty service, so a key that was rotated, or whose PagerDuty service was deleted, is most likely accepted too, and the paging failure alert cannot see it, as [known-limitations.md](known-limitations.md#a-page-to-a-dead-routing-key-is-accepted-and-goes-nowhere) explains. An alert on failures per hour would never fire for the pager, which is used only for critical incidents. So each search alerts when a destination has failed at least twice since its last success, and it clears on the next success.
+**Destination failures:** A revoked Slack webhook makes every post to it fail, and a PagerDuty outage makes every page fail. The agent does not track either. An alert on failures per hour would never fire for the pager, which is used only for critical incidents. So each search alerts when a destination has failed at least twice since its last success, and it clears on the next success.
+ 
+**Routing keys:** PagerDuty's Events API, which the agent pages through, answers a page whose routing key is dead with the same `202` as a live one, so a dead routing key never shows up as a failed page. With writes on, the agent therefore uses a read-only REST API key to ask PagerDuty every five minutes whether each routing key still belongs to a live PagerDuty service, and records each result in Splunk as alive, dead or unchecked. A routing key is dead if no PagerDuty service has it, or if its PagerDuty service is disabled, in maintenance or in a status the agent does not recognize. It is unchecked if the REST API key is refused or any other error stops the check. A dropped request or a temporary error from PagerDuty is tried three times before it counts as unchecked. Because unchecked is recorded as its own result, revoking the REST API key cannot blind the check. A saved search runs every five minutes and emails an alert when the latest result for either routing key is dead or unchecked. It repeats the same alert at most once an hour, but sends a new one at once whenever the text changes, such as when a second routing key fails or one fails again after recovering, because each alert gives the reason and since when the check has reported it. The alert clears when a later check finds the routing key alive. A dead routing key is reported within about ten minutes, about five until the agent's next check and about five more until the next search.
  
 **Unreachable or refusing agent:** An agent bound to the wrong address, or one refusing every ticket because its secrets no longer match osTicket's, still sends heartbeats, so no search notices it. osTicket records the problem instead, saving each failed send to its system log and emailing its administrator, unless logging is turned off or it has no outbound mail.
  
-**Delivery:** All four searches alert by email, so they still reach someone when Slack fails. Each sends at most one email an hour. Splunk's mail settings are a deployment precondition, covered in [Section 10](#10-deployment-preconditions). The searches run inside Splunk and send through one mail account, so a Splunk outage or a broken mail setup silences all four. The full reasoning for keeping them on one path is in [known-limitations.md](known-limitations.md).
+**Delivery:** All five searches alert by email, which does not pass through the agent, Slack or PagerDuty, so a failure in any of them cannot silence its own alert. None sends the same alert more than once an hour. They all run inside Splunk and send through one mail account, so a Splunk outage or a broken mail setup silences all five. [known-limitations.md](known-limitations.md#the-alerts-that-watch-the-agent-have-one-delivery-path) explains why they are kept on one path. Splunk's mail settings and an uptime check on Splunk from outside it are deployment preconditions in [Section 10](#10-deployment-preconditions).
 
 ---
  
@@ -612,11 +618,11 @@ The agent records every decision and action in a Splunk index, and four Splunk s
 
 5. **Turn on notifications for the urgent Slack channel:** The triage agent posts every critical security incident to that channel. Notification settings in Slack are per member and per channel, so everyone who should see a critical alert needs them on for that one. The triage agent can neither set them nor detect that they are unset, so an alert can sit in a channel nobody is watching while the post itself succeeds. A confident critical also carries an `@here`, which notifies only members active in Slack at the time, and a low-confidence critical carries no mention at all.
 
-6. **Set PagerDuty service urgency and keep the routing keys current:** The triage agent pages WAKE on a confident critical and NOTIFY on an unconfident one. Set WAKE to high urgency and NOTIFY to low. PagerDuty sets urgency per service, so with NOTIFY set to high, or set to follow the event's severity, an unconfident critical wakes someone just like a confident one. The triage agent cannot read either setting, and it sends `severity: critical` to both. Whether WAKE actually interrupts anyone also depends on each responder's notification rules and on what their PagerDuty plan can send. A responder whose high-urgency rules end at email is never interrupted, and nothing the triage agent can read shows it. When a routing key is rotated or its PagerDuty service replaced, update `agent/.env` and restart the triage agent before the old key is revoked, in the order [setup.md](setup.md#rotating-secrets) gives. PagerDuty accepted pages to a key that belongs to no PagerDuty service, so a stale key most likely fails silently, as [known-limitations.md](known-limitations.md#a-page-to-a-dead-routing-key-is-accepted-and-goes-nowhere) describes.
+6. **Set PagerDuty service urgency and keep the routing keys current:** The triage agent pages WAKE on a confident critical and NOTIFY on an unconfident one. Set WAKE to high urgency and NOTIFY to low. PagerDuty sets urgency per service, so with NOTIFY set to high, or set to follow the event's severity, an unconfident critical wakes someone just like a confident one. The triage agent cannot read either setting, and it sends `severity: critical` to both. Whether WAKE actually interrupts anyone also depends on each responder's notification rules and on what their PagerDuty plan can send. A responder whose high-urgency rules end at email is never interrupted, and nothing the triage agent can read shows it. When a routing key is rotated or its PagerDuty service replaced, update `agent/.env` and restart the triage agent before the old routing key is revoked, in the order [setup.md](setup.md#rotating-secrets) gives. PagerDuty accepts pages that carry a rotated routing key and drops them, so a stale routing key goes unnoticed until the routing key check in [Section 9](#9-observability-and-audit) catches it, within about ten minutes.
 
-7. **Configure Splunk's mail settings:** The four searches in [Section 9](#9-observability-and-audit) deliver by email, so Splunk needs a mail server, an account and a from address. The triage agent cannot raise these alerts itself, because it is the thing that posts to Slack and pages PagerDuty, so a fault in the agent would also stop its alerts. The searches ship in `docker/splunk-provisioning/triage_alerts`, and the SMTP credential stays in Splunk's own settings so it is never committed.
+7. **Configure Splunk's mail settings:** The five searches in [Section 9](#9-observability-and-audit) deliver by email, so Splunk needs a mail server, an account and a from address. The triage agent cannot raise these alerts itself, because it is the thing that posts to Slack and pages PagerDuty, so a fault in the agent would also stop its alerts. The searches ship in `docker/splunk-provisioning/triage_alerts`, and the SMTP credential stays in Splunk's own settings so it is never committed.
 
-8. **Watch Splunk from outside it:** All four searches that watch the triage agent run inside Splunk, so a Splunk outage stops every one of them and nobody is told. Point an uptime check that runs outside Splunk at Splunk itself.
+8. **Watch Splunk from outside it:** All five searches that watch the triage agent run inside Splunk, so a Splunk outage stops every one of them and nobody is told. Point an uptime check that runs outside Splunk at Splunk itself.
 
 9. **Restrict the agent's outbound traffic:** The agent needs to reach only Claude, Splunk, osTicket, Slack and PagerDuty, and nothing in the process stops it connecting anywhere else, which is the path stolen credentials would take off the host, as [Attack 6](#attack-6-credential-compromise) describes. Allowlist those destinations by hostname. Claude, Slack and PagerDuty all answer from provider-managed addresses that change without notice, so an IP allowlist breaks the first time one of them does.
 

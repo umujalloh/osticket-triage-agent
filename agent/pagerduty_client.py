@@ -26,6 +26,13 @@ ROUTING_KEYS = {
 }
 OSTICKET_BASE_URL = os.getenv("OSTICKET_BASE_URL")
 
+# The REST API, used only to ask whether each routing key still reaches a live
+# PagerDuty service. A read-only REST API key is enough. One made under API
+# Access Keys reads the whole PagerDuty account, which architecture.md,
+# Section 8 records.
+PAGERDUTY_API_URL = os.getenv("PAGERDUTY_API_URL", "https://api.pagerduty.com")
+PAGERDUTY_API_KEY = os.getenv("PAGERDUTY_API_KEY")
+
 # The secret behind the deduplication key. It has to be set even when writes
 # are off, because a page is built before send_page checks the switch. It is
 # not one of the shared secrets. Rotating those would change the dedup key of
@@ -45,6 +52,13 @@ if writes_enabled():
         raise RuntimeError(
             "ENABLE_WRITES is true, so a routing key is required for every page "
             f"destination. Missing: {', '.join(sorted(missing))}"
+        )
+    # Without it the routing key check cannot run, and a dead routing key would
+    # go unnoticed.
+    if not PAGERDUTY_API_KEY:
+        raise RuntimeError(
+            "ENABLE_WRITES is true, so PAGERDUTY_API_KEY is required to check "
+            "that the routing keys still reach a PagerDuty service"
         )
 
 DONE = "done"
@@ -187,8 +201,10 @@ def send_page(destination: str, event: dict) -> str:
         # The Events API answers 202, not 200, because it queues the event.
         if response.status_code == 202:
             return DONE
-        # An invalid key, a malformed body and a disabled integration are none
-        # of them fixed by trying again.
+        # A malformed routing key or body is refused, and trying again does not
+        # fix it. A page whose routing key's integration was deleted, or whose
+        # PagerDuty service is disabled or in maintenance, is answered 202 and
+        # never reaches here. The routing key check below catches it.
         if response.status_code in (400, 401, 403, 404):
             raise PagerDutyError(
                 "bad_request",
@@ -211,3 +227,120 @@ def send_page(destination: str, event: dict) -> str:
 
     failure_type, message = last_error
     raise PagerDutyError(failure_type, message)
+
+ALIVE = "alive"
+DEAD = "dead"
+UNCHECKED = "unchecked"
+
+# The statuses PagerDuty gives a PagerDuty service that creates incidents.
+# warning and critical mean incidents are open on it.
+LIVE_SERVICE_STATUSES = {"active", "warning", "critical"}
+# A PagerDuty service in either status takes a page with 202 and creates no
+# incident. Any other status is treated as dead too, so a status PagerDuty
+# adds later raises the alert.
+DEAD_SERVICE_STATUSES = {
+    "disabled": "is on a disabled PagerDuty service",
+    "maintenance": "is on a PagerDuty service in maintenance",
+}
+
+def _unchecked(because):
+    reason = f"could not be checked, because {because}"
+    return {dest: (UNCHECKED, reason) for dest in ROUTING_KEYS}
+
+def check_routing_keys() -> dict:
+    """Whether each destination's routing key still reaches a live PagerDuty
+    service.
+
+    The Events API answers 202 to a page whose routing key's integration was
+    deleted, or whose PagerDuty service is disabled or in maintenance, and
+    creates no incident, so the page is lost with nothing failing. The REST
+    API lists every PagerDuty service with its integrations, which is the only
+    place a dead routing key shows.
+
+    Returns {destination: (result, reason)}, where result is ALIVE, DEAD or
+    UNCHECKED, and reason finishes a sentence that starts "The wake routing
+    key", so the console and the alert email read as plain sentences.
+    UNCHECKED means the check did not get an answer it could use. It is
+    reported as its own result, so revoking the REST API key cannot blind the
+    check. Never raises, for the same reason. No routing key or REST API key
+    appears in a reason.
+    """
+    try:
+        return _check_routing_keys()
+    except Exception as e:
+        return _unchecked(f"the check failed with {type(e).__name__}")
+
+# Statuses a retry can clear. A 401 or 403 is not retried.
+RETRY_STATUSES = {429, 500, 502, 503, 504}
+
+def _get_services_page(headers, offset):
+    """One page of the PagerDuty service listing.
+
+    A dropped request or an answer in RETRY_STATUSES is tried again, ATTEMPTS
+    times in all, because one network blip would otherwise mark both routing
+    keys unchecked and send an alert email for nothing. The last failure is
+    returned or raised for the caller to report.
+    """
+    for attempt in range(ATTEMPTS):
+        last = attempt == ATTEMPTS - 1
+        try:
+            response = requests.get(
+                f"{PAGERDUTY_API_URL.rstrip('/')}/services", headers=headers,
+                params={"include[]": "integrations", "limit": 100,
+                        "offset": offset},
+                timeout=15,
+            )
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+            if last:
+                raise
+        else:
+            if last or response.status_code not in RETRY_STATUSES:
+                return response
+        time.sleep([2, 5][attempt])
+
+def _check_routing_keys() -> dict:
+    headers = {
+        "Authorization": f"Token token={PAGERDUTY_API_KEY}",
+        "Accept": "application/vnd.pagerduty+json;version=2",
+    }
+    services, offset = [], 0
+    try:
+        while True:
+            response = _get_services_page(headers, offset)
+            if response.status_code != 200:
+                return _unchecked("the PagerDuty REST API answered "
+                                  f"HTTP {response.status_code}")
+            body = response.json()
+            page = body.get("services") or []
+            services.extend(page)
+            if not body.get("more") or not page:
+                break
+            offset += len(page)
+    # requests' JSONDecodeError is both a ValueError and a RequestException,
+    # so it has to be caught first.
+    except ValueError:
+        return _unchecked("the PagerDuty REST API sent an unreadable answer")
+    except requests.exceptions.RequestException:
+        return _unchecked("the PagerDuty REST API could not be reached")
+
+    status_by_key = {}
+    for service in services:
+        for integration in service.get("integrations") or []:
+            key = integration.get("integration_key")
+            if key:
+                status_by_key[key] = service.get("status")
+
+    results = {}
+    for dest, key in ROUTING_KEYS.items():
+        if key not in status_by_key:
+            results[dest] = (DEAD, "reaches no PagerDuty service")
+            continue
+        status = status_by_key[key]
+        if status in LIVE_SERVICE_STATUSES:
+            results[dest] = (ALIVE, "reaches a live PagerDuty service")
+        elif status in DEAD_SERVICE_STATUSES:
+            results[dest] = (DEAD, DEAD_SERVICE_STATUSES[status])
+        else:
+            results[dest] = (DEAD, "is on a PagerDuty service in a status the "
+                                   "agent does not recognize")
+    return results

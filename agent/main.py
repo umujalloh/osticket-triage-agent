@@ -27,7 +27,7 @@ from osticket_client import (
 )
 from pagerduty_client import (
     build_page, build_fallback_page, send_page, PagerDutyError,
-    SKIPPED as PD_SKIPPED,
+    SKIPPED as PD_SKIPPED, ALIVE, check_routing_keys,
 )
 from schemas import Category, EnrichmentOutcome, Severity
 from slack_client import (
@@ -38,6 +38,7 @@ from writes import writes_enabled
 from splunk_enrichment import build_enrichment_query, enrich_ticket, EnrichmentError
 from splunk_logger import (
     log_request_rejected, log_resumed, log_crashed, log_heartbeat,
+    log_routing_key_check,
     log_classification, log_classification_failure,
     log_enrichment, log_enrichment_failure, log_enrichment_skipped,
     log_note_written, log_note_skipped, log_note_failure,
@@ -79,6 +80,36 @@ async def _heartbeat_loop():
             # the agent is alive.
             print(f"Heartbeat failed: {type(e).__name__}: {e}")
         await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+
+ROUTING_KEY_CHECK_SECONDS = int(os.getenv("ROUTING_KEY_CHECK_SECONDS", "300"))
+
+async def _routing_key_loop():
+    """Checks every ROUTING_KEY_CHECK_SECONDS that each PagerDuty routing key
+    still reaches a live PagerDuty service, and records the result for each.
+
+    PagerDuty accepts a page whose routing key is dead and drops it, so without
+    this a rotated routing key, or a PagerDuty service disabled or in
+    maintenance, stops paging through it with nothing failing.
+
+    Every result is recorded, alive included, and so is a check that cannot
+    run, so the search that watches it has a recent result for as long as
+    Splunk takes the audit events. Runs only with writes on, because nothing is
+    paged otherwise.
+    """
+    while True:
+        try:
+            results = await asyncio.to_thread(check_routing_keys)
+            for destination, (result, reason) in results.items():
+                await asyncio.to_thread(log_routing_key_check,
+                                        destination, result, reason)
+                if result != ALIVE:
+                    print(f"The {destination} routing key {reason}.")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            # Nothing that raises here may end the loop that runs it.
+            print(f"Routing key check failed: {type(e).__name__}")
+        await asyncio.sleep(ROUTING_KEY_CHECK_SECONDS)
 
 RECOVERY_WINDOW_SECONDS = int(os.getenv("RECOVERY_WINDOW_SECONDS", "3600"))
 
@@ -195,6 +226,10 @@ async def lifespan(app: FastAPI):
     """
     beat = asyncio.create_task(_heartbeat_loop())
     print(f"Heartbeat every {HEARTBEAT_INTERVAL_SECONDS}s")
+    keys = None
+    if writes_enabled():
+        keys = asyncio.create_task(_routing_key_loop())
+        print(f"Routing key check every {ROUTING_KEY_CHECK_SECONDS}s")
     recover = asyncio.create_task(_finish_interrupted())
     recover.add_done_callback(_report_recovery)
     try:
@@ -202,6 +237,8 @@ async def lifespan(app: FastAPI):
     finally:
         beat.cancel()
         recover.cancel()
+        if keys:
+            keys.cancel()
 
 # FastAPI serves interactive docs and the API schema by default, with no
 # authentication. They are turned off, so the signed webhook is the only route.

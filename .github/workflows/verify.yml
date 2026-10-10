@@ -1,6 +1,6 @@
 # Runs the offline verifiers on every push and pull request.
 #
-# Only the eight that never open a socket run here. verify_slack.py and
+# Only the nine that never open a socket run here. verify_slack.py and
 # verify_pagerduty.py can post to a real channel and open a real incident, and
 # verify_webhook.py, verify_writeback.py and verify_wiring.py need a running
 # stack. Those five stay hand-run, and docs/verification.md records them.
@@ -13,7 +13,7 @@
 #
 # This gate exists because verify_wiring.py silently stopped running for four
 # days in August 2026 while docs/verification.md said it passed. That one needs a
-# live stack and cannot run here, so this would not have caught it. The eight
+# live stack and cannot run here, so this would not have caught it. The nine
 # below can break the same way, and now they cannot do it unnoticed.
 
 name: verify
@@ -48,6 +48,8 @@ jobs:
       PAGERDUTY_ROUTING_KEY_WAKE: ci-placeholder-not-a-real-key
       PAGERDUTY_ROUTING_KEY_NOTIFY: ci-placeholder-not-a-real-key
       PAGERDUTY_DEDUP_SECRET: ci-placeholder-not-a-real-secret
+      PAGERDUTY_API_KEY: ci-placeholder-not-a-real-key
+      PAGERDUTY_API_URL: https://127.0.0.1:9
 
     steps:
       - name: Checkout
@@ -70,7 +72,7 @@ jobs:
           for v in verify_action_table verify_idempotency verify_resume \
                    verify_recovery verify_page_reporting \
                    verify_prompt_isolation verify_note \
-                   verify_enrichment_query; do
+                   verify_enrichment_query verify_routing_keys; do
             echo "::group::$v"
             out=$(python "agent/verification/$v.py" 2>&1) || {
               echo "$out"
@@ -84,8 +86,8 @@ jobs:
             [ -n "$n" ] || { echo "::error::$v printed no check count"; exit 1; }
             total=$((total + n))
           done
-          echo "$total checks passed across 8 verifiers"
-          [ "$total" -eq 168 ] || {
-            echo "::error::expected 168 checks, got $total"
+          echo "$total checks passed across 9 verifiers"
+          [ "$total" -eq 188 ] || {
+            echo "::error::expected 188 checks, got $total"
             exit 1
           }

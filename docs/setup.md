@@ -229,7 +229,7 @@ From `docker/`. Sign in to Splunk at `http://localhost:8010` as `admin`, with
    | makeresults | sendemail to="you@example.com" subject="Splunk mail test"
    ```
 
-**Checkpoint:** The alerts script lists four alerts and ends
+**Checkpoint:** The alerts script lists five alerts and ends
 `Loaded into Splunk.` The user script prints `User 'triage_agent' created.` The
 test message arrives within a minute.
 
@@ -260,14 +260,14 @@ From `agent/`.
    - `TRIAGE_WEBHOOK_URL`, with the `docker0` address the agent binds to in
      step 4, usually `http://172.17.0.1:8000/webhook/ticket`.
      `verify_webhook.py` sends here.
-3. Run the offline verifiers, the same eight CI runs. Each prints a last line
-   starting `All N checks passed`, 168 in total, and anything else is a
+3. Run the offline verifiers, the same nine CI runs. Each prints a last line
+   starting `All N checks passed`, 188 in total, and anything else is a
    failure.
 
    ```bash
    for v in verify_action_table verify_idempotency verify_resume verify_recovery \
             verify_page_reporting verify_prompt_isolation verify_note \
-            verify_enrichment_query; do
+            verify_enrichment_query verify_routing_keys; do
      ./venv/bin/python verification/$v.py | tail -1
    done
    ```
@@ -339,11 +339,18 @@ covers creating a PagerDuty service and its integration key.
    The agent cannot read a PagerDuty service's urgency, so a NOTIFY service at
    high urgency, or set to follow event severity, wakes someone for every
    low-confidence critical.
-3. For an account in PagerDuty's EU region, also set
-   `PAGERDUTY_EVENTS_URL=https://events.eu.pagerduty.com/v2/enqueue`.
+3. Under Integrations → API Access Keys, create a REST API key with Read-only
+   API Key selected, and describe it as something like "osTicket triage agent,
+   routing key check". This is `PAGERDUTY_API_KEY`. The agent uses it every five
+   minutes to check that both routing keys still reach a live PagerDuty service.
+   Unlike a routing key, which only sends events to its PagerDuty service, this
+   REST API key reads the whole PagerDuty account.
+4. For an account in PagerDuty's EU region, also set
+   `PAGERDUTY_EVENTS_URL=https://events.eu.pagerduty.com/v2/enqueue` and
+   `PAGERDUTY_API_URL=https://api.eu.pagerduty.com`.
 
-**Checkpoint:** You have four Slack webhook URLs and three PagerDuty routing
-keys.
+**Checkpoint:** You have four Slack webhook URLs, three PagerDuty routing keys
+and a read-only PagerDuty REST API key.
 
 ## Stage 8: Turn writes on
 
@@ -356,7 +363,8 @@ review post, unless a writes-off start already gave up on them.
 
 From `agent/`.
 
-1. Add the Slack and PagerDuty values to `.env`, including both test values.
+1. Add the Slack and PagerDuty values to `.env`, including `PAGERDUTY_API_KEY`
+   and both test values.
    Without them, `verify_wiring.py` posts to the real Slack channels and pages
    the real PagerDuty services.
 2. Test the destinations. These post to the test Slack channel and open
@@ -393,7 +401,9 @@ From `agent/`.
 
 **Checkpoint:** Each verifier ends `All N checks passed`. The test Slack
 channel shows the verifier posts, and the test PagerDuty service shows the
-pages.
+pages. The console prints `Routing key check every 300s`. In Splunk,
+`index=osticket_triage status=routing_key_checked result=alive` returns both
+routing keys within a minute of the start.
 
 ## Operating the stack
 
@@ -444,7 +454,8 @@ Change each secret where it is used, then restart whatever reads it.
 | `TRIAGE_HMAC_SECRET` | osTicket plugin, `agent/.env` | Change the osTicket plugin's setting, then `agent/.env`, then restart the agent. The agent refuses tickets in between, and the plugin queues them for cron to retry. Keep the gap inside the Retry Window. |
 | `TRIAGE_WRITE_SECRET` | osTicket plugin, `agent/.env` | Same order. In between, the agent cannot confirm ticket numbers with osTicket and answers 503, so tickets queue the same way. |
 | `PAGERDUTY_DEDUP_SECRET` | `agent/.env` | Change it only with no PagerDuty incident open. It keys every deduplication key, so a retry for an open incident would open a second one. |
-| Slack webhooks, PagerDuty keys | `agent/.env` | Create the new one, restart the agent, then revoke the old one. |
+| Slack webhooks, PagerDuty routing keys | `agent/.env` | Create the new one, restart the agent, then revoke the old one. A routing key left stale is reported by the routing key check. |
+| `PAGERDUTY_API_KEY` | PagerDuty, `agent/.env` | Create a new read-only REST API key, restart the agent, then revoke the old one. |
 | `ANTHROPIC_API_KEY` | `agent/.env` | Create the new key, restart the agent, then revoke the old one. |
 | `SPLUNK_HEC_TOKEN` | Splunk, `agent/.env` | Create a new token like the first, restart the agent, then delete the old one. |
 | `SPLUNK_AGENT_PASSWORD` | Splunk, both `.env` files | Change `triage_agent`'s password under Settings → Users, then both files, then restart the agent. `provision-splunk-user.sh` skips an existing user, so it cannot change it. |
@@ -458,7 +469,7 @@ Change each secret where it is used, then restart whatever reads it.
 [Section 10](architecture.md#10-deployment-preconditions) lists what a
 deployment must provide. This lab skips three:
 
-- **Item 8, an uptime check on Splunk from outside it:** All four alerts run
+- **Item 8, an uptime check on Splunk from outside it:** All five alerts run
   inside Splunk, so a Splunk outage silences them.
 - **Item 9, an outbound allowlist for the agent:** Nothing stops the agent
   connecting anywhere, so stolen credentials can leave the host through it.
