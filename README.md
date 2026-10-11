@@ -146,7 +146,7 @@ address. On an open form the email is whatever the submitter typed, so an
 unverified one is a search target the submitter chose, and it never reaches a
 query. Two tickets from the same address, one signed in and one not, are
 compared in
-[docs/verification.md](docs/verification.md#authentication-gate-verification).
+[docs/verification.md](docs/verification.md#authentication-gate).
 
 Any hostname, username, or IP the classifier extracted from ticket text is
 treated the same way. **Validated, recorded in the audit log, never searched

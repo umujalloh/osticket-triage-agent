@@ -78,6 +78,10 @@ class RunAtOnce:
 main._confirmations = RunAtOnce()
 main._routing_checks = RunAtOnce()
 
+# Writes on, whatever .env says, since a resumed page is confirmed again only
+# with writes on. Nothing is sent, because every client above is a stub.
+main.writes_enabled = lambda: True
+
 CRITICAL = TicketClassification(
     category=Category.security_incident, severity=Severity.critical,
     confidence=Confidence.high_confidence,

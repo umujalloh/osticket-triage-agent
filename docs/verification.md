@@ -1,88 +1,58 @@
 # Verification
 
-What the built system was checked to do, and how. The
-[evaluation](evaluation.md) scores the classifier against labelled tickets and
-never touches the plugin, the webhook, the Splunk clients or the action layer,
-so a fault anywhere on that path would score clean. This file covers what that
-cannot reach.
+What the built system was checked to do, and how. How accurately the classifier
+labels tickets is measured separately, in [evaluation.md](evaluation.md).
 
-Two kinds of record. Live runs drive a real ticket through the whole path and
-are dated to the run. Verifier sections are scripted checks, most of them
-offline, that can be re-run from `agent/verification/`.
+This file holds two kinds of evidence:
 
-## End-to-end verification
+- **Live runs:** a real ticket submitted through osTicket and followed through
+  the stack, recorded once with its date.
+- **Verifiers:** scripts in `agent/verification/` that anyone can re-run. The
+  nine offline verifiers need nothing running, and CI runs them on every push.
+  The five marked live verifier need the running stack, and some post to Slack
+  and page PagerDuty, so they are run by hand.
 
-A live run drives a ticket through the whole path: submitted on the real form,
-signed by the plugin, classified, written back, alerted. These are single runs
-recorded with their date, not repeated measurements.
+What each section proves, and how:
 
-**Method.** A ticket was submitted through osTicket's own ticket form, not a
-direct call to the agent's webhook endpoint, so the run exercises
-`class.TriagePlugin.php`, its HMAC signing, and the PHP-to-Python payload.
-
-**Result.** Measured 2026-08-09, ticket 9, submitted through the real osTicket
-form with requester `bgist@froth.ly` and ticket text naming `BGIST-L`. Confirmed
-in Splunk under `ticket_id: 9`:
-
-| Event | Field | Value |
+| What is proven | Section | How |
 |---|---|---|
-| classification_complete | category | security_incident |
-| classification_complete | severity | critical |
-| classification_complete | confidence | high_confidence |
-| classification_complete | extracted_hostname | BGIST-L |
-| enrichment_complete | event_count | 20 |
+| A ticket submitted on the osTicket form reaches every action its row selects | [End-to-end runs](#end-to-end-runs) | live run |
+| A Splunk outage delays the ticket writes and stops none of them | [End-to-end runs](#end-to-end-runs) | live run |
+| Only a signed, fresh, well-formed request for a real ticket is accepted | [Webhook gate](#webhook-gate) | live verifier |
+| The requester's email is searched only for an authenticated session | [Authentication gate](#authentication-gate) | live run |
+| A ticket the agent never accepted is retried, then marked as never triaged | [Retry queue](#retry-queue) | live run |
+| Ticket text cannot close the delimiter around it in Claude's prompt | [Prompt isolation](#prompt-isolation) | offline |
+| Each classification produces exactly its action table row | [Action table](#action-table) | offline |
+| A ticket cannot choose what Splunk is searched for | [Enrichment query](#enrichment-query) | offline |
+| A ticket is claimed once and each action recorded once, across restarts | [Idempotency store](#idempotency-store) | offline |
+| A repeat delivery is refused, or does only the work left undone | [Resume](#resume) | offline |
+| An interrupted ticket is finished, or handed to review, on the next start | [Recovery](#recovery) | offline, plus a live run |
+| Only the write secret can change a ticket | [Write-back endpoints](#write-back-endpoints) | live verifier, plus live runs |
+| Values copied from the logs cannot become links in a note | [Note links](#note-links) | offline, plus a live run |
+| Every action obeys the kill switch, and a retry repeats none of them | [Action wiring](#action-wiring) | live verifier, plus a live run |
+| A Slack alert states what happened, carries nothing the submitter wrote, and never leaks its webhook | [Slack alerts](#slack-alerts) | live verifier |
+| A PagerDuty page carries nothing the submitter wrote, PagerDuty accepts it, and the routing key never leaks | [PagerDuty pages](#pagerduty-pages) | live verifier |
+| An accepted page is checked for an incident, and one that reached nobody is reported | [Page confirmation](#page-confirmation) | offline, plus live runs |
+| A Slack alert says whether the page reached an incident, including after a restart | [Page reporting](#page-reporting) | offline |
+| A dead routing key is found within five minutes, and a check that cannot run is reported | [Routing key check](#routing-key-check) | offline, plus live runs |
+| A stopped or restart-looping agent, a failing Slack channel or PagerDuty service, or a dead routing key, triggers an email | [Monitoring](#monitoring) | live run |
 
-The extracted hostname is recorded on the classification event but does not
-appear in the enrichment query. Entities come from ticket text the submitter
-writes, so letting one in would hand the search target to whoever filed the
-ticket. All 20 stored events contain `bgist@froth.ly` and none contain
-`BGIST-L`, which on its own matches 10,327 events in the index.
+## End-to-end runs
 
-This run predates two changes and no longer describes current behavior. It was a
-guest submission, which the authenticated-session gate now excludes from the
-email clause, and it stored whole raw events, which the named field list now
-replaces. Reproducing it takes a confirmed account and returns the named fields.
+A live run submits a ticket on osTicket's own form, so it exercises the
+plugin's HMAC signing and the PHP-to-Python payload, then follows it through
+classification, write-back and alerting. Every ticket in this file was filed as
+`bgist@froth.ly`, a fictional user from the BOTSv3 dataset, so enrichment finds
+its 2018 events, and arrived from `172.21.0.1`, the lab's Docker gateway.
+[known-limitations.md](known-limitations.md) covers both.
 
-It is kept because it is the only run that shows the extracted entity being
-recorded and not used. A high-severity ticket does not enrich, and the runs below
-are the ones that exercise Phase 3.
+### The full path, 2026-08-25, ticket 36
 
-### The full path, 2026-08-19, ticket 20
+**Method:** Submitted as a verified user, reporting an account the submitter
+could not lock an intruder out of. A high-confidence critical writes a note,
+sets priority, posts to the urgent Slack channel with `@here`, and pages WAKE.
 
-A confident critical. It writes a note, sets priority, posts to the urgent
-channel with a mention, and pages WAKE. Submitted through the osTicket form as a
-confirmed user, with text describing an account the submitter could not lock an
-intruder out of.
-
-| Time | Event | Value |
-|---|---|---|
-| 03:49:06.604 | classification_complete | security_incident / critical / high_confidence |
-| 03:49:07.494 | enrichment_complete | 20 events |
-| 03:49:08.037 | paged | fallback false |
-| 03:49:08.065 | note_written | |
-| 03:49:08.096 | priority_set | normal to emergency |
-| 03:49:08.365 | slack_posted | urgent, mentioned true |
-
-Confirmed outside Splunk as well. The osTicket note is `format: text` and holds
-20 events spanning 2018-08-20 13:10 to 15:07, grouped into sign-in outcomes,
-three source addresses and the account `bgist@froth.ly`. Ticket priority is
-Emergency. The idempotency store shows all four action columns set, which no
-earlier run had produced. A push notification arrived on the responder's phone.
-
-The ordering in this run has since been changed and no longer describes the
-agent. The page ran after enrichment here, which meant it also ran after two
-audit writes, so a Splunk that hung rather than refused would have held it for
-around 133 seconds. The page now goes out before both. Ticket 36 below records
-the new order, and this table is a record of the old one.
-
-What the run still shows is every action reaching its destination on a confident
-critical, and the enrichment content that lands on the ticket.
-
-### The full path on the current ordering, 2026-08-25, ticket 36
-
-Submitted through the osTicket form as a confirmed user, reporting an account the
-submitter could not lock an intruder out of. A confident critical, which writes a
-note, sets priority, posts to the urgent channel with a mention, and pages WAKE.
+**Result:** In Splunk's audit index:
 
 | Time | Event | Value |
 |---|---|---|
@@ -93,665 +63,146 @@ note, sets priority, posts to the urgent channel with a mention, and pages WAKE.
 | 23:58:37.530 | priority_set | normal to emergency |
 | 23:58:37.786 | slack_posted | urgent, mentioned true |
 
-This is the run the ticket 20 section was waiting for. The page is first, 11ms
-ahead of the classification audit write and 1.6 seconds ahead of enrichment. That
-is the order the agent was changed to on 2026-08-19, hours after the ticket 20
-run, and no live run had recorded it until now.
+In osTicket:
 
-Confirmed outside Splunk. Ticket 36, number 114404, priority Emergency, and one
-internal note posted as `Triage Agent`, type N. The note holds 20 events spanning
-2018-08-20 13:10:25 to 15:07:39, grouped into sign-in outcomes, source and
-destination addresses, accounts and applications. Its last line is the query that
-produced them, `index=botsv3 ("bgist@froth.ly" OR "172.21.0.1") earliest=0`,
-which names only the verified requester address and the IP the server observed.
+| On the ticket | Value |
+|---|---|
+| Number | 114404 |
+| Priority | Emergency |
+| Note | one internal note, type N, posted as `Triage Agent` |
+| Note's events | 20, from 2018-08-20 13:10:25 to 15:07:39 |
+| Note's search line | `index=botsv3 ("bgist@froth.ly" OR "172.21.0.1") earliest=0` |
 
-The three screenshots in [the README](../README.md#a-triaged-ticket) are this run.
+Type N is osTicket's code for an internal note, which only staff can see.
+
+**What it shows:** The page goes out first, 11 milliseconds ahead of the
+classification audit write and 1.6 seconds ahead of enrichment.
+
+The three screenshots in [the README](../README.md#a-triaged-ticket) are this
+run.
 
 ### Acting through a Splunk outage, 2026-08-18, ticket 18
 
-The audit pipeline stopped while the agent kept working. Splunk was stopped with
-`docker stop`, then a ticket was submitted normally.
-
-Every audit write failed after three attempts. The note was still written, the
-priority was still set, and the alert still reached the incidents channel,
-confirmed in the osTicket database rather than from console output.
-
-The delay is measurable without Splunk, because the idempotency store records
-when the webhook was accepted and osTicket records when the note was written.
-Ticket 17 was submitted with identical text 38 minutes earlier and produced an
+**Method:** Splunk was stopped with `docker stop`, then a ticket was submitted.
+Ticket 17 had been submitted with identical text 38 minutes earlier and got an
 identical classification, so the two runs differ only in whether Splunk was up.
+
+**Result:** Every audit write failed after three attempts. The note was still
+written, the priority was still set, and the alert still reached the incidents
+Slack channel, confirmed in the osTicket database.
 
 | | Webhook accepted | Note written | Elapsed |
 |---|---|---|---|
 | Ticket 17, Splunk up | 23:31:38.365 | 23:31:39 | about 0.6s |
 | Ticket 18, Splunk down | 00:09:12.341 | 00:09:22 | about 9.7s |
 
-osTicket stores thread entries to the second, so each figure carries up to a
-second of error. Two audit writes fail before the note is reached, the
-classification and the human-review record, and each burns three attempts with
-one and three second backoffs. That accounts for eight of the nine seconds, with
-the Claude call making up the rest. Three more failed writes follow the note, so
-the full sequence runs longer still.
+**What it shows:** A Splunk outage delays the ticket writes and stops none of
+them. osTicket stores thread entries to the second, so each figure carries up to
+a second of error. Two audit writes fail before the note, and each failed write
+waits one and then three seconds between its three attempts, which accounts for
+eight of the nine seconds. The run predates the page moving ahead of the audit
+writes, and its row did not page.
 
-An earlier build returned as soon as the classification audit write failed, so a
-Splunk outage produced a console line and nothing else.
+### Acting through a hanging Splunk, 2026-10-08
+
+**Method:** The audit log was pointed at a local port that accepts connections
+and never answers, so every write to Splunk waited out its timeouts. A critical
+ticket then ran through the agent's full path, with Claude's answer stubbed to a
+confident critical, since the test is about timing. The page went to the test
+PagerDuty service and the alert to the test Slack channel. The ticket ID did not
+exist in osTicket, so the note and priority writes failed.
+
+| Step | Time after the ticket started |
+|---|---|
+| Classification | 0.5 s |
+| Page | sent before its own audit write began, at 0.5 s |
+| Each audit write | 19 s, three timed-out attempts |
+| Note and priority | 77 s and 96 s |
+| Urgent Slack alert | 116 s |
+
+**What it shows:** A hanging Splunk never delays the page, but every action
+after it waits behind an audit write, so the urgent Slack alert went out almost
+two minutes late. A Splunk that refuses connections at once, as in the run
+above, costs about ten seconds.
+[known-limitations.md](known-limitations.md#a-hanging-splunk-or-osticket-delays-everything-after-the-page)
+covers why this is not fixed.
+
+### Acting through a hanging osTicket
+
+**Method:** osTicket's write endpoint was pointed at a local port that accepts
+connections and never answers, so every note and priority write waited out its
+timeouts. Splunk, Slack and PagerDuty ran normally. A critical ticket then ran
+through the agent's full path, with Claude's answer stubbed to a confident
+critical, since the test is about timing. The page went to the test PagerDuty
+service and the alert to the test Slack channel.
+
+**Result:** Measured 2026-10-11.
+
+| Step | Time after the ticket started |
+|---|---|
+| Classification | 0.8 s |
+| Page | accepted at 1.3 s, confirmed at 2.6 s |
+| Each ticket write | 37 s, three timed-out attempts |
+| Note and priority | failed at 38.5 s and 75.5 s |
+| Urgent Slack alert | 75.8 s |
+
+**What it shows:** A hanging osTicket never delays the page or its confirmation,
+but the urgent Slack alert waits behind the note and priority writes and went
+out about 75 seconds late.
+[known-limitations.md](known-limitations.md#a-hanging-splunk-or-osticket-delays-everything-after-the-page)
+covers why this is not changed.
 
 ### What the live runs found that the verifiers did not
 
-Three faults that no verifier would have caught, however many checks it ran,
-because none of them is in the code those checks call.
-
-The agent was bound to `127.0.0.1`, so the osTicket container could not reach it
-at all. A verifier calls functions directly and never crosses the container
-boundary. The plugin logged the refused connection to `ost_syslog`, nothing else
-noticed, and the ticket was never triaged.
-
-Console output was block-buffered when stdout was redirected to a file, so every
-diagnostic the agent prints sat in a buffer. A verifier reads subprocess output,
-which flushes on exit, so it never sees this. In a deployment it means a log tail
-shows nothing.
-
-The first attempt at the ticket 20 run was processed by an agent started seven
-hours earlier, before the paging code existed. It classified, enriched, wrote and
-alerted correctly and never paged, because `uvicorn` does not reload on file
-change. The run measured a build that no longer matched the repository.
-
-## Authentication gate verification
-
-**Method.** Measured 2026-08-11. Two tickets filed through the real osTicket
-form with the same requester address and identical text. The only variable is
-whether the submitter held an authenticated client session.
-
-**Result.**
-
-| | Ticket 10 | Ticket 11 |
-|---|---|---|
-| Submitted as | guest, private window | signed in as `bgist@froth.ly` |
-| Requester address | `bgist@froth.ly` | `bgist@froth.ly` |
-| Attached to user record | 3, Bill Gist | 3, Bill Gist |
-| Recorded submitter IP | `172.21.0.1` | `172.21.0.1` |
-| Classification | security_incident / critical / high_confidence | identical |
-| `requester_verified` | `false` | `true` |
-| Events returned | 0 | 20 |
-
-Both tickets attached to the same user record, because osTicket binds an address
-typed into the guest form to whatever user already owns it. That is what makes
-ticket 10 an impersonation rather than an unknown sender.
-
-Bill Gist holds a confirmed account and ticket 10 is attached to it, so a gate
-that read the ticket owner's account status would have returned true and
-searched his address for an anonymous submitter. Only the session check
-separates these two runs.
-
-No stored event on ticket 11 contains `_raw`. The fields present are `_time`,
-`host`, `sourcetype`, `src_ip`, `dest_ip`, `ipAddress`, `userPrincipalName`,
-`email`, `loginStatus`, `signinErrorCode`, and `appDisplayName`, totalling 3,540
-bytes across 20 events.
-
-## Write-back endpoint verification
-
-Measured 2026-09-28 against the running stack, twenty-seven checks, all passing.
-
-| Request | Result |
-|---|---|
-| Unsigned | 401 |
-| Wrong signature | 401 |
-| Correct shape, wrong secret | 401 |
-| Timestamp 10 minutes old | 401 |
-| Signed, note field missing | 400 |
-| Signed, ticket 99999 | 404 |
-| Signed, valid, ticket 11 | 200 |
-| Signed, valid, a second note on the same ticket | 200, `status: note_exists` |
-| Unsigned, department | 401 |
-| Stale timestamp, department | 401 |
-| Unknown ticket, department | 404 |
-| Signed, valid, department | 200, `status: routed` |
-| Signed, valid, department again | 200, `status: already_routed` |
-| Signed, department named in the body | 200, moved where the config says |
-| Signed for the ticket number check, sent to the department endpoint | 400 |
-| Signed, no operation named | 400 |
-
-The last two cases cover replay across endpoints. The department endpoint reads
-only the ticket ID, so without the operation named inside the body, a captured
-request for any other endpoint could have been replayed there to move a ticket
-to the security department.
-
-The successful write was confirmed in the database rather than from the response
-code: an internal thread entry on ticket 11, type N, poster `Triage Agent`.
-Type N is an internal note, which is what makes the Attack 3 claim that notes
-are invisible to the submitter true rather than aspirational.
-
-The repeat case is the reason the endpoint now checks. Ticket 18 accumulated 35
-agent notes across the runs made before it did, each one a verifier writing
-another copy onto the same ticket, which is what a retry after a timeout would
-have done in production. Running the verifier against ticket 21 afterwards left
-it with the one note it already had.
-
-Reproduce with `./venv/bin/python verification/verify_writeback.py <ticket_id>`
-from `agent/`. It writes a real note to a ticket that has none, and the endpoint
-has no delete operation, so name a ticket you don't mind marking.
-
-### The priority change is recorded, 2026-09-11, ticket 33
-
-Run by hand. `verify_writeback.py` speaks HTTP only and cannot read the
-database, so this is not one of the checks in the table above.
-
-osTicket has no priority event, so the endpoint logs the change the way core
-logs any dynamic form field change. Before these requests, ticket 33's history
-held `created` and `overdue` and nothing else.
-
-| Request | Result |
-|---|---|
-| Signed, valid, `priority: high` | 200, `from: low`, `to: high` |
-| Signed, valid, `priority: low` | 200, `from: high`, `to: low` |
-
-Each one added a row to `ost_thread_event`:
-
-```
-77  edited  2026-09-11 16:28:30  {"fields":{"Priority":"low"}}
-76  edited  2026-09-11 16:26:20  {"fields":{"Priority":"high"}}
-```
-
-The row is written by the endpoint rather than by the agent, so anything calling
-it leaves one. Restoring the priority added a second event instead of removing
-the first.
-
-## Idempotency store verification
-
-Measured 2026-08-20, twenty-six checks, all passing. Run against a temporary
-database so the live store is never written to. That separation matters: a test
-that inserted ticket IDs into the real store would later refuse the genuine
-ticket carrying the same number.
-
-| Property | How it was checked | Result |
-|---|---|---|
-| A ticket can be claimed | first `claim_ticket(42)` | `True` |
-| It cannot be claimed twice | second `claim_ticket(42)` | `False` |
-| Claiming one does not block others | `claim_ticket(43)` | `True` |
-| One ticket, either spelling | `claim_ticket("42")` after `42` | `False` |
-| A fresh ticket has done nothing | `completed_actions(43)` | every action `False` |
-| A marked action is recorded | mark then read `note_written` | `True` |
-| Actions are independent | mark `note_written`, read `paged` | `False` |
-| Marking twice is harmless | mark `note_written` again | still `True` |
-| An unknown ticket does not raise | `completed_actions(9999)` | every action `False` |
-| A misspelled action is refused | `mark_done(43, "not_a_real_action")` | `ValueError` |
-| An older store gains missing columns | a store built with one action column | all present |
-| What it recorded survives the migration | the same store | unchanged |
-| A migrated column reads as not done | the same store | `False` |
-| A completed action outlives a missing claim | `mark_done(77)` with no claim | recorded, warning printed |
-| A claim survives a restart | reload module, `claim_ticket(42)` | `False` |
-| Action state survives a restart | reload module, read `note_written` | `True` |
-| The store still accepts new tickets | reload module, `claim_ticket(44)` | `True` |
-
-The last row exists to stop the two above it passing for the wrong reason. A
-store that refused everything after a restart would satisfy both, and only fail
-this one.
-
-The store also holds the classification each ticket was given, which is what a
-resumed ticket finishes on. It is written as JSON and validated on the way back
-out, so a value this build cannot read is reported as no decision rather than
-handed on as one.
-
-| Property | How it was checked | Result |
-|---|---|---|
-| A ticket nobody classified has no decision | `stored_classification(43)` | `None` |
-| A decision reads back unchanged | store, then read | identical object |
-| Storing a decision touches no action flag | read `priority_set` after | `False` |
-| A decision outlives a missing claim | store with no claim | kept, warning printed |
-| An unreadable decision is no decision | column overwritten with an invalid category | `None` |
-| A decision survives a restart | reload module, read it back | identical object |
-| A pre-migration ticket has no decision | the store built without the column | `None` |
-| And a migrated store can hold one | store, then read | identical object |
-
-Reproduce with `./venv/bin/python verification/verify_idempotency.py` from `agent/`.
-
-Whether a retried webhook actually avoids writing a second note is not verified
-here, because this file only exercises the store. It is covered under action
-wiring below, where the note write is driven through the store three times.
-
-## Resume verification
-
-Measured 2026-09-29, seventeen checks, all passing, against a temporary
-database. Nothing here reaches Claude, Slack, PagerDuty, osTicket or Splunk. It
-exercises the decision a repeat delivery lands on, which is one of three: a
-duplicate to refuse, a ticket to pick up, or a ticket another run is working on
-now.
-
-| Property | How it was checked | Result |
-|---|---|---|
-| A ticket never seen is undecided | `outstanding_actions(1)` | `["classified"]` |
-| A claim with no decision is undecided | claim only, then read | `["classified"]` |
-| A ticket handed to review owes nothing | claim, then mark `handed_to_review` | `[]` |
-| A decision lists the actions its row selects | a confident critical, nothing done | all five |
-| What happened drops off the list | mark `paged`, read again | four left |
-| A finished ticket has nothing outstanding | mark all five | `[]` |
-| A page that never fell back is not outstanding | read `paged_fallback` | `False` |
-| A routine request wants no alert or page | `it_support`, high confidence | note, priority, audit |
-| A security question wants its move | `security_question`, high confidence | those three plus `routed` |
-| An unaudited decision is unfinished work | note and priority done, audit not | `["classification_audited"]` |
-| A ticket nobody is on can be started | `begin_processing(7)` | `True` |
-| And cannot be started twice | `begin_processing(7)` again | `False` |
-| One ticket, either spelling | `begin_processing("7")` after `7` | `False` |
-| Another ticket is unaffected | `begin_processing(8)` | `True` |
-| A finished ticket can be started again | end, then begin | `True` |
-| A run that raises does not swallow it | `_process_ticket` patched to raise | raises |
-| And still releases the ticket | `begin_processing(9)` after | `True` |
-
-The last two matter more than they look. The in-flight mark is only useful if it
-is always released, and a run that raised without releasing would lock that
-ticket out of every later delivery until the process restarted.
-
-Reproduce with `./venv/bin/python verification/verify_resume.py` from `agent/`.
-
-### Resuming a real interrupted ticket, 2026-08-20, ticket 23
-
-The verifier above tests the decision. This tests the path. Ticket 23 was
-submitted through the osTicket form as a confirmed user and classified
-`security_incident` / `high` / `high_confidence`, which writes a note, sets
-priority, alerts the incidents channel, and pages nowhere.
-
-| Time | Step | Result |
-|---|---|---|
-| 12:20:01.817 | accepted | claimed, decision stored |
-| 12:20:03.899 | classification_complete | audit recorded |
-| 12:20:04.020 | note_written | |
-| 12:20:04.113 | priority_set | |
-| 12:20:04.298 | slack_posted | incidents |
-| 16:06:28 | signed delivery repeated | `200 duplicate` |
-| | `slack_posted` cleared in the store | stands in for a run that died before the alert |
-| 16:17:17.807 | triage_resumed | `slack_posted` outstanding |
-| 16:17:18.009 | slack_posted | incidents |
-
-Both repeat deliveries were signed with the real secret and carried a current
-timestamp, which is what makes them retries rather than replays the freshness
-window would refuse. The resume is recorded before the work it authorises, so a
-resumed run that then hangs still leaves a record that it was resumed. The
-second delivery produced:
-
-```
-Ticket 23: resuming, slack_posted outstanding
-Ticket 23: resuming on the stored security_incident/high/high_confidence, requester_verified=True
-Ticket 23: note already written, skipping
-Ticket 23: priority already set, skipping
-Ticket 23: slack posted to incidents
-```
-
-No line reporting a classification, because none was requested. The audit index
-holds one `classification_complete` for ticket 23 across all three deliveries,
-which is the whole point of recording that the write landed: the decision was
-made once and is entered once. Each resume added a `triage_resumed` event naming
-what was outstanding, so a ticket that was interrupted is visible as one rather
-than as a second round of writes with nothing accounting for them.
-
-Both repeat deliveries were sent by hand, which is how the interruption was
-staged. What re-sends them in the deployment is the retry queue below.
-
-## Recovery verification
-
-Measured 2026-09-30, thirty-five checks offline, plus one live run on
-2026-08-22. The offline checks replace every outbound client and skip Claude
-through the resume path, so nothing leaves the machine. Four of them cover a
-store that fails while the agent is accepting a ticket, since a mark left set
-there refuses that ticket for the life of the process. Four more cover one
-ticket failing partway through the backlog, which must not stop the tickets
-behind it. Four more cover a ticket Claude could not classify, which is handed
-to review once and never picked up again, unless the review post itself failed.
-Six more cover a repeat delivery of an unfinished ticket, which resumes on the
-request it was first accepted with, or is refused when that request is gone.
-
-| Property | How it was checked | Result |
-|---|---|---|
-| An accepted ticket is unfinished | body stored, not yet complete | listed for recovery |
-| A finished one is not | body dropped | not listed |
-| A completed run drops its own body | full run through `process_ticket` | body gone |
-| Recovery completes what was interrupted | note done, everything else not | priority set, alert posted |
-| It does not repeat what was done | the same run | note not rewritten |
-| A ticket past the window is not completed | backdated two hours | no actions, no alert |
-| And says so on the ticket | the same ticket | note, "did not finish" |
-| And records that note like any other | the same ticket | `note_written` set |
-| And tells the review channel | the same ticket | posted to review |
-| And records the abandonment | the same ticket | `interrupted_past_recovery_window` |
-| And is not rescanned | after abandoning | body cleared |
-| An unreadable body is dropped | column set to invalid JSON | not acted on |
-| A failed classification goes to review | Claude stubbed to raise `auth_failure` | posted to review |
-| And owes nothing afterwards | the same ticket | no outstanding actions |
-| And the next start will not pick it up | after the run | body cleared |
-| A failed review post leaves it for the next start | Slack stubbed to fail as well | body kept |
-| A repeat delivery resumes an unfinished ticket | second request with a new requester and IP | 202 |
-| On the request it was first accepted with | the same run | original requester and IP kept |
-| An abandoned ticket is refused on a repeat delivery | request for the abandoned ticket | `duplicate` |
-| So is a decided ticket with no stored body | classification kept, body gone | `duplicate` |
-| So is an undecided one past the retry window | no body, osTicket says past window | `duplicate` |
-
-### A real interrupted ticket, 2026-08-22, ticket 32
-
-Submitted through the osTicket form as a confirmed user. A watcher polling the
-store killed the agent with `SIGKILL` the moment the ticket was claimed, before
-classification. osTicket had its 202 and queued no retry, so nothing in the
-deployment would have delivered that ticket again.
-
-The agent was restarted with no delivery of any kind, and on boot:
-
-```
-Ticket 32: interrupted, finishing classified
-Ticket 32: classified it_support/high/high_confidence, requester_verified=True
-Ticket 32: note written
-Ticket 32: priority normal to high
-Recovery: 1 ticket(s) finished, 0 too old to finish
-```
-
-Confirmed outside the store: ticket 32 carries priority High and a note posted
-as `Triage Agent`. No Slack post and no page, which is correct for that row.
-`requester_verified` survived the kill and the restart, which matters because it
-reads the submitter's live session and cannot be rebuilt.
-
-Reproduce the offline checks with
-`./venv/bin/python verification/verify_recovery.py` from `agent/`.
-
-## Retry queue verification
-
-Measured 2026-08-20, 21 and 23 against `osticket-plugin/class.TriagePlugin.php`.
-Run against the live stack rather than a harness, because the thing under test
-is what the plugin does when the agent is not there, and that is not something
-a mock can be wrong about convincingly.
-
-The agent was stopped with `pkill`, tickets were submitted through the real
-osTicket form as a confirmed user, and cron was fired by sending osTicket's own
-`cron` signal. Firing the signal rather than running `api/cron.php` keeps the
-test to the plugin, since `Cron::run()` would also start osTicket's dormant
-maintenance cycle and mark every older test ticket overdue.
-
-| Path | Ticket | What was checked | Result |
-|---|---|---|---|
-| A failed send queues the ticket | 24, 25, 26, 29, 30 | agent stopped, ticket submitted | queued, `requester_verified` 1 |
-| Cron drains the queue | 24, 29 | agent restarted, cron signal sent | delivered and classified |
-| The window expires during the outage | 25, 30 | aged to 61 minutes, agent still down | note says triage never ran, row deleted |
-| A drain stops at the first failure | 26 | same cron run as ticket 25 | still queued, attempts 1 to 2 |
-| Creating a ticket drains one | 26 | ticket 27 submitted with agent up | 27 delivered, 26 drained after it |
-| The queue empties | all | after each drain | no rows left |
-| A store failure queues the ticket | 33 | store made read-only, agent up, ticket submitted | agent 500, queued, `requester_verified` 1 |
-
-Ticket 33 is the one case where the agent was running and still refused. The
-store was made unwritable, so the claim failed and the webhook answered 500
-rather than accepting a ticket it could not record. The plugin queued it,
-`api/cron.php` drained it once the store was writable again, and the agent
-classified it with `requester_verified` still true. That value is the reason the
-queue stores it rather than rebuilding it, and a retry an hour later would still
-have carried it.
-
-The third and fourth rows are the ones worth reading together. They ran in a
-single cron pass with the agent unreachable, and they are what the design is
-for. Expiry is local work, so it completed and put a note on ticket 25 while
-the agent was still down, which is the only time that note is any use. The
-drain in the same pass tried ticket 26, failed, and stopped rather than working
-through the rest at a timeout each.
-
-The value that matters most is `requester_verified`. Ticket 24 was submitted by
-a confirmed user, queued, and delivered minutes later by cron, and the agent
-logged `requester_verified=True` on the retry. Nothing in a retry can observe
-that, since it reads the submitter's browser session, so it is stored at
-failure time and replayed. Had it been recomputed it would have been false, the
-enrichment query would have dropped its email clause, and nothing would have
-reported the difference.
-
-The note is posted as `Triage Plugin`, confirmed in the thread on tickets 25
-and 29. The write endpoint decides a note is a repeat by looking for its own
-poster, `Triage Agent`, so the two names have to differ or the plugin's note
-would make a later triage note bounce as already present and be recorded as
-written. Both were present on ticket 29 under their own names.
-
-### One note, rewritten, 2026-08-21, tickets 29 and 30
-
-The plugin writes its note on the first failed send and edits that same note in
-place as the ticket's state changes. The note has three bodies, and a ticket
-reaches the second or the third but never both. Two tickets cover all three.
-
-**Ticket 29, delivery recovers.**
-
-| Entry | Poster | Body |
-|---|---|---|
-| 92 | Triage Plugin | written 00:21:54, triage has not run, retrying until about 01:21 |
-| 92 | Triage Plugin | rewritten, delivery delayed 1 minute, accepted at 00:23 |
-| 93 | Triage Agent | written 00:23:37, `it_support / medium / high_confidence` |
-
-**Ticket 30, delivery never recovers.** The agent was stopped for all of it.
-
-| Entry | Poster | Body |
-|---|---|---|
-| 95 | Triage Plugin | written 00:48:04, triage has not run, retrying until about 01:48 |
-| 95 | Triage Plugin | rewritten after the row was aged past the window, triage never ran |
-
-In both runs the entry keeps its id across the rewrite, so neither ticket ever
-carries two plugin notes disagreeing about whether triage ran. On ticket 29 the
-agent's own note is a separate entry under its own poster, which is what the
-two-poster rule is for. On ticket 30 the queue row was deleted at the same
-time, and the whole sequence ran during the outage rather than after it.
-
-The rewrite has no timestamp of its own because `setBody()` does not touch the
-`updated` column, so the row still reads its original created time afterwards.
-The body is what a reader sees and it is current; when the edit happened is not
-recorded.
-
-Ticket 25 earlier in the table reached the same end state as ticket 30 by a
-different route. It expired before the note became rewrite-in-place, so it
-wrote its note rather than editing one.
-
-The first attempt at ticket 29 failed, and the reason is worth recording because
-nothing about it is visible from the code. `Thread::getEntries()` caches its
-result on the thread, and `getMessages()` does `clone $this->getEntries()` and
-then filters the clone by type. The clone is shallow, so that filter reaches
-back into the shared cache and narrows it to messages for the rest of the
-request. `buildPayload` calls `getMessages()` immediately before the note
-lookup, which left the lookup seeing one entry where the thread had four. The
-note was invisible rather than absent, and the plugin wrote a second one.
-
-The lookup now queries `ost_thread_entry` directly. Confirmed by reproducing
-the sequence: after `getMessages()`, walking `getEntries()` returns 1 entry
-while the direct query returns the note. `agentNoteExists` in the write
-endpoint was changed the same way. Nothing on its path calls `getMessages()`
-today, so it was not broken, but a dedup that silently stops deduping when
-someone adds one is not worth leaving in place, and this is the same defect
-that let ticket 18 collect 35 notes.
-
-Not covered here: whether a real cron schedule fires the signal. This exercised
-the handler and the signal wiring by sending the signal directly. Running
-`api/cron.php` on a schedule is a deployment step, in
-[architecture.md, Section 10](architecture.md#10-deployment-preconditions).
-
-## Prompt isolation verification
-
-Measured 2026-09-08, eight checks, all passing. The ticket reaches Claude inside
-a delimiter, and the system prompt tells it to treat everything in that block as
-data rather than as instructions. The delimiter used to be the fixed string
-`<ticket>`, so a body containing it closed the block early and left the rest of
-that ticket reading as though it came from the operator. The delimiter is now
-generated per request.
-
-| Property | How it was checked | Result |
-|---|---|---|
-| A hostile body cannot close the block | a message carrying `</ticket>` and `<ticket>` | closed once, by the generated delimiter |
-| The delimiter is not reused | fifty wraps compared | fifty distinct |
-| The old fixed delimiter is never used | the same fifty | absent |
-| The ticket is not altered | subject and message compared byte for byte | unchanged |
-
-The last property is what keeps the fix honest. Stripping the delimiter out of
-the body would pass the first three and change what the agent classifies, so the
-text Claude read would no longer be the text the store keeps and the audit log
-records.
-
-The checks were run against the previous construction before being trusted. Two
-of them fail on it, finding two closing delimiters where there should be one.
-
-Reproduce with `./venv/bin/python verification/verify_prompt_isolation.py` from
-`agent/`. Nothing is written and no network call is made.
-
-## Action table verification
-
-Measured 2026-09-30, thirty-five checks, all passing. The table is the contract
-between classification and action, so every row is compared as a whole `Actions`
-object rather than field by field. A row that gets one field wrong fails on that
-row instead of hiding behind the fields it gets right.
-
-| Property | How it was checked | Result |
-|---|---|---|
-| Every documented row matches the code | 30 rows from `docs/action-table.md` | all match |
-| Every category has a row | each `schemas.Category` member looked up | no gaps |
-| An unknown category is refused | a category with no row | raises |
-| The schema refuses pairs the rubric forbids | `it_support` at critical, `unclear` at high confidence | both refused, a critical incident still accepted |
-| The schema refuses a field the tool does not define | an extra `action` field | refused |
-
-An earlier version returned `human_review` for an unknown category at low
-confidence, which reads as safe and is not. It would have let a category the
-table has never seen produce a plausible-looking action instead of failing
-loudly.
-
-Reproduce with `./venv/bin/python verification/verify_action_table.py` from `agent/`. Nothing
-is written and no network call is made.
-
-## Alert delivery verification
-
-Measured 2026-08-21, forty-five checks, all passing.
-
-| Property | How it was checked | Result |
-|---|---|---|
-| A mention renders for critical | `build_message` with `mention=True` | `<!here>` present |
-| Below critical does not mention | high severity to the incidents channel | absent |
-| The review channel shows the reason | an unclear ticket, then a low-confidence one | category, then "low confidence" |
-| Every alert states its confidence | all three channels, both confidences | stated, never inferred |
-| A paged alert names its destination | urgent, both rows | `paged WAKE`, `paged NOTIFY` |
-| An alert that did not page says nothing about paging | the incidents channel | no marker |
-| A page that failed says so | urgent, both destinations, page not sent | `WAKE PAGE FAILED`, never `paged WAKE` |
-| All four enrichment states read differently | each outcome built in turn | four distinct lines |
-| The failure notice names the failure | `build_failure_message` | "classification failed", the type |
-| It carries no severity icon | every icon except the review one | none present |
-| The kill switch stops delivery | writes off | returns skipped |
-| A missing webhook refuses to boot | writes on, one webhook blank | refuses, names it |
-| A missing base URL refuses to boot | writes off, base URL blank | refuses |
-| A failure never leaks the webhook | canary planted in the URL | canary absent from output |
-| A real post is delivered | one message to the test channel | accepted |
-
-A webhook URL is a bearer credential, and HTTP client errors routinely embed the
-request URL in their message text, which then reaches the console and the audit
-index. The canary test plants a known string inside the URL, forces two
-different failures, and fails if that string appears anywhere in the child
-process output.
-
-Reproduce with `./venv/bin/python verification/verify_slack.py` from `agent/`. One case takes
-about 7 seconds because it makes three attempts against an unreachable host.
-The delivery case needs `SLACK_WEBHOOK_TEST` set and skips without it, so a run
-reporting forty-four checks skipped delivery rather than proving it.
-
-## Paging verification
-
-Measured 2026-09-11, thirty checks, all passing.
-
-| Property | How it was checked | Result |
-|---|---|---|
-| The page leads with the classification | `build_page` on a confident critical | severity and category first |
-| An unknown destination is refused | `send_page` with a name the table never produces | raises before posting |
-| It claims nothing about enrichment | the built page | no events, enrichment or identifier wording |
-| Severity maps to PagerDuty's | every `Severity` member | all four mapped |
-| The dedup key is not the ticket id | the built event | an HMAC, not `"15"` |
-| One ticket always gives the same key | `build_page` called twice | keys match |
-| The link text is the URL itself | the `links` entry | text equals href |
-| No enrichment output crosses | the payload | no `custom_details` |
-| The fallback leads with the failure | `build_fallback_page` | "alert delivery failed" first |
-| It does not read as a confident critical | the same summary | does not start with the severity |
-| The kill switch stops delivery | writes off | returns skipped |
-| A missing routing key refuses to boot | writes on, key blank | refuses |
-| A failure never leaks the routing key | canary as the key | canary absent from output |
-| A real page is delivered | one event to the test service | accepted |
-
-The routing key sits in the request body rather than the URL, so the usual
-danger of a client library echoing the URL does not apply here. What can still
-expose it is a rejection quoting the field it refused, which is why the canary
-is the key itself and why the response body is never recorded.
-
-Reproduce with `./venv/bin/python verification/verify_pagerduty.py` from `agent/`. The
-delivery case needs `PAGERDUTY_ROUTING_KEY_TEST` and skips without it.
-
-Reproducing the delivery case on a PagerDuty developer account creates the
-incident and produces no call, which is the plan rather than a fault in the
-agent. What this lab can and cannot show about paging is in
-[known-limitations.md](known-limitations.md), and what the design needs from
-the two destinations is in architecture.md, Section 10.
-
-## Page reporting verification
-
-Measured 2026-08-21, ten checks, all passing. Run offline. Claude is skipped by
-storing a decision so the ticket takes the resume path, and every outbound
-client is replaced, so nothing reaches PagerDuty, Slack, osTicket or Splunk.
-
-This covers wiring rather than rendering. `verify_slack.py` already checks what
-`build_message` produces. The defect was upstream of it: `_page` returned
-whether the page was sent and both callers discarded that, so the alert named
-the destination the table had chosen whether or not anyone was reached.
-
-| Case | Alert says | Store |
-|---|---|---|
-| PagerDuty refuses the event | `WAKE PAGE FAILED, escalate manually` | `paged` not recorded |
-| PagerDuty accepts it | `paged WAKE` | `paged` recorded |
-| Resumed after the page, before the alert | `paged WAKE` | unchanged |
-
-The third row runs with `send_page` rigged to raise, so a regression that called
-PagerDuty for a page already sent fails here rather than passing quietly.
-
-Reproduce with `./venv/bin/python verification/verify_page_reporting.py` from
-`agent/`.
-
-## Action wiring verification
-
-Measured 2026-08-23, thirty-nine checks, all passing. It did not run between
-2026-08-19 and that date, because a required argument was added to the alert
-builder and this file was not updated with it. Nothing was wrong with the agent,
-but the file this section describes had stopped running while this section said
-it passed. Covers whether the actions obey the kill switch and whether a retry
-can repeat one. Each case runs in its
-own process, because `ENABLE_WRITES` is read at import and patching it in place
-would not test what happens at boot.
-
-| Property | How it was checked | Result |
-|---|---|---|
-| Both criticals page, nothing else does | every combination in the table | two rows |
-| Only the one at low confidence falls back | the same walk | one row |
-| Writes off skips all four actions | kill switch off | four skips, nothing recorded |
-| Writes on performs all four | kill switch on | four done, all recorded |
-| A retry repeats nothing | a third run against the same store | four refusals |
-| An unaudited note records the gap | note built with the audit failed | "No audit record." last |
-| A failed classification reaches review | `classify_ticket` forced to raise | posted to review |
-| It writes no note and sets no priority | the same case | neither recorded |
-| A retried failure posts once | a second run against the same store | refused |
-| Writes off skips the routing | kill switch off | skipped, nothing recorded |
-| Writes on routes the ticket | kill switch on | moved and recorded |
-| A second move is refused | a third run against the same store | refused |
-| A refused page leaves the fallback available | the retry case | `paged_fallback` still false |
-| The page precedes the classification audit write | HEC pointed at a dead port | paged first |
-| The page precedes enrichment | the same case | paged first |
-
-The first two rows exist because of a bug this check found. The fallback page
-originally tested severity alone, so an `it_support` ticket the classifier rated
-critical would have paged the security on-call whenever its Slack post failed.
-Walking every combination surfaced it.
-
-The last two rows assert an order rather than a duration, because the retry
-constants are free to change and the ordering is not. The case points the HEC
-endpoint at a dead port so every audit write fails, then checks that the page
-went out ahead of the first of them. The page's own audit event is allowed to
-fail behind it, which is why the check names the classification write instead of
-matching the generic Splunk failure line.
-
-Reproduce with `./venv/bin/python verification/verify_wiring.py <ticket_id>` from `agent/`.
-Several cases write a real note, set a real priority and send real alerts, so
-name a ticket you don't mind marking. Alerts and pages go to the test
-destinations when those are configured.
-
-## Webhook gate verification
-
-Measured 2026-09-28, twenty-four checks across twenty-three requests, all
-passing. The duplicate request is asserted twice, on its status code and on the
-reason it gives. The endpoint osTicket calls is the only part of the agent an
-outsider can reach, and a request that fails any check here is refused before
-the agent does any work.
+Four faults no verifier could catch, because none is in the code a verifier
+calls:
+
+- **The agent was bound to `127.0.0.1`**, which the osTicket container cannot
+  reach. The plugin logged the refused connection to `ost_syslog`, and the
+  ticket was never triaged.
+- **Console output was block-buffered** when redirected to a file, so a log
+  tail showed nothing. A verifier reads subprocess output, which flushes on
+  exit.
+- **The first attempt at the ticket 20 run was handled by an agent started
+  seven hours earlier**, before the paging code existed, because `uvicorn` ran
+  without `--reload`. It classified, enriched, wrote and alerted, and never
+  paged.
+- **The plugin could not see its own note** on the first attempt at ticket 29,
+  so it wrote a second one. Earlier in the same request, osTicket had narrowed
+  its cached list of the ticket's entries to user messages only. The plugin now
+  looks for the note in the database directly.
+
+### Superseded runs
+
+Three earlier runs no longer describe the agent.
+
+**Ticket 9, 2026-08-09:** A guest submission that enriched on the requester
+email and stored whole raw events. The authentication gate now leaves a guest's
+email out of the query, and enrichment now returns named fields only. It also
+showed an extracted hostname, `BGIST-L`, recorded on the classification and not
+used in the query. All 20 stored events contained `bgist@froth.ly`, and none
+contained `BGIST-L`, which on its own matches 10,327 events.
+
+**Ticket 20, 2026-08-19:** Every action reached its destination on a
+high-confidence critical, but the page ran after enrichment and two audit
+writes. Ticket 36 records the order that replaced it.
+
+**Ticket 23, 2026-08-20:** The ticket's Slack alert was cleared in the store to
+stand in for a run that died before it. A signed repeat delivery picked the
+ticket up and posted only the alert, and the audit index held one
+classification for it. The agent now resumes only on the request it first
+stored, which a finished run deletes, so the same staging is now refused as a
+duplicate. [Recovery](#recovery) covers the current behavior.
+
+## Webhook gate
+
+**Method:** `verify_webhook.py` sends twenty-three requests to the endpoint
+osTicket calls, each refused for exactly one reason. The gate runs its checks in
+a fixed order, so each case reaches only the check it tests.
+
+**Result:** Measured 2026-10-03 on ticket 21, twenty-four checks, all passing.
+The first duplicate request counts twice, once for its `200` and once for its
+`duplicate` reason, which is why twenty-three requests give twenty-four checks.
 
 | Request | Result |
 |---|---|
@@ -779,174 +230,422 @@ the agent does any work.
 | Ticket ID already processed | 200, `status: duplicate` |
 | The same request again | 200, `status: duplicate` |
 
-Each case is the only thing wrong with its request. The gate runs in a fixed
-order, so a body that is both unsigned and malformed only ever demonstrates the
-signature check, and the rest of the path never runs.
+**What it shows:** Every refusal happens before the agent does any work,
+including these less obvious ones:
 
-A timestamp five minutes in the future is refused because the freshness window
-allows 60 seconds of clock skew and no more, so a replay cannot buy itself a
-window by claiming to be from ahead. A boolean ticket ID is refused explicitly,
-because `isinstance(True, int)` is true in Python and it would otherwise pass
-the numeric check. A ticket that fails the ticket number check is refused before
-the store is touched, so a forged request never marks its ticket ID as taken and
-the real ticket is still accepted when it arrives.
+- A timestamp five minutes ahead is refused, because the freshness window
+  allows only 60 seconds of clock skew.
+- A boolean ticket ID is refused explicitly, because Python treats `True` as the
+  integer 1, so it would otherwise pass as ticket 1.
+- A request that fails the ticket number check never touches the store, so a
+  forged request cannot mark a ticket ID as taken.
 
-The accepted path is not exercised here. A `202` queues classification, a note,
-an alert and possibly a page against a real ticket, so proving it belongs with
-the end-to-end runs above, where all three returned `202` through the plugin's
-own signing.
+The verifier does not exercise the accepted path, since a `202` queues real work
+against a real ticket. The end-to-end runs cover that.
 
-Reproduce with `./venv/bin/python verification/verify_webhook.py <ticket_id>`
-from `agent/`, naming a ticket the agent has already processed. That ID is used
-for the duplicate cases, and an unprocessed one would be claimed and queue real
-work. Set `TRIAGE_WEBHOOK_URL` if the agent is not on `127.0.0.1:8000`, and note
-that this is the address the agent bound to rather than the one osTicket uses.
-It also needs osTicket running and the agent's `.env` in place, because it looks
-up ticket numbers through the plugin, and ticket 1 present, never processed and
-past the plugin's retry window plus five minutes, which is the old-ticket case.
+**Reproduce:** From `agent/`, with the agent and osTicket running:
+
+```bash
+TRIAGE_WEBHOOK_URL=http://172.17.0.1:8000/webhook/ticket \
+  ./venv/bin/python verification/verify_webhook.py <ticket_id>
+```
+
+The verifier needs two things:
+
+- **A ticket the agent has finished:** passed as `<ticket_id>`. A ticket the
+  agent was interrupted on would be resumed, with real writes.
+- **Ticket 1 at least 65 minutes old:** ticket 1 is the one osTicket's installer
+  creates, and the verifier refuses to run until it is past the plugin's retry
+  window plus five minutes.
 
 ### A forged claim does not block the real ticket, 2026-09-27, ticket 38
 
-Run by hand against the running stack, with writes off. A signed request
-claimed ticket 38 with a made-up number before the ticket existed. The agent
-refused it with 403 and the store gained no row for ticket 38. A ticket then
-filed through the osTicket web form was given ID 38, and osTicket's own request
-for it was accepted with 202 and classified. The lookup back to osTicket ran
-while osTicket was still waiting on that request, so the check works inside a
-live submission.
+Run by hand with writes off. A signed request claimed ticket 38 with a made-up
+number before the ticket existed. The agent refused it with 403, and the store
+gained no row. A ticket then filed through the osTicket form was given ID 38,
+and osTicket's own request for it was accepted with 202 and classified. The
+ticket number lookup ran while osTicket was still waiting on that request, so
+the check works inside a live submission.
 
-## Heartbeat and the agent-down alert
+## Authentication gate
 
-Measured 2026-08-21 against `agent/main.py` and
-`docker/splunk-provisioning/triage_alerts`. Run with the interval set to 20
-seconds instead of the default 60, so a loop that only worked once would be
-obvious inside a minute.
+**Method:** Two tickets were filed through the osTicket form with the same
+requester address and identical text. The only difference was whether the
+submitter held an authenticated session.
 
-The agent was started and twelve consecutive beats were read back out of
-Splunk:
+**Result:** Measured 2026-08-11.
+
+| | Ticket 10 | Ticket 11 |
+|---|---|---|
+| Submitted as | guest, private window | signed in as `bgist@froth.ly` |
+| Requester address | `bgist@froth.ly` | `bgist@froth.ly` |
+| Attached to user record | 3, Bill Gist | 3, Bill Gist |
+| Recorded submitter IP | `172.21.0.1` | `172.21.0.1` |
+| Classification | security_incident / critical / high_confidence | identical |
+| `requester_verified` | `false` | `true` |
+| Events returned | 0 | 20 |
+
+**What it shows:** osTicket attaches an address typed into the guest form to the
+user who already owns it, so ticket 10 is an impersonation of a known user. A
+gate that read the ticket owner's account status would have searched Bill Gist's
+address for an anonymous submitter. The agent checks the submitter's session
+instead, so only ticket 11 was searched by email. Ticket 10's zero events also
+mean its IP matched nothing, since the IP is searched either way.
+
+## Retry queue
+
+**Method:** Run against the live stack to test the plugin's retry while the
+agent is down, as described in
+[architecture.md, Section 7](architecture.md#when-the-agent-is-unreachable).
+The agent was stopped, then tickets were submitted as a verified user. The
+plugin tried to send each ticket to the agent, got a refused connection, and
+added the ticket to its retry queue. Cron was then fired by sending osTicket's
+`cron` signal directly, which runs the plugin's retry handler. For tickets 25
+and 30, the queue row was backdated 61 minutes in the database to pass the retry
+window.
+
+**Result:** Measured 2026-08-20, 21 and 23.
+
+| What happens | Tickets | Result |
+|---|---|---|
+| A send fails while the agent is down | 24, 25, 26, 29, 30 | queued, with the session stored as verified |
+| Cron runs after the agent restarts | 24, 29 | delivered and classified |
+| The retry window passes with the agent still down | 25, 30 | note says triage never ran, queue row deleted |
+| Cron hits a send that fails | 26 | stops there, ticket kept for the next run |
+| A new ticket's send succeeds while one is queued | 27, with 26 queued | 27 delivered, then 26 sent after it without cron |
+| The agent is up but cannot record the ticket | 33 | agent answers 500 instead of accepting it, ticket queued, delivered once the store was writable |
+
+**What it shows:** A ticket the agent never accepted is not lost. It is
+delivered once the agent is back, or marked as never triaged once the retry
+window passes. The plugin stores `requester_verified` when the send fails, since
+it comes from the submitter's live session and a retry has no session to read.
+Ticket 24 was retried and still logged `requester_verified=True`.
+
+### One note, rewritten, 2026-08-21, tickets 29 and 30
+
+The plugin writes one note on the first failed send, and rewrites that same note
+as the ticket's state changes. It posts as `Triage Plugin`, because the write
+endpoint refuses a new note when the ticket already has one posted as
+`Triage Agent`, and would otherwise refuse the agent's own triage note as a
+duplicate.
+
+**Ticket 29, delivery recovers:**
+
+| Entry ID | Poster | Written | Note says |
+|---|---|---|---|
+| 92 | Triage Plugin | 00:21:54 | triage has not run, retrying until about 01:21 |
+| 92 | Triage Plugin | rewritten | delivery delayed 1 minute, accepted at 00:23 |
+| 93 | Triage Agent | 00:23:37 | `it_support / medium / high_confidence` |
+
+**Ticket 30, delivery never recovers, agent stopped throughout:**
+
+| Entry ID | Poster | Written | Note says |
+|---|---|---|---|
+| 95 | Triage Plugin | 00:48:04 | triage has not run, retrying until about 01:48 |
+| 95 | Triage Plugin | rewritten once the retry window passed | triage never ran |
+
+The note kept its entry ID across the rewrite, so neither ticket carried two
+plugin notes that disagree.
+
+## Prompt isolation
+
+**Method:** The classifier wraps the ticket in a delimiter, and the system
+prompt tells Claude to treat everything inside it as data. A submitter who
+types the closing delimiter into the ticket could end the block early, so the
+text after it would read as instructions. The delimiter was the fixed
+`<ticket>` until 2026-09-08. It is now `ticket-` followed by eight random hex
+characters, generated per request. `verify_prompt_isolation.py` wraps a hostile
+ticket and inspects the text Claude would receive. No Claude call is made.
+
+**Result:** Measured 2026-09-08, eight checks, all passing.
 
 | Property | How it was checked | Result |
 |---|---|---|
-| A beat is sent at startup | first event after boot | uptime 0, immediate |
-| The loop keeps going | events over four minutes | 12 beats, none missed |
-| The interval holds | gaps between events | 20.0s, drift under 30ms |
-| Uptime counts up | `uptime_seconds` per beat | 0, 20, 40 through 220 |
-| The kill switch state rides along | `writes_enabled` | true, matching the boot line |
-| Importing the agent sends nothing | verifiers import `main` | no beats during their runs |
+| A hostile ticket cannot end the block early | a message containing `</ticket>`, then an instruction to classify it as routine, then `<ticket>` | closed once, by the random delimiter |
+| The delimiter is new for every request | the same ticket wrapped fifty times | fifty different delimiters, none of them the fixed `<ticket>` |
+| The ticket reaches Claude unchanged | subject and message as submitted, attack text included, compared byte for byte with what Claude receives | identical |
 
-The last row is the one that would have gone wrong quietly. Three verifiers
-import `main` to exercise decision logic, and a heartbeat started at import
-rather than at application startup would have written to the real index every
-time one ran.
+**What it shows:** A ticket cannot end its own block, because the delimiter is
+random for every request and the submitter cannot know it in advance. Text
+after a fake closing delimiter still reaches Claude as ticket data, unchanged.
+The verifier does not show how Claude responds to injected instructions, which
+the injection ticket in [evaluation.md](evaluation.md) tests.
 
-The alert is the other half and is verified separately, because a heartbeat
-nothing watches is not detection, and an alert nobody receives is not much
-better. Its search was first run by hand over two windows:
+**Reproduce:** `./venv/bin/python verification/verify_prompt_isolation.py` from
+`agent/`. Offline.
 
-| Window | Beats | Condition `beats=0` |
-|---|---|---|
-| The last ten minutes, agent running | 28 | false, stays quiet |
-| A window predating the heartbeat | 0 | true, would fire |
+## Action table
 
-Then against a real outage. The agent was stopped at 02:33 and left
-down. The scheduled search evaluated true from then on, and the alert invoked
-its email action:
+**Method:** The action table, listed in [action-table.md](action-table.md),
+decides what the agent does with each classification. `verify_action_table.py`
+runs each combination of category, severity and confidence through the code and
+compares all of the resulting actions with its row, so one wrong action fails
+the whole row. It also checks the schema that validates Claude's output before
+the table sees it. No Claude call is made.
 
-```
-sendemail:292 - Sending email. subject="Triage agent is not reporting",
-recipients="['...']", server="smtp.gmail.com:587"
-```
-
-with no error line following it, against the failed attempt earlier the same
-day which logged three:
-
-```
-sendemail_auth:56 - Unable to create SMTP Object. Error=[Errno 111]
-Connection refused ... server="localhost"
-```
-
-Both runs logged `Sending email` at INFO, because that line is written before
-the transaction rather than after it, so the INFO line alone proves nothing.
-Neither does the absence of an error. Six of those sends reached nobody with
-nothing logged at all: `sendemail` reports a connection failure loudly, as the
-`localhost` attempt above shows, and reports an authentication rejection not at
-all. It connected to Gmail with no credentials, was refused with `530
-Authentication Required`, and recorded success.
-
-The cause was where the password lived. Splunk's Settings UI writes in the
-launcher app context, so the credential landed in
-`apps/launcher/local/alert_actions.conf` while `sendemail` reads the global
-configuration and found none there. Copying the encrypted value into
-`etc/system/local/alert_actions.conf` and restarting fixed it, and
-`auth_password` then read as set through the REST API where it had read empty.
-
-Delivery is confirmed as of 2026-08-22, in two overlapping halves rather than
-one continuous run. The scheduled search fired against a real outage and
-invoked the email action at 20:15, and a send through that same `sendemail`
-path arrived in the recipient's inbox at 00:29. Both halves run through
-`sendemail`, so together they cover the path from the agent dying to a person
-being told.
-
-Splunk's `fired_alerts` endpoint is worth a separate warning. It reported zero
-triggers throughout, including for runs that provably invoked the email action,
-so it does not answer whether an alert fired. `scheduler.log` and `python.log`
-do.
-
-## Restart loop alert verification
-
-Measured 2026-09-28 against `docker/splunk-provisioning/triage_alerts`, with the
-agent restarted for real rather than with synthetic events. Every start sends a
-first beat with an uptime of zero, and the alert counts those over thirty
-minutes.
+**Result:** Measured 2026-10-11, thirty-nine checks, all passing.
 
 | Property | How it was checked | Result |
 |---|---|---|
-| Quiet with no restarts | the search over the thirty minutes before the test | 0 starts, does not fire |
-| The search matches real starts | the same search over the previous day | 3 starts found |
-| A restart loop is detected | agent started and stopped three times, writes off | 3 starts, condition true |
-| The scheduled run fires | `scheduler.log` at the next five-minute run | `status=success`, `alert_actions="email"` |
-| The email arrives with the count | the recipient's inbox | subject `Action needed: triage agent is restarting repeatedly`, body says it started 3 times |
+| The code matches every row of action-table.md | 14 category, severity and confidence combinations | all match |
+| Every category Claude can return has a row | each category in the schema | no gaps |
+| A category with no row gets no actions | a made-up category | refused with an error, no default row used |
+| Low confidence quiets the page and keeps every other action | a low-confidence critical | NOTIFY instead of WAKE, no `@here`, note, priority, enrichment and urgent Slack channel kept, flagged for human review |
+| Only critical security incidents are enriched | security incidents at high, medium and low, and `it_support` at critical | none enriched |
+| Priority uses osTicket's names | each severity | critical to emergency, high to high, medium to normal, low to low |
+| The schema refuses pairs the rubric forbids | `it_support` at critical, `unclear` at high confidence | both refused, a critical security incident still accepted |
+| Claude cannot add an action to its output | an extra `action` field | refused |
+| Claude cannot name a ticket to act on | a `ticket_id` field, sent as text | refused as an unknown field |
+| A hostname or username Claude extracts must match its pattern in full | each with a trailing newline | value left out, ticket still classified, the same values without the newline kept |
 
-The last row needed a real send. As the heartbeat section above explains,
-`sendemail` logs before it sends, so only the inbox confirms delivery.
+**What it shows:** For every classification Claude can return, the code takes
+exactly the actions action-table.md lists. The schema refuses the pairs the
+rubric forbids before they reach the table. The table still sends `unclear` at
+high confidence to review, so the action layer does not rely on the schema
+alone. Every action goes to the ticket ID from the authenticated webhook,
+because a classification cannot carry one, which is the defense [Attack
+2](architecture.md#attack-2-confused-deputy) describes.
 
-## Delivery failure alert verification
+**Reproduce:** `./venv/bin/python verification/verify_action_table.py` from
+`agent/`. Offline.
 
-Measured 2026-08-22 against `docker/splunk-provisioning/triage_alerts`. Two
-alerts, one for pages and one for Slack posts. Exercised with synthetic events
-written to the audit index and tagged `synthetic: true`, because producing real
-failures means breaking a live credential.
+## Enrichment query
 
-| Property | How it was checked | Result |
-|---|---|---|
-| A broken destination is detected | 3 failures, nothing succeeding after | selected |
-| Below the threshold stays quiet | 2 page failures against 3 Slack | only Slack selected |
-| Destinations stay independent | both kinds failing at once | grouped separately, not pooled |
-| A recovered destination clears | one success written after the failures | not selected, no timer involved |
-| The subject names the destination | fired with actions enabled | `Action needed: triage Slack posts failing to incidents` |
-| The body names the failure type | the same email | `The Slack posts are failing with auth_failure.` |
+**Method:** For a critical security incident, the agent searches Splunk for the
+submitter's email and IP address and adds what it finds to the ticket note. Both
+values arrive with the ticket, so each must pass a strict pattern before it
+reaches the query. `verify_enrichment_query.py` builds queries from accepted and
+hostile values and inspects the query string. Each hostile value is passed
+alone, so getting no query back means that value was left out. Nothing is sent
+to Splunk.
 
-The last two rows are the ones that needed a real send. Every earlier attempt
-rendered as `Splunk Alert: Triage paging is failing`, Splunk's default template,
-because the custom text was set as `action.email.subject.alert` while Splunk
-reads `action.email.subject`. Both keys were present and the API reported the
-custom one, so the configuration looked correct and the email was not. Only
-firing it with actions enabled showed the difference.
+**Result:** Measured 2026-10-03, eighteen checks, all passing.
 
-Two alerts did not fire during that run, both correctly. The heartbeat alert
-declined because the agent was up and beating. The paging alert was inside its
-one hour suppression window from a firing nine minutes earlier.
+| Input | Result |
+|---|---|
+| A verified email, a valid IPv4 and a valid IPv6 address | each searched |
+| An email from an unverified requester | left out |
+| `requester_verified` sent as the string `true` or the number 1 | treated as unverified, email left out |
+| An email with a quote, a pipe, a space or a trailing newline | left out |
+| An IP with a quote, an IPv6 zone, or an octet out of range | left out |
+| Nothing safe to search on | no search runs |
+| Any query | searches only `botsv3`, returns named fields only, never whole events, caps at 20 events |
+| A hostname or username from the ticket text | never reaches the query, which takes no such values |
 
-## Note link verification
+**What it shows:** The only values a ticket can put into the search are the
+submitter's verified email and IP address, and each must pass its pattern
+first. The query keeps one fixed shape whatever the values, so a ticket cannot
+widen it. This is the defense against
+[Attack 3](architecture.md#attack-3-indirect-data-exfiltration-via-internal-notes).
 
-Measured 2026-09-28, twelve checks, all passing. An attacker can choose some of
-the log values the agent copies into the note, and osTicket turns anything in a
-plain-text note that matches its link pattern into a live link.
-`verify_note.py` builds a note from hostile values and checks it against a copy
-of that pattern, taken from `Format::clickableurls` in osTicket's
-`include/class.format.php`.
+**Reproduce:** `./venv/bin/python verification/verify_enrichment_query.py` from
+`agent/`. Offline.
 
-| Value in the logs | In the note |
+## Idempotency store
+
+**Method:** The idempotency store is the agent's SQLite record of each ticket it
+has claimed, the webhook body until the ticket completes, the classification it
+made, and the actions it has finished. The store prevents a retried or resumed
+ticket from being acted on twice. `verify_idempotency.py` runs the store's code
+against a temporary SQLite file instead of the agent's own, because test ticket
+IDs written there would later refuse the real tickets with those IDs.
+
+**Result:** Measured 2026-10-06, twenty-six checks, all passing.
+
+| What happens | Result |
+|---|---|
+| Ticket 42 is claimed, then claimed again | the first claim succeeds, the second is refused |
+| Ticket 42 is claimed with its ID as text, `"42"` | refused, since it is the same ticket |
+| Ticket 43 is claimed while 42 is held | succeeds, since tickets do not block each other |
+| A note is recorded as written on ticket 43 | recorded, and no other action on 43 is marked done |
+| The same note is recorded again | no change |
+| The agent asks about a ticket it has never seen | nothing reported as done |
+| An action name is misspelled | refused with an error |
+| An action or a classification is stored for a ticket that was never claimed | kept anyway, with a warning, so a retry cannot repeat it |
+| A classification is stored and read back | identical, and no action is marked done |
+| A stored classification is corrupted | read as missing, so the ticket is classified again |
+| The agent restarts | claims, recorded actions and classifications are all still there, and new tickets can still be claimed |
+| A store file from an older version, which tracked only notes, is opened | the ticket still claimed, no classification stored, its note kept, the other actions read as not done |
+
+**What it shows:** A ticket is claimed once and each action is recorded once,
+and both survive a restart and an upgrade of the store. It does not show the
+agent checking the store before it acts, which [Action wiring](#action-wiring)
+covers.
+
+**Reproduce:** `./venv/bin/python verification/verify_idempotency.py` from
+`agent/`. Offline.
+
+## Resume
+
+**Method:** osTicket can deliver a ticket the agent has already claimed, when
+the plugin retries a send or a run was interrupted. The agent reads the store to
+decide whether the repeat is a duplicate, unfinished work, or a ticket another
+run is still working on. `verify_resume.py` checks that decision against a
+temporary SQLite file instead of the agent's own.
+
+**Result:** Measured 2026-10-06, eighteen checks, all passing.
+
+| What happens | Result |
+|---|---|
+| A repeat arrives for a ticket never seen, or claimed but never classified | classified from the start |
+| A repeat arrives for a ticket Claude could not classify | nothing is done, since it has already been sent to the review Slack channel |
+| A repeat arrives for a high-confidence critical with nothing done | all five actions left to do: audit log entry, note, priority, Slack post, page |
+| A repeat arrives for the same ticket after its page went out | the other four actions left to do |
+| A repeat arrives for the same ticket with all five done | nothing left to do, so it is refused as a duplicate |
+| A repeat arrives for a routine `it_support` ticket with nothing done | only the audit log entry, note and priority left to do, no alert or page |
+| A repeat arrives for a security question with nothing done | the audit log entry, note and priority left to do, plus the move to the security department |
+| A repeat arrives for a ticket acted on but never written to the audit log | only the audit log entry left to do |
+| A second run tries the same ticket while the first run is still working on it, with the ID sent as a number or as text | refused |
+| A run begins for a ticket while another ticket is being worked on | allowed, since each ticket is guarded separately |
+| A run ends, or crashes partway | the ticket is released for the next delivery, and a crash is recorded in the audit log by its error type |
+
+**What it shows:** A repeat never redoes an action the store records as done,
+and a crash cannot leave a ticket locked or unrecorded. The verifier checks what
+the agent decides, not the actions it then takes. [Recovery](#recovery) records
+a real interrupted ticket being finished.
+
+**Reproduce:** `./venv/bin/python verification/verify_resume.py` from
+`agent/`. Offline.
+
+## Recovery
+
+**Method:** The agent answers osTicket before it does the work, so a crash in
+between leaves a ticket osTicket believes was delivered. The agent stores each
+ticket's webhook body until the ticket completes, and at startup it finishes any
+ticket still holding one. A ticket accepted more than an hour earlier is not
+finished, because acting that late could page someone about something stale.
+`verify_recovery.py` runs this with Claude and every outbound client replaced by
+stubs, so nothing leaves the machine.
+
+**Result:** Measured 2026-10-06, thirty-five checks, all passing.
+
+| What happens | Result |
+|---|---|
+| The agent accepts a ticket | its body is kept for recovery, and dropped when the run completes |
+| The agent restarts after a crash that left only the note written | the priority is set and the Slack alert posted, without writing the note again |
+| The agent restarts with a ticket accepted two hours earlier | not triaged, a note says triage did not finish, and the ticket is sent to the review Slack channel |
+| A stored body cannot be read | dropped, not acted on |
+| Claude cannot classify a recovered ticket | sent to the review Slack channel and not picked up again, or kept for the next start if that Slack post fails |
+| The store fails as a delivery is accepted | refused, so the plugin retries it, and the retry is accepted once the store recovers |
+| One ticket in a recovery backlog fails | the others still finish, and the failed one is kept for the next start |
+| A repeat delivery for an unfinished ticket names a new requester and IP | resumed on the original requester and IP |
+| A repeat delivery arrives for an abandoned ticket, a decided ticket with no stored body, or an undecided one past the retry window | refused as a duplicate |
+
+**What it shows:** A crash or a failing store does not lose a ticket the agent
+accepted. A repeat delivery cannot change who a resumed ticket is about, or
+revive one already given up on. The stubs mean the real writes are not shown
+here. Ticket 32 below shows them.
+
+**Reproduce:** `./venv/bin/python verification/verify_recovery.py` from
+`agent/`. Offline.
+
+### A real interrupted ticket, 2026-08-22, ticket 32
+
+A ticket was filed through the osTicket form as a verified user. A script
+polling the agent's store killed the agent with `SIGKILL` the moment the
+ticket's webhook body was stored, before classification. osTicket had its 202
+and queued no retry. On restart, with no delivery of any kind, the agent found
+classification still to do and finished the ticket:
+
+```
+Ticket 32: interrupted, finishing classified
+Ticket 32: classified it_support/high/high_confidence, requester_verified=True
+Ticket 32: note written
+Ticket 32: priority normal to high
+Recovery: 1 ticket(s) finished, 0 too old to finish
+```
+
+In osTicket, ticket 32 has priority High and a note posted as `Triage Agent`.
+There was no Slack post and no page, which is correct for that row.
+`requester_verified` survived the kill and the restart.
+
+## Write-back endpoints
+
+**Method:** osTicket's own API cannot change an existing ticket's priority or
+department, so the plugin adds signed endpoints the agent uses to write a note,
+set priority and move a ticket to the security department.
+`verify_writeback.py` sends each endpoint valid and invalid requests against the
+running stack.
+
+**Result:** Measured 2026-10-03 on ticket 21, twenty-eight checks, all passing.
+
+| Request | Result |
+|---|---|
+| Unsigned, on each endpoint | 401 |
+| A wrong signature, a wrong secret, or the webhook's secret, on the note endpoint | 401 |
+| A timestamp 10 minutes old, on each endpoint | 401 |
+| A ticket that does not exist, on each endpoint | 404 |
+| The note text or the priority missing | 400 |
+| A priority name osTicket does not have, or a priority ID instead of a name | 400 |
+| A valid note, then the same note again | 200, then 200 with `note_exists`, so no second note |
+| A department named in the body | ignored, the ticket goes to the configured department |
+| A valid move, then the same move again | 200, then 200 with `already_routed` |
+| A valid priority | 200, naming the new priority |
+| A request signed for one endpoint sent to another, or naming no operation | 400 |
+
+**What it shows:** Only the write secret can change a ticket, and a request
+signed for one endpoint cannot be replayed at another. The webhook's secret is
+refused, so a leak of it does not grant writes. This is the defense against
+[Attack 6](architecture.md#attack-6-credential-compromise). If a reply is lost
+and the agent sends the same write again, the endpoint answers that it is
+already done instead of writing a second time. This run wrote no new note,
+because ticket 21 already carried the agent's. Ticket 36 in
+[End-to-end runs](#end-to-end-runs) shows one being written.
+
+**Reproduce:** From `agent/`, with osTicket running and `OSTICKET_WRITE_URL`,
+`TRIAGE_WRITE_SECRET` and `TRIAGE_HMAC_SECRET` set in `agent/.env`:
+
+```bash
+./venv/bin/python verification/verify_writeback.py <ticket_id>
+```
+
+It writes a real note if the ticket has none, moves the ticket to the security
+department and sets its priority. The endpoints have no undo, so name a ticket
+you do not mind marking. Ticket 99999 must not exist, because the 404 checks
+rely on it.
+
+### The priority change is recorded, 2026-09-11, ticket 33
+
+osTicket has no priority event, so the endpoint records a change the way
+osTicket records any form field change, in the ticket's history.
+`verify_writeback.py` cannot read the database, so this was run by hand. Before
+these requests, ticket 33's history held only `created` and `overdue`.
+
+| Request | Result |
+|---|---|
+| `priority: high` | 200, `from: low`, `to: high` |
+| `priority: low` | 200, `from: high`, `to: low` |
+
+Each added a row to `ost_thread_event`, in order:
+
+```
+76  edited  2026-09-11 16:26:20  {"fields":{"Priority":"high"}}
+77  edited  2026-09-11 16:28:30  {"fields":{"Priority":"low"}}
+```
+
+### The department move is recorded, 2026-09-27, ticket 37
+
+osTicket's own transfer needs a staff login, which an API request does not
+have, so the endpoint writes the `transferred` event itself. The move of ticket
+37 to the security department added this row to `ost_thread_event`:
+
+```
+80  transferred  2026-09-27 20:45:30  {"dept":"Security"}
+```
+
+## Note links
+
+**Method:** Some of the values the agent copies from Splunk into a note can be
+chosen by an attacker, such as a username typed at a sign-in page. osTicket
+turns text that matches its link pattern into a live link, so the agent defangs
+every copied value. `verify_note.py` builds a note from hostile values and
+checks it against a copy of that pattern, from `Format::clickableurls` in
+osTicket's `include/class.format.php`. It also checks that the note cuts long
+values and caps how many each line shows.
+
+**Result:** Measured 2026-10-06, fourteen checks, all passing.
+
+| Value | In the note |
 |---|---|
 | `https://evil.example/reset` | `https[:]//evil.example/reset` |
 | `www.evil.example` | `www[.]evil.example` |
@@ -954,38 +653,424 @@ of that pattern, taken from `Format::clickableurls` in osTicket's
 | `ftp://files.example/x` | `ftp[:]//files.example/x` |
 | `alice@example.com` | `alice[@]example.com` |
 | A 180-character sentence | cut to 100 characters, ending `(cut)` |
+| 20 events, each with two account fields | the first 20 of 40, marked `(first 20 of 40)` |
 | `bob.smith`, `192.0.2.7` | unchanged |
+| The `Search:` line, built from validated values | unchanged, so an analyst can paste it into Splunk |
 
-The pattern links every raw value except the uppercase `WWW.` one, which
-osTicket's case-sensitive pattern leaves alone. It finds nothing in the built
-note. The `Search:` line is left as the agent built it, so an analyst can paste
-it into Splunk, and it holds only values the agent validated.
+**What it shows:** The copied pattern catches every raw value except
+`WWW.evil.example`, which proves the test can detect a link. It catches nothing
+in the built note, so a log value cannot become a link. This is the defense
+against [Attack 8](architecture.md#attack-8-log-injection-via-enrichment).
+osTicket's pattern is case-sensitive today, and the uppercase value is defanged
+in case a later version is not. The test uses a copy of the pattern, so the note
+was also checked in osTicket itself.
 
-The same note was also run once through osTicket's own `Format::htmlchars` and
-`Format::clickableurls` inside the container. It produced no links, and the raw
-values from the table put through the same code produced four, all but the
-uppercase `WWW.` one.
+**Reproduce:** `./venv/bin/python verification/verify_note.py` from `agent/`.
+Offline.
 
-Reproduce with `./venv/bin/python verification/verify_note.py` from `agent/`.
-Nothing is written and no network call is made.
+### In osTicket itself, 2026-10-06
 
-## Not yet verified
+A note built from the same values, plus HTML values and a `Search:` line, was
+run through osTicket's own `Format::htmlchars` and `Format::clickableurls`
+inside the container. That is the path osTicket uses to display a plain-text
+note.
 
-Three things this file does not cover, listed so the sections above are not read
-as a complete picture.
+| In the note | Displayed as |
+|---|---|
+| The defanged values | text, no links |
+| `<script>alert(1)</script>`, `<img src=x onerror=alert(1)>`, `<b>benign</b>` | escaped text |
+| The `Search:` line | one mailto link, on the requester's email |
 
-The fallback page. `needs_fallback_page` is the most intricate condition in the
-agent and it has only ever run in the wiring verifier. No real Slack failure has
-produced one.
+That email is the verified requester's own address, so a submitter can only
+point the link at themselves.
 
-A classification failure end to end. The wiring verifier forces
-`classify_ticket` to raise, which proves the path, but no run has been driven by
-a genuine Claude failure with the real failure-type mapping.
+## Action wiring
 
-A slow dependency in front of an action. The page now runs before enrichment and
-before the audit writes, and the wiring verifier proves that order against a
-dead audit endpoint. What no run has produced is the delay itself, an osTicket
-or Splunk call that hangs to its full timeout rather than refusing at once, so
-the numbers this ordering exists to avoid are arithmetic from the retry
-constants rather than measurements.
+**Method:** `ENABLE_WRITES` is the agent's kill switch. With it off, the agent
+still classifies, enriches and audits, but changes nothing in osTicket, Slack or
+PagerDuty. `verify_wiring.py` drives the agent's real action code against all
+three with the switch off and on. Each case runs in its own process, because the
+switch is read once at startup.
 
+**Result:** Measured 2026-10-11 on ticket 33, thirty-nine checks, all passing.
+Alerts went to the test Slack channel and pages to the test PagerDuty service.
+
+| What happens | Result |
+|---|---|
+| Every classification the schema accepts is run through the action table | only the two critical security incidents page, and only the low-confidence one gets a WAKE page if its Slack alert fails |
+| A high-severity security incident with writes off | the note, priority and Slack alert are skipped, and none is recorded as done |
+| The same with writes on | all three are done and recorded |
+| The same ticket run again | all three are refused, and the records stay |
+| The classification audit write fails | the note ends with `No audit record.` |
+| Claude cannot classify the ticket | posted to the review Slack channel, with no note and no priority, and not posted again on a second run |
+| A page with writes off, then on, then again | skipped, then paged, then refused, with the fallback page still available |
+| The move to the security department with writes off, then on, then again | skipped, then moved, then refused |
+| Splunk's audit endpoint is down during a critical | the page goes out before the failed audit write and before enrichment |
+
+**What it shows:** Every action obeys the kill switch, and a second run repeats
+none of them, so a retried delivery cannot repeat a note, a priority change, an
+alert, a page or a move. A failed classification audit write still shows on the
+ticket, and a Splunk outage cannot hold back a page.
+
+**Reproduce:** From `agent/`, with osTicket running:
+
+```bash
+./venv/bin/python verification/verify_wiring.py <ticket_id>
+```
+
+It writes a note if the ticket has none, sets priority up to emergency, moves
+the ticket to the security department, posts Slack alerts, sends PagerDuty pages
+and reads PagerDuty's REST API to confirm each page. Alerts and pages go to
+`SLACK_WEBHOOK_TEST` and `PAGERDUTY_ROUTING_KEY_TEST` when those are set, and to
+the real Slack channels and PagerDuty services when they are not. Its last lines
+report what it did to the ticket and where alerts and pages went.
+
+### Against real failures
+
+**Method:** The agent's own action code was called directly, without osTicket,
+against two real failures, with a temporary idempotency store. For a
+low-confidence critical, the urgent Slack post went to a Slack webhook URL that
+Slack does not recognize. In a separate run, classification was given a Claude
+API key Anthropic refuses. The fallback page went to the test PagerDuty service
+and the other posts to the test Slack channel, and each outcome was read back
+from the store and Splunk.
+
+**Result:** Measured 2026-10-09.
+
+| What happens | Result |
+|---|---|
+| The urgent Slack post fails, for a low-confidence critical | recorded as `bad_request`, the ticket flagged for human review, and the WAKE fallback page sent and recorded |
+| The same post through a working Slack webhook | posted, with no fallback page |
+| Claude refuses the API key | recorded as `auth_failure`, posted to the review Slack channel, with no note and no priority |
+
+**What it shows:** A real Slack failure on a low-confidence critical wakes
+someone through the fallback page and flags the ticket for review. A real Claude
+refusal reaches the review Slack channel without writing anything to the ticket.
+
+## Slack alerts
+
+**Method:** The agent posts each alert to a Slack channel through an incoming
+webhook, a URL that lets anyone who has it post to that Slack channel.
+`verify_slack.py` builds the alert for each case and checks its text, and starts
+the client with settings missing. It also makes posts fail with a marker planted
+in the webhook URL, to see whether any error repeats it. One real post goes to
+the test Slack channel.
+
+**Result:** Measured 2026-10-06, forty-seven checks, all passing.
+
+| What happens | Result |
+|---|---|
+| A high-confidence critical alert | mentions `@here`, and carries the severity, category, ticket number, enrichment count and a plain link to the ticket |
+| A high-severity incident alert | no `@here` |
+| An `unclear` ticket on the review Slack channel | names the category and hides the severity guess |
+| A low-confidence ticket on the review Slack channel | says "low confidence" |
+| Any alert | states its confidence, high or low |
+| A critical that paged | names the destination, `paged WAKE` or `paged NOTIFY` |
+| A critical whose page failed | says `WAKE PAGE FAILED` or `NOTIFY PAGE FAILED` and tells the reader to escalate manually, never `paged` |
+| A row that does not page | says nothing about paging |
+| Each enrichment outcome | its own line (no verified identifier, no related events, 20 related events, enrichment unavailable), and none when the row does not enrich |
+| Claude cannot classify the ticket | the notice names the failure type, links the ticket, carries only the review icon and never mentions `@here` |
+| An alert on each Slack channel, built from a classification carrying a hostname, username and IP extracted from the ticket | none of the three appears |
+| What the three alert builders take | nothing the submitter wrote, and no enrichment detail beyond a count |
+| Writes off | the post is skipped |
+| A webhook missing with writes on | the agent refuses to start and names which one |
+| `OSTICKET_BASE_URL` missing, even with writes off | the agent refuses to start and names it |
+| A post fails against a malformed and an unreachable webhook URL, each carrying the marker | the error is raised, and its text never contains the marker |
+| One real post to the test Slack channel | accepted |
+
+**What it shows:** Each alert says what triage did and how sure it was,
+including whether the page went out. Whether it then reached an incident is
+checked in [Page reporting](#page-reporting). Nothing the submitter wrote
+reaches an alert, including the values Claude extracts from the ticket. HTTP
+client errors often quote the URL they called, and the marker in the webhook URL
+shows that the error text, which the console and the audit log both record,
+never carries the webhook. The real post is a short test message, so it proves
+delivery only. The Slack screenshot in [the
+README](../README.md#a-triaged-ticket) shows a full alert as Slack displays it,
+from ticket 36.
+
+**Reproduce:** `./venv/bin/python verification/verify_slack.py` from `agent/`.
+With `SLACK_WEBHOOK_TEST` set, it posts one message to the test Slack channel.
+Without it, delivery is skipped, and the verifier ends with "Delivery was
+skipped, so nothing was posted." One case takes about 7 seconds.
+
+## PagerDuty pages
+
+**Method:** The agent pages PagerDuty through the Events API with a routing key,
+which lets anyone who has it open an incident on that PagerDuty service. The key
+travels in the request body, so the risk is a rejection that quotes the field it
+refused. `verify_pagerduty.py` builds both pages and checks their content,
+starts the client with settings missing, and sends a page with a marker as the
+routing key to see whether any error repeats it. Two real pages go to the test
+PagerDuty service.
+
+**Result:** Measured 2026-10-11, thirty-two checks, all passing.
+
+| What happens | Result |
+|---|---|
+| A page for a critical | leads with severity and category, carries the ticket number, names the osTicket host as the source, and sets PagerDuty's severity to critical |
+| The page's content | says nothing about enrichment, which has not run yet, carries no extra details, and links to the ticket with the URL itself as the link text |
+| The page's dedup key | not the ticket ID, and the same every time for one ticket |
+| The fallback page, sent when a low-confidence critical's Slack alert fails | leads with "alert delivery failed", says the confidence was low, and dedups on the same key |
+| Both pages, built from a classification carrying a hostname, username and IP extracted from the ticket | none of the three appears anywhere in the event |
+| What the two page builders take | the ticket ID, the ticket number and the classification, nothing the submitter wrote |
+| Writes off | the page is skipped |
+| A routing key missing with writes on | the agent refuses to start and names which one |
+| A destination the action table never produces | refused before anything is sent |
+| A page sent with the marker as its routing key | rejected, and the error text never contains the marker |
+| One real page to each destination, both on the test PagerDuty service | both queued |
+
+**What it shows:** A page says what triage decided, and the fallback page leads
+with the delivery failure, so it never reads as a confident critical. Nothing
+the submitter wrote reaches a page. The marker shows a rejection never repeats
+the routing key, and the agent never records PagerDuty's response body. Queued
+means the Events API accepted the event. Whether it opened an incident is
+checked in [Page confirmation](#page-confirmation), and who was notified depends
+on the PagerDuty service's urgency and each responder's rules, which
+[known-limitations.md](known-limitations.md) covers.
+
+**Reproduce:** `./venv/bin/python verification/verify_pagerduty.py` from
+`agent/`. With `PAGERDUTY_ROUTING_KEY_TEST` set, it queues two pages on the test
+PagerDuty service. Without it, delivery is skipped, and the verifier ends with
+"Delivery was skipped, so no page was sent."
+
+## Page confirmation
+
+**Method:** PagerDuty's Events API answers `202` to any page it queues. The
+agent then asks PagerDuty's REST API for an open incident on the PagerDuty
+service the page went to, holding an alert with the page's dedup key.
+`verify_routing_keys.py` replaces the REST API with canned answers and controls
+the clock, so the twenty-second wait passes at once and nothing leaves the
+machine.
+
+**Result:** Measured 2026-10-11, twelve checks, all passing.
+
+| What the REST API answers | Result |
+|---|---|
+| An incident appears within twenty seconds, on the first lookup or a later one | confirmed |
+| None appears by then, or no PagerDuty service holds the routing key | reached nobody |
+| The last lookup fails, the REST API key is refused, or the lookup crashes | not confirmed |
+| WAKE and NOTIFY pages for one ticket | each looked up on its own PagerDuty service |
+| A page an earlier start sent | a resolved incident counts too |
+
+**What it shows:** The lookup tells a page that reached nobody apart from one
+PagerDuty could not answer about, so the Slack post never calls an unknown a
+failure.
+
+**Reproduce:** `./venv/bin/python verification/verify_routing_keys.py` from
+`agent/`. Offline.
+
+### Dead routing keys
+
+**Method:** Test pages were sent by hand to the Events API, each with a routing
+key that reaches no live PagerDuty service. Each was then checked for an
+incident through the REST API and in PagerDuty's web app.
+
+**Result:** Measured 2026-10-08 to 2026-10-10.
+
+| Routing key | Events API answer | Incident |
+|---|---|---|
+| Well formed, held by no PagerDuty service | `202` | none |
+| The old routing key after its integration was deleted and re-added | `202` | none |
+| On a disabled PagerDuty service | `202` | none |
+| On a PagerDuty service in a maintenance window | `202` | none |
+| 31 characters long | `400` | none |
+
+**What it shows:** A `202` does not mean delivery. PagerDuty queued pages
+through four kinds of dead routing key and opened nothing, which is why each
+page is confirmed.
+
+### Confirmation against PagerDuty
+
+**Method:** Two test pages were first sent by hand with PagerDuty's alert
+grouping on. Grouping was then turned off, and the agent's own send and
+confirmation code ran against the test PagerDuty service, then against a routing
+key of 32 zeros.
+
+**Result:** Measured 2026-10-10.
+
+| Page | Result |
+|---|---|
+| Two test pages, with alert grouping on | the second folded into the first's incident, and still confirmed |
+| Test routing key, with grouping off | sent in 0.51 s, confirmed after 3.2 s |
+| Test routing key again, a new dedup key, the same minute | confirmed after 1.1 s, on a separate incident |
+| 32 zeros | `202` in 0.45 s, reached nobody after 0.5 s |
+
+**What it shows:** Against the real service, confirmation takes a few seconds,
+well inside its twenty-second wait, and a routing key no PagerDuty service holds
+is caught at once. A page grouped into another ticket's incident is still
+confirmed, which is why [architecture.md, Section
+10](architecture.md#10-deployment-preconditions) requires grouping off.
+
+## Page reporting
+
+**Method:** The Slack alert for a critical says whether its page reached an
+incident. `verify_page_reporting.py` runs a critical through the agent with its
+classification already stored, so Claude is not called. Every outbound client,
+including the lookup that confirms a page, is replaced by a stub, so nothing
+leaves the machine. Two cases run on the agent's real thread pool, to check the
+order things happen in.
+
+**Result:** Measured 2026-10-11, thirty-six checks, all passing.
+
+| What happens | The alert says | Recorded |
+|---|---|---|
+| PagerDuty refuses the page | `WAKE PAGE FAILED, escalate manually` | a failed page, left to retry |
+| PagerDuty accepts it and an incident opens | `paged WAKE` | a confirmed page |
+| PagerDuty accepts it and no incident opens | `WAKE PAGE REACHED NOBODY, escalate manually` | a failed page of type `no_incident`, not sent again, and the routing key check runs at once |
+| The lookup gets no usable answer, crashes, or takes over a minute | `paged WAKE, not confirmed` | an unconfirmed page |
+| A ticket resumes after its page, with its alert still owed | the result of a second lookup, which also counts a resolved incident | nothing new, and the page is not sent again |
+| A ticket resumes after its alert, or with writes off | (no alert) | no second lookup |
+| The Slack post fails and the WAKE fallback is sent | (no alert) | both pages looked up and recorded |
+
+**What it shows:** A Slack alert says whether its page reached an incident, not
+just whether PagerDuty took it, so a page through a dead routing key is reported
+as reaching nobody. A restarted ticket checks its earlier page again before
+posting, and never pages twice. The alert waits for the lookup alone, and at
+most a minute.
+
+**Reproduce:** `./venv/bin/python verification/verify_page_reporting.py` from
+`agent/`. Offline.
+
+## Routing key check
+
+**Method:** With writes on, the agent asks PagerDuty's REST API every five
+minutes whether each routing key still belongs to a live PagerDuty service, and
+records alive, dead or unchecked. `verify_routing_keys.py` replaces the REST API
+with canned answers and checks the agent's verdict on each, so nothing leaves
+the machine.
+
+**Result:** Measured 2026-10-11, twenty checks, all passing.
+
+| What happens | Result |
+|---|---|
+| The routing key on an active, warning or critical PagerDuty service | alive |
+| The routing key on no PagerDuty service, or on one disabled, in maintenance or in a status the agent does not recognize | dead, with that reason |
+| A dropped request, a timeout, a 429 or a 503, then an answer | asked again, up to three times in all |
+| A refused REST API key, PagerDuty down or unreachable on every try, or an answer that cannot be read | both routing keys unchecked, with the reason |
+| Any reason the check gives | never quotes a routing key |
+
+**What it shows:** A dead routing key is found and recorded with its reason. A
+check that cannot run is recorded as unchecked, so revoking the REST API key
+cannot hide a dead routing key. A dropped request is tried three times before it
+counts as unchecked, and no reason carries a routing key into Splunk or the
+alert email.
+
+**Reproduce:** `./venv/bin/python verification/verify_routing_keys.py` from
+`agent/`. Offline.
+
+### Against PagerDuty
+
+**Method:** The agent ran with writes on against the real PagerDuty account,
+with its routing keys or its REST API key changed as each row says, and each
+result was read back from Splunk.
+
+**Result:** Measured 2026-10-09 and 2026-10-10.
+
+| Run | Result |
+|---|---|
+| Real routing keys | both alive |
+| WAKE set to 32 zeros | the wake routing key dead, "reaches no PagerDuty service", and the notify routing key alive |
+| Real routing keys, with a REST API key PagerDuty refuses | both unchecked, "answered HTTP 401" |
+| Real routing keys, during an unplanned network outage at 19:00 GMT on 2026-10-10 | both unchecked, "could not be reached" |
+
+**What it shows:** The check finds a dead routing key against the real PagerDuty
+account and reports a refused REST API key as unchecked. The 19:00 outage led to
+the retry, because a short outage had marked both routing keys unchecked and
+sent an alert.
+
+## Monitoring
+
+### Heartbeat and the agent-down alert
+
+**Method:** The agent writes a heartbeat to the audit index every 60 seconds.
+Every other audit event is written only when a ticket arrives, so without beats
+an empty index could not tell a quiet helpdesk from a stopped agent. A saved
+search runs every five minutes and emails an alert when the last ten minutes
+hold no beat. The agent was started with writes off for twelve minutes, and its
+beats were read back from Splunk. It was then stopped, three verifiers that load
+its code ran, and the search was checked by hand before and after the stop.
+
+**Result:** Measured 2026-10-08, and the outage email 2026-10-06.
+
+| What happens | Result |
+|---|---|
+| The agent starts and runs for twelve minutes | 13 beats, the first at once with uptime 0, the uptime rising by 60 each time, each recording that writes were off |
+| The alert's search over those twelve minutes | 13 beats, so the alert does not fire |
+| The agent stopped, then three verifiers that load its code run | no beats, so running a verifier cannot hide a stopped agent |
+| The agent stopped for a day | the alert fires about once an hour |
+| The recipient's inbox | subject `Action needed: triage agent stopped reporting` |
+
+**What it shows:** An email goes out within fifteen minutes of the agent
+stopping, and it reaches a person. While the agent stays down, the alert repeats
+about once an hour.
+
+### Restart loop alert
+
+**Method:** An agent that keeps crashing and being restarted still sends beats,
+so the agent-down alert stays quiet. Every start sends a first beat with an
+uptime of zero, and a saved search counts those every five minutes, emailing an
+alert when it counts three or more starts in the last thirty minutes. The agent
+was started and stopped three times with writes off.
+
+**Result:** Measured 2026-09-28.
+
+| What happens | Result |
+|---|---|
+| Thirty minutes with no restarts | 0 starts, does not fire |
+| The agent started and stopped three times | 3 starts, and an email goes out at the next scheduled search |
+| The recipient's inbox | subject `Action needed: triage agent is restarting repeatedly`, body `The triage agent has started 3 times in the last thirty minutes.` |
+
+**What it shows:** A crash loop is caught even while the agent keeps sending
+beats, and the email says how many times it started.
+
+### Delivery failure alerts
+
+**Method:** When a Slack webhook is revoked, or PagerDuty rejects the routing
+key or cannot be reached, every post or page fails, and the agent keeps trying
+without tracking it. Two saved searches, one for pages and one for Slack posts,
+look back seven days and email an alert when a PagerDuty service or Slack
+channel has failed at least twice since its last success. The agent's own
+sending code was run against a Slack webhook that does not exist and a routing
+key PagerDuty rejects.
+
+**Result:** Measured 2026-10-08.
+
+| What happens | Result |
+|---|---|
+| Two real failures each to a Slack channel and a PagerDuty service | the agent logs `bad_request` each time, and both alerts fire |
+| One real success after them | both alerts clear |
+| One more real failure to each after it recovered | stays quiet, on both alerts |
+| The paging email | subject `Action needed: triage paging failing to wake`, body `The pages are failing with bad_request. Critical incidents are not paging anyone.` |
+| The Slack email | subject `Action needed: triage Slack posts failing to incidents`, body `The Slack posts are failing with bad_request.` |
+
+**What it shows:** When a Slack channel or PagerDuty service keeps rejecting the
+agent, Splunk emails an alert that names it and the failure type. A single
+failure after an outage has been fixed sends nothing, and the alert stops once a
+page or post to it succeeds again. Two pages through a dead routing key fire it
+too, and the routing key alert below catches one between pages.
+
+### Routing key alert
+
+**Method:** A saved search runs every five minutes and emails an alert when the
+latest routing key check for either routing key is dead or unchecked. It sends
+the same alert at most once an hour, and a new one at once when the text
+changes. The agent ran against the real PagerDuty account with the wake routing
+key set to 32 zeros, then with the real routing keys, then with the wake routing
+key dead again. The search and its email were refined after the first runs, and
+the last row shows the final email.
+
+**Result:** Measured 2026-10-10.
+
+| What happens | Result |
+|---|---|
+| The wake routing key dead at 21:51 | an email at the next search, 21:55 |
+| The real routing keys back | the 22:00 search found nothing, and the alert cleared |
+| The wake routing key dead again at 22:23, inside the first email's hour | a second email at 22:25, with the new start time |
+| The same failure at the next search | held back, no email |
+| The final email, received 23:15 | subject `Action needed: triage paging may reach nobody through wake`, body `The wake routing key reaches no PagerDuty service. The check has reported this since 2026-10-10 23:12 GMT. If a routing key is dead, PagerDuty accepts the pages that use it and drops them, so critical incidents may page nobody.` |
+
+**What it shows:** A dead routing key brings an email within about ten minutes,
+naming the routing key, the reason and since when. The same failure is not
+repeated within the hour, but a routing key that fails again after recovering is
+emailed at once.

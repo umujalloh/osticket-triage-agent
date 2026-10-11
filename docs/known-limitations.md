@@ -139,6 +139,29 @@ marked down.
 Neither matters at the ticket volume this is built for. Both would matter at a
 volume where the retries themselves become load.
 
+### A hanging Splunk or osTicket delays everything after the page
+
+Each audit write waits up to 5 seconds for Splunk and tries three times, so a
+Splunk that accepts connections and never answers costs 19 seconds per write.
+The writes run in order between the actions, so the note, the priority and the
+urgent Slack alert wait behind them. With every write hanging, the urgent Slack
+alert went out about 115 seconds after the ticket was classified. The page is
+not delayed, because it goes out before the first audit write.
+
+Waiting less would lose audit records that a busy but working Splunk would have
+accepted, and the audit trail is what lets a decision be checked afterward.
+Sending audit writes from a background queue would keep every record and stop
+actions waiting, but it changes the agent's core path, including how a lost
+classification record is noticed and how pending records survive a restart.
+That was decided against, because the page, which is the most important alert
+during an incident, is never delayed behind an audit write.
+
+A hanging osTicket delays the alert the same way. Each note or priority write
+waits up to 10 seconds and tries three times, about 37 seconds per write, and
+both run before the urgent Slack alert, so whoever follows its link finds the
+ticket ready. With osTicket hanging, the alert went out about 75 seconds late,
+and the page again went first.
+
 ### osTicket's own email is not configured in this lab
 
 osTicket sends staff alerts, auto-replies and overdue notices from the address
