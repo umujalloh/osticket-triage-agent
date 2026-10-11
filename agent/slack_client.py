@@ -6,7 +6,10 @@ import requests
 # The channel names come from the action table, which is what selects a channel
 # for a classification. This module posts to the channel it is handed.
 from action_table import INCIDENTS, REVIEW, URGENT
-from schemas import EnrichmentOutcome, Severity, enrichment_line
+from schemas import (
+    EnrichmentOutcome, PAGE_NO_INCIDENT, PAGE_UNCONFIRMED, Severity,
+    enrichment_line,
+)
 from writes import writes_enabled
 
 WEBHOOKS = {
@@ -72,7 +75,11 @@ def build_message(ticket_id, ticket_number, classification, channel, mention=Fal
 
     paged reports what happened to the page. Someone reading that a page was
     sent assumes the on-call is awake and does not escalate, so when PagerDuty
-    refuses the event the alert has to say so.
+    refuses the event, or accepts it and opens no incident, the alert has to say
+    so. It is True for a page that reached an incident, or one writes being off
+    skipped, False for one PagerDuty refused, PAGE_NO_INCIDENT for one it
+    accepted and dropped, and PAGE_UNCONFIRMED when the agent got no usable
+    answer from PagerDuty.
     """
     category = classification.category.value
 
@@ -90,8 +97,14 @@ def build_message(ticket_id, ticket_number, classification, channel, mention=Fal
         # The destination rather than the fact of a page, because both rows in
         # the urgent channel page and only the destination separates them. These
         # are the names on the PagerDuty services a responder is paged from.
-        head += (f"  ·  paged {page.upper()}" if paged
-                 else f"  ·  {page.upper()} PAGE FAILED, escalate manually")
+        if paged == PAGE_UNCONFIRMED:
+            head += f"  ·  paged {page.upper()}, not confirmed"
+        elif paged == PAGE_NO_INCIDENT:
+            head += f"  ·  {page.upper()} PAGE REACHED NOBODY, escalate manually"
+        elif paged:
+            head += f"  ·  paged {page.upper()}"
+        else:
+            head += f"  ·  {page.upper()} PAGE FAILED, escalate manually"
 
     lines = ["<!here>", head] if mention else [head]
 

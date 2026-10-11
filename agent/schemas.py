@@ -32,6 +32,13 @@ class EnrichmentOutcome(str, Enum):
     completed = "completed"
     unavailable = "unavailable"
 
+# What confirming an accepted page found, which the alert reports. Here so the
+# Slack client can name them without importing the PagerDuty client and its
+# secrets.
+PAGE_CONFIRMED = "confirmed"
+PAGE_NO_INCIDENT = "no_incident"
+PAGE_UNCONFIRMED = "unconfirmed"
+
 # The wording the design specifies, kept here so the note and the alert cannot
 # drift apart. `completed` has no fixed text: it renders with its result count.
 ENRICHMENT_TEXT = {

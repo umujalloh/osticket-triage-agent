@@ -219,12 +219,11 @@ stop, when the agent keeps restarting, when pages keep failing to a destination,
 when Slack posts do, and when a PagerDuty routing key stops reaching a live
 PagerDuty service or cannot be checked.
 
-**A PagerDuty routing key goes dead.** PagerDuty accepts a page whose routing
-key was rotated, or whose PagerDuty service is disabled or in maintenance, and
-drops it, so nothing fails and the agent believes the page went out. Every five
-minutes the agent asks PagerDuty's REST API whether both routing keys still
-reach a live PagerDuty service, and a saved search emails within about ten
-minutes when one does not.
+**A PagerDuty routing key goes dead.** PagerDuty accepts a page through a dead
+routing key with the same `202` as a live one, and drops it. The agent confirms
+every page with PagerDuty's REST API, so the urgent Slack post says when a page
+reached nobody. It also checks both routing keys every five minutes, and a saved
+search emails within about ten minutes of one going dead.
 
 ---
 
@@ -262,7 +261,7 @@ enrichment and ahead of the audit writes.
 
 | | |
 |---|---|
-| Offline checks, run in CI on every push | **188** across 9 verifiers |
+| Offline checks, run in CI on every push | **226** across 9 verifiers |
 | Checks against a live stack | **91** across 3 verifiers |
 | Real tickets used in live runs | **16** |
 

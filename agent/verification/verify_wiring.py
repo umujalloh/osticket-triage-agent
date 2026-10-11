@@ -17,7 +17,8 @@ if len(sys.argv) != 2 or not sys.argv[1].isdigit():
         "that routing works.\n\n"
         "Several cases act on the ticket you name for real. They write a note,\n"
         "set its priority, including emergency, move it to the security\n"
-        "department, post Slack alerts and send PagerDuty pages. Alerts and\n"
+        "department, post Slack alerts and send PagerDuty pages, then read\n"
+        "PagerDuty's REST API to confirm each page. Alerts and\n"
         "pages go to SLACK_WEBHOOK_TEST and PAGERDUTY_ROUTING_KEY_TEST when\n"
         "those are set, and to the real destinations when they are not. Pick a\n"
         "ticket you don't mind marking.\n\n"
@@ -118,11 +119,11 @@ if os.environ.get("WIRING_CASE"):
 
     main._write_ticket_note(TICKET_ID, classification, outcome, None, None, audited)
     main._set_ticket_priority(TICKET_ID, classification)
-    # This row does not page, so nothing was owed and nothing failed. paged
-    # only changes the message when the row pages, and it carries no default
-    # so a caller cannot quietly claim a page that never happened.
+    # This row does not page, so nothing was owed and nothing failed. The page
+    # outcome only changes the message when the row pages, and it carries no
+    # default so a caller cannot quietly claim a page that never happened.
     main._post_alert(TICKET_ID, classification, actions, payload, outcome, None,
-                     paged=True)
+                     page=main._PageOutcome(True))
 
     state = completed_actions(TICKET_ID)
     print(f"STORE_NOTE_WRITTEN={state['note_written']}")
@@ -273,7 +274,7 @@ check("kill switch off skips the page", "page skipped (writes disabled)" in out)
 check("kill switch off records no page", "STORE_PAGED=False" in out)
 
 out = run_case("paging_on", "true", TRIAGE_STATE_DB=PAGE_STORE)
-check("kill switch on pages", f"Ticket {TICKET_ID}: paged" in out)
+check("kill switch on pages", f"Ticket {TICKET_ID}: wake page accepted" in out)
 check("the page is recorded", "STORE_PAGED=True" in out)
 
 out = run_case("paging_retry", "true", TRIAGE_STATE_DB=PAGE_STORE)
@@ -313,8 +314,10 @@ ordered = run_case("page_before_audit", "true", TRIAGE_STATE_DB=ORDER_STORE,
 
 # Named events rather than the raw "Splunk logging failed" line, which appears
 # once per audit write and cannot be told apart. The page writes an audit event
-# of its own, and that one is allowed to fail behind the page.
-paged_at = ordered.find(f"Ticket {TICKET_ID}: paged")
+# of its own, and that one is allowed to fail behind the page. The send is
+# timed by the line printed when PagerDuty accepts the page, since the "paged"
+# line comes only once the confirmation has answered.
+paged_at = ordered.find(f"Ticket {TICKET_ID}: wake page accepted")
 classification_audit_at = ordered.find("audit write failed (classification_complete)")
 check("a dead audit endpoint still fails the classification write",
       classification_audit_at != -1)
@@ -339,7 +342,8 @@ priorities = re.findall(prefix + r"priority (\S+) to (\S+)$", said, re.M)
 moved = len(re.findall(prefix + r"routed to ", said))
 already_in = len(re.findall(prefix + r"already in ", said))
 alerts = re.findall(prefix + r"slack posted to (\S+)$", said, re.M)
-pages = len(re.findall(prefix + r"paged ", said))
+# One line per page this run sent, whatever the confirmation found.
+pages = len(re.findall(prefix + r"\S+ page accepted, confirming", said))
 slack_to = ("the test Slack channel" if os.getenv("SLACK_WEBHOOK_TEST")
             else "the real Slack channels")
 pages_to = ("the test PagerDuty service" if os.getenv("PAGERDUTY_ROUTING_KEY_TEST")

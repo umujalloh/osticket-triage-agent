@@ -5,6 +5,7 @@ import os
 import re
 import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as WaitTimedOut
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from fastapi import FastAPI, Request, BackgroundTasks
@@ -27,9 +28,12 @@ from osticket_client import (
 )
 from pagerduty_client import (
     build_page, build_fallback_page, send_page, PagerDutyError,
-    SKIPPED as PD_SKIPPED, ALIVE, check_routing_keys,
+    SKIPPED as PD_SKIPPED, ALIVE, check_routing_keys, confirm_page,
 )
-from schemas import Category, EnrichmentOutcome, Severity
+from schemas import (
+    Category, EnrichmentOutcome, PAGE_CONFIRMED, PAGE_NO_INCIDENT,
+    PAGE_UNCONFIRMED, Severity,
+)
 from slack_client import (
     build_abandoned_message, build_message, build_failure_message, post_alert,
     SlackError, SKIPPED as SLACK_SKIPPED,
@@ -87,9 +91,10 @@ async def _routing_key_loop():
     """Checks every ROUTING_KEY_CHECK_SECONDS that each PagerDuty routing key
     still reaches a live PagerDuty service, and records the result for each.
 
-    PagerDuty accepts a page whose routing key is dead and drops it, so without
-    this a rotated routing key, or a PagerDuty service disabled or in
-    maintenance, stops paging through it with nothing failing.
+    PagerDuty accepts a page whose routing key is dead and drops it. Each page
+    is confirmed, but criticals are rare, so without this a rotated routing
+    key, or a PagerDuty service disabled or in maintenance, would show only
+    when the next critical was paged.
 
     Every result is recorded, alive included, and so is a check that cannot
     run, so the search that watches it has a recent result for as long as
@@ -98,18 +103,20 @@ async def _routing_key_loop():
     """
     while True:
         try:
-            results = await asyncio.to_thread(check_routing_keys)
-            for destination, (result, reason) in results.items():
-                await asyncio.to_thread(log_routing_key_check,
-                                        destination, result, reason)
-                if result != ALIVE:
-                    print(f"The {destination} routing key {reason}.")
+            await asyncio.to_thread(_record_routing_keys)
         except asyncio.CancelledError:
             raise
         except Exception as e:
             # Nothing that raises here may end the loop that runs it.
             print(f"Routing key check failed: {type(e).__name__}")
         await asyncio.sleep(ROUTING_KEY_CHECK_SECONDS)
+
+def _record_routing_keys():
+    """Checks both routing keys once and records each result."""
+    for destination, (result, reason) in check_routing_keys().items():
+        log_routing_key_check(destination, result, reason)
+        if result != ALIVE:
+            print(f"The {destination} routing key {reason}.")
 
 RECOVERY_WINDOW_SECONDS = int(os.getenv("RECOVERY_WINDOW_SECONDS", "3600"))
 
@@ -430,9 +437,9 @@ def _process_ticket(payload: dict):
     # Kept because the channel post reports it. If the alert says a page was
     # sent when it failed, the reader assumes the on-call is awake and does not
     # escalate.
-    paged = True
+    page = _PageOutcome(True)
     if actions.page:
-        paged = _page(
+        page = _page(
             ticket_id, actions.page,
             build_page(ticket_id, payload.get("ticket_number"), classification),
             fallback=False)
@@ -462,7 +469,7 @@ def _process_ticket(payload: dict):
         outcome, events = _enrich(ticket_id, payload, requester_verified)
 
     _take_actions(ticket_id, classification, actions, payload, outcome, events,
-                  query, audit_ok, paged)
+                  query, audit_ok, page)
 
 def _audit_classification(ticket_id, payload, classification, requester_verified) -> bool:
     """Records the decision in the audit index. Returns whether it is recorded.
@@ -552,7 +559,7 @@ def _enrich(ticket_id, payload, requester_verified):
     return EnrichmentOutcome.completed, events
 
 def _take_actions(ticket_id, classification, actions, payload, outcome, events,
-                  query, audited, paged):
+                  query, audited, page):
     """Runs the actions the table selected, after enrichment has settled.
 
     Ordered so the ticket is ready before anyone is told. The note and priority
@@ -579,7 +586,7 @@ def _take_actions(ticket_id, classification, actions, payload, outcome, events,
 
     if actions.channel:
         _post_alert(ticket_id, classification, actions, payload, outcome, events,
-                    paged)
+                    page)
 
 def _flag_human_review(ticket_id, reason):
     """Records that a ticket needs a person, and why.
@@ -593,7 +600,10 @@ def _flag_human_review(ticket_id, reason):
         _audit_failed(ticket_id, "human_review")
 
 def _post_alert(ticket_id, classification, actions, payload, outcome, events,
-                paged):
+                page):
+    # The confirmation runs while the audit write, enrichment and the ticket
+    # writes finish, so by now it has usually answered.
+    paged = page.result()
     text = build_message(
         ticket_id=ticket_id,
         ticket_number=payload.get("ticket_number"),
@@ -615,6 +625,8 @@ def _post_alert(ticket_id, classification, actions, payload, outcome, events,
         # one would repeat it. Both failing is the boundary in
         # known-limitations.md.
         if needs_fallback_page(classification, actions):
+            # Nothing waits on its confirmation, since the post it would have
+            # reported in has already failed. It is still recorded.
             _page(
                 ticket_id, WAKE,
                 build_fallback_page(ticket_id, payload.get("ticket_number"),
@@ -639,9 +651,42 @@ def needs_fallback_page(classification, actions) -> bool:
             and classification.severity == Severity.critical
             and actions.page != WAKE)
 
-def _page(ticket_id, destination, event, fallback) -> bool:
-    """Sends one page to one destination. Returns False only when nobody was
-    paged.
+class _PageOutcome:
+    """What the alert reports about a page, either known now or still being
+    confirmed in the background.
+
+    result() returns the value build_message takes as paged, which is True,
+    False, PAGE_NO_INCIDENT or PAGE_UNCONFIRMED.
+    """
+    def __init__(self, value=None, future=None):
+        self._value = value
+        self._future = future
+
+    def result(self):
+        if not self._future:
+            return self._value
+        # A confirmation stuck behind a hanging REST API, or behind other
+        # tickets' confirmations, must not hold the urgent post for long.
+        try:
+            return self._future.result(timeout=CONFIRM_ANSWER_SECONDS)
+        except WaitTimedOut:
+            return PAGE_UNCONFIRMED
+
+# The longest the Slack post waits for a page's confirmation. The lookup itself
+# polls for twenty seconds, so this leaves room for one slow service listing.
+CONFIRM_ANSWER_SECONDS = 60
+
+# Confirmations run beside the rest of the ticket's work, so the audit write,
+# enrichment and the ticket writes do not wait the few seconds PagerDuty takes.
+_confirmations = ThreadPoolExecutor(max_workers=8,
+                                    thread_name_prefix="page-confirmation")
+# Routing key checks started by a page that reached nobody run on their own
+# worker, so a run of such pages cannot hold up other tickets' confirmations.
+_routing_checks = ThreadPoolExecutor(max_workers=1,
+                                     thread_name_prefix="routing-key-check")
+
+def _page(ticket_id, destination, event, fallback) -> _PageOutcome:
+    """Sends one page to one destination, and starts confirming it.
 
     Writes being off is not a failure to page, and neither is a page that
     already went out.
@@ -651,36 +696,104 @@ def _page(ticket_id, destination, event, fallback) -> bool:
     would let the first refuse the second.
     """
     column = "paged_fallback" if fallback else "paged"
-    if completed_actions(ticket_id)[column]:
-        print(f"Ticket {ticket_id}: already paged {destination}, skipping")
-        return True
+    done = completed_actions(ticket_id)
+    if done[column]:
+        print(f"Ticket {ticket_id}: already paged {destination}, skipping the "
+              "send")
+        # The page is not sent again. When the Slack post is still owed, it is
+        # confirmed again, because a start that ended between the send and the
+        # post may never have learned whether it reached anyone. With writes
+        # off, or the post already sent, nothing would report the answer.
+        if not writes_enabled() or done["slack_posted"]:
+            return _PageOutcome(True)
+        return _start_confirmation(ticket_id, destination, event["dedup_key"],
+                                   fallback, again=True)
 
     try:
         result = send_page(destination, event)
     except PagerDutyError as e:
         log_page_failure(ticket_id, destination, e.failure_type, str(e))
         print(f"Ticket {ticket_id}: {destination} page failed ({e.failure_type})")
-        return False
+        return _PageOutcome(False)
     except Exception as e:
         log_page_failure(ticket_id, destination, "unknown", f"{type(e).__name__}: {e}")
         print(f"Ticket {ticket_id}: {destination} page failed (unknown)")
-        return False
+        return _PageOutcome(False)
 
     if result == PD_SKIPPED:
         log_page_skipped(ticket_id=ticket_id, destination=destination,
                          reason="writes_disabled")
         print(f"Ticket {ticket_id}: {destination} page skipped (writes disabled)")
-        return True
+        return _PageOutcome(True)
 
-    # Recorded only after PagerDuty queued it, so a failure leaves the ticket
-    # retryable rather than marked done.
+    # Marked once PagerDuty queued it, before the confirmation, so a page that
+    # reached no incident is not sent again on a later start. Sending it again
+    # through the same routing key would reach nobody again.
     mark_done(ticket_id, column)
-    audit_ok = log_paged(ticket_id, destination, fallback)
-    print(f"Ticket {ticket_id}: paged {destination}"
-          f"{' as a fallback' if fallback else ''}")
-    if not audit_ok:
-        _audit_failed(ticket_id, "paged")
-    return True
+    print(f"Ticket {ticket_id}: {destination} page accepted, confirming")
+    return _start_confirmation(ticket_id, destination, event["dedup_key"],
+                               fallback)
+
+def _start_confirmation(ticket_id, destination, dedup_key, fallback,
+                        again=False) -> _PageOutcome:
+    """Confirms a page in the background. The outcome holds the answer alone,
+    so the alert waiting on it does not also wait for the audit write and the
+    routing key check that follow."""
+    answer = Future()
+    _confirmations.submit(_confirm_and_record, ticket_id, destination,
+                          dedup_key, fallback, again, answer)
+    return _PageOutcome(future=answer)
+
+def _confirm_and_record(ticket_id, destination, dedup_key, fallback, again,
+                        answer):
+    """Asks PagerDuty whether an accepted page reached an open incident, sets
+    answer to what the alert reports, then records the result.
+
+    A page that reached none also starts the routing key check at once, so the
+    email alert names the cause within one search, without waiting for the
+    next scheduled check.
+
+    again marks a page an earlier start sent. It also counts a resolved
+    incident, because the page may have been answered by now. It writes no
+    audit event, because the start that sent the page wrote one or died before
+    it could. Its console line starts "already paged", so it is not mistaken
+    for a page this start sent.
+    """
+    # The alert waits on answer, so it is set whatever happens here.
+    try:
+        found = (confirm_page(destination, dedup_key, include_resolved=True)
+                 if again else confirm_page(destination, dedup_key))
+    except Exception as e:
+        print(f"Ticket {ticket_id}: confirming the {destination} page failed "
+              f"({type(e).__name__})")
+        found = PAGE_UNCONFIRMED
+    answer.set_result(True if found == PAGE_CONFIRMED else found)
+    try:
+        how = " as a fallback" if fallback else ""
+        if again:
+            said = {PAGE_CONFIRMED: "confirmed again",
+                    PAGE_NO_INCIDENT: "reached no incident"}.get(found, "not confirmed")
+            print(f"Ticket {ticket_id}: already paged {destination}{how}, {said}")
+            return
+        if found == PAGE_NO_INCIDENT:
+            audit_ok = log_page_failure(
+                ticket_id, destination, "no_incident",
+                "PagerDuty accepted the page and opened no incident")
+            print(f"Ticket {ticket_id}: {destination} page{how} reached no "
+                  "incident")
+        else:
+            confirmed = found == PAGE_CONFIRMED
+            audit_ok = log_paged(ticket_id, destination, fallback, confirmed)
+            print(f"Ticket {ticket_id}: paged {destination}{how}"
+                  f"{'' if confirmed else ', not confirmed'}")
+        if not audit_ok:
+            _audit_failed(ticket_id, "page_failed" if found == PAGE_NO_INCIDENT
+                          else "paged")
+        if found == PAGE_NO_INCIDENT:
+            _routing_checks.submit(_record_routing_keys)
+    except Exception as e:
+        print(f"Ticket {ticket_id}: recording the {destination} page's "
+              f"confirmation failed ({type(e).__name__})")
 
 def _post(ticket_id, channel, text, mention) -> bool:
     """Posts one message. Returns False only when nobody was told.

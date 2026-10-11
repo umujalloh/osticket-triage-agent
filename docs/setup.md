@@ -261,7 +261,7 @@ From `agent/`.
      step 4, usually `http://172.17.0.1:8000/webhook/ticket`.
      `verify_webhook.py` sends here.
 3. Run the offline verifiers, the same nine CI runs. Each prints a last line
-   starting `All N checks passed`, 188 in total, and anything else is a
+   starting `All N checks passed`, 226 in total, and anything else is a
    failure.
 
    ```bash
@@ -336,15 +336,18 @@ covers creating a PagerDuty service and its integration key.
    | `PAGERDUTY_ROUTING_KEY_NOTIFY` | Opens an incident without waking anyone | Low |
    | `PAGERDUTY_ROUTING_KEY_TEST` | Test pages from `verify_pagerduty.py` and `verify_wiring.py` | Any |
 
-   The agent cannot read a PagerDuty service's urgency, so a NOTIFY service at
-   high urgency, or set to follow event severity, wakes someone for every
-   low-confidence critical.
+   The agent does not check a PagerDuty service's urgency, so a NOTIFY service
+   at high urgency, or set to follow event severity, wakes someone for every
+   low-confidence critical. Under AIOps → Noise Reduction → Alert Grouping,
+   delete any grouping on the WAKE and NOTIFY PagerDuty services, so PagerDuty
+   does not fold one ticket's page into another ticket's incident.
 3. Under Integrations → API Access Keys, create a REST API key with Read-only
    API Key selected, and describe it as something like "osTicket triage agent,
-   routing key check". This is `PAGERDUTY_API_KEY`. The agent uses it every five
-   minutes to check that both routing keys still reach a live PagerDuty service.
-   Unlike a routing key, which only sends events to its PagerDuty service, this
-   REST API key reads the whole PagerDuty account.
+   page confirmation". This is `PAGERDUTY_API_KEY`. The agent uses it to confirm
+   that each page reached an open incident, and every five minutes to check that
+   both routing keys still reach a live PagerDuty service. Unlike a routing key,
+   which only sends events to its PagerDuty service, this REST API key reads the
+   whole PagerDuty account.
 4. For an account in PagerDuty's EU region, also set
    `PAGERDUTY_EVENTS_URL=https://events.eu.pagerduty.com/v2/enqueue` and
    `PAGERDUTY_API_URL=https://api.eu.pagerduty.com`.

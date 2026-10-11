@@ -1,11 +1,13 @@
-"""Checks how the agent judges whether its PagerDuty routing keys still work.
+"""Checks how the agent judges whether its PagerDuty routing keys still work,
+and whether a page reached an open incident.
 
 PagerDuty's Events API answers 202 to a page whose routing key's integration
 was deleted, or whose PagerDuty service is disabled or in maintenance, and
 creates no incident, so the page is lost with nothing failing.
 check_routing_keys asks the REST API instead, trying a dropped request or a
-temporary error again before it reports one. architecture.md, Section 9, and
-known-limitations.md describe the gap it closes.
+temporary error again before it reports one, and confirm_page asks it for the
+incident each page should have opened. architecture.md, Sections 7 and 9,
+describe both.
 
 Nothing leaves the machine. The REST API is replaced by canned answers, one per
 case, and the check's verdict on each is compared with what it should be.
@@ -59,13 +61,17 @@ def service(status, *keys):
 
 calls = []
 
-# The pauses between attempts, skipped so the run takes no time.
-pd.time.sleep = lambda seconds: None
+# The pauses between attempts are skipped, so the run takes no time, and move a
+# fake clock instead, so the confirmation's wait still ends where it should.
+clock = [0.0]
+pd.time.sleep = lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+pd.time.monotonic = lambda: clock[0]
 
-def run_with(answers):
-    """Runs the check with requests.get returning each answer in turn, and
-    records the query each call sent in calls. Running out of answers is
-    reported as a check failing with RanOutOfAnswers, which no case expects."""
+def run_with(answers, call=None):
+    """Runs the check, or call, with requests.get returning each answer in
+    turn, and records the query each call sent in calls. Running out of
+    answers is reported as a check failing with RanOutOfAnswers, which no case
+    expects."""
     pending = list(answers)
     calls.clear()
     real = requests.get
@@ -79,7 +85,7 @@ def run_with(answers):
         return answer
     requests.get = fake_get
     try:
-        return pd.check_routing_keys()
+        return (call or pd.check_routing_keys)()
     finally:
         requests.get = real
 
@@ -159,6 +165,58 @@ for label, answers, tries, reason in [
     out = run_with(answers)
     check(f"  {label}", (len(calls), out),
           (tries, {WAKE: (pd.UNCHECKED, reason), NOTIFY: (pd.UNCHECKED, reason)}))
+
+print("confirming that an accepted page reached an open incident")
+DEDUP = "dedup-key-for-the-verifier"
+services = Answer(200, {"services": [
+    {"id": "PWAKE", "status": "active", "integrations": [{"integration_key": WAKE_KEY}]},
+    {"id": "PNOTIFY", "status": "active", "integrations": [{"integration_key": NOTIFY_KEY}]},
+], "more": False})
+found = Answer(200, {"incidents": [{"id": "INCIDENT"}]})
+none = Answer(200, {"incidents": []})
+# The wait is CONFIRM_WAIT_SECONDS long with a lookup every
+# CONFIRM_POLL_SECONDS, counting the first at once.
+lookups = pd.CONFIRM_WAIT_SECONDS // pd.CONFIRM_POLL_SECONDS + 1
+
+def confirm(destination, answers, **kwargs):
+    clock[0] = 0.0
+    return run_with(answers, lambda: pd.confirm_page(destination, DEDUP, **kwargs))
+
+check("  an incident on the first lookup confirms the page",
+      confirm(WAKE, [services, found]), pd.PAGE_CONFIRMED)
+check("  it asks for open incidents on the WAKE PagerDuty service by the "
+      "page's dedup key",
+      calls[1], {"incident_key": DEDUP, "service_ids[]": "PWAKE",
+                 "statuses[]": ["triggered", "acknowledged"]})
+confirm(NOTIFY, [services, found])
+check("  a NOTIFY page asks its own PagerDuty service",
+      calls[1]["service_ids[]"], "PNOTIFY")
+confirm(WAKE, [services, found], include_resolved=True)
+check("  a page an earlier start sent also counts a resolved incident",
+      calls[1]["statuses[]"], ["triggered", "acknowledged", "resolved"])
+check("  an incident that shows on a later lookup still confirms it",
+      (confirm(WAKE, [services, none, none, found]), len(calls)),
+      (pd.PAGE_CONFIRMED, 4))
+check("  no incident by the end of the wait is a page that reached none",
+      (confirm(WAKE, [services] + [none] * lookups), len(calls)),
+      (pd.PAGE_NO_INCIDENT, lookups + 1))
+check("  a REST API failing on the last lookup leaves it unconfirmed",
+      confirm(WAKE, [services] + [none] * (lookups - 1) + [Answer(503)]),
+      pd.PAGE_UNCONFIRMED)
+check("  a refused REST API key leaves it unconfirmed",
+      confirm(WAKE, [Answer(401)]), pd.PAGE_UNCONFIRMED)
+check("  a routing key on no PagerDuty service reached none, without waiting",
+      (confirm(WAKE, [listing(service("active", NOTIFY_KEY))]), len(calls)),
+      (pd.PAGE_NO_INCIDENT, 1))
+check("  an answer that is not a list of incidents is asked again",
+      (confirm(WAKE, [services, Answer(200, ["incidents"]), found]), len(calls)),
+      (pd.PAGE_CONFIRMED, 3))
+check("  a REST API failing partway, then answering empty, reached none",
+      confirm(WAKE, [services, Answer(503), unreachable]
+              + [none] * (lookups - 2)),
+      pd.PAGE_NO_INCIDENT)
+check("  a lookup that crashes leaves it unconfirmed",
+      confirm(WAKE, [services, RanOutOfAnswers()]), pd.PAGE_UNCONFIRMED)
 
 print("no routing key is ever quoted")
 reasons = []

@@ -256,12 +256,16 @@ def log_slack_failure(ticket_id, channel, failure_type, error):
 # in the events above. Whether the page was a fallback is recorded, because that
 # is the difference between waking someone for a confident critical and waking
 # them because nothing else could reach them.
-def log_paged(ticket_id, destination, fallback):
+# confirmed is False when the agent got no usable answer from PagerDuty on
+# whether the page reached an open incident. A page it asked about and found
+# none for is recorded as page_failed instead, with failure_type no_incident.
+def log_paged(ticket_id, destination, fallback, confirmed):
     return _send_audit_event({
         "ticket_id": ticket_id,
         "status": "paged",
         "destination": destination,
         "fallback": fallback,
+        "confirmed": confirmed,
     })
 
 def log_page_skipped(ticket_id, destination, reason):

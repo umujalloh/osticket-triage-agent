@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 import requests
 
 from action_table import NOTIFY, WAKE
-from schemas import Severity
+from schemas import PAGE_CONFIRMED, PAGE_NO_INCIDENT, PAGE_UNCONFIRMED, Severity
 from writes import writes_enabled
 
 # The Events API v2 endpoint is the same for every account in a region and holds
@@ -26,10 +26,10 @@ ROUTING_KEYS = {
 }
 OSTICKET_BASE_URL = os.getenv("OSTICKET_BASE_URL")
 
-# The REST API, used only to ask whether each routing key still reaches a live
-# PagerDuty service. A read-only REST API key is enough. One made under API
-# Access Keys reads the whole PagerDuty account, which architecture.md,
-# Section 8 records.
+# The REST API, used only to confirm that each page reached an open incident
+# and to ask whether each routing key still reaches a live PagerDuty service.
+# A read-only REST API key is enough. One made under API Access Keys reads the
+# whole PagerDuty account, which architecture.md, Section 8 records.
 PAGERDUTY_API_URL = os.getenv("PAGERDUTY_API_URL", "https://api.pagerduty.com")
 PAGERDUTY_API_KEY = os.getenv("PAGERDUTY_API_KEY")
 
@@ -53,12 +53,13 @@ if writes_enabled():
             "ENABLE_WRITES is true, so a routing key is required for every page "
             f"destination. Missing: {', '.join(sorted(missing))}"
         )
-    # Without it the routing key check cannot run, and a dead routing key would
-    # go unnoticed.
+    # Without it no page can be confirmed and the routing key check cannot
+    # run, so a dead routing key would go unnoticed.
     if not PAGERDUTY_API_KEY:
         raise RuntimeError(
-            "ENABLE_WRITES is true, so PAGERDUTY_API_KEY is required to check "
-            "that the routing keys still reach a PagerDuty service"
+            "ENABLE_WRITES is true, so PAGERDUTY_API_KEY is required to confirm "
+            "pages and to check that the routing keys still reach a PagerDuty "
+            "service"
         )
 
 DONE = "done"
@@ -204,7 +205,8 @@ def send_page(destination: str, event: dict) -> str:
         # A malformed routing key or body is refused, and trying again does not
         # fix it. A page whose routing key's integration was deleted, or whose
         # PagerDuty service is disabled or in maintenance, is answered 202 and
-        # never reaches here. The routing key check below catches it.
+        # never reaches here. confirm_page and the routing key check below
+        # catch it.
         if response.status_code in (400, 401, 403, 404):
             raise PagerDutyError(
                 "bad_request",
@@ -253,9 +255,9 @@ def check_routing_keys() -> dict:
 
     The Events API answers 202 to a page whose routing key's integration was
     deleted, or whose PagerDuty service is disabled or in maintenance, and
-    creates no incident, so the page is lost with nothing failing. The REST
-    API lists every PagerDuty service with its integrations, which is the only
-    place a dead routing key shows.
+    creates no incident. confirm_page catches that when a page is sent, and
+    this catches it between pages, from the REST API's list of every
+    PagerDuty service with its integrations.
 
     Returns {destination: (result, reason)}, where result is ALIVE, DEAD or
     UNCHECKED, and reason finishes a sentence that starts "The wake routing
@@ -298,30 +300,43 @@ def _get_services_page(headers, offset):
                 return response
         time.sleep([2, 5][attempt])
 
-def _check_routing_keys() -> dict:
-    headers = {
+def _rest_headers():
+    return {
         "Authorization": f"Token token={PAGERDUTY_API_KEY}",
         "Accept": "application/vnd.pagerduty+json;version=2",
     }
+
+class _ListingFailed(Exception):
+    """The REST API gave no usable listing. The message is the reason, worded
+    to follow "because"."""
+
+def _list_services(headers) -> list:
+    """Every PagerDuty service in the account, with its integrations."""
     services, offset = [], 0
     try:
         while True:
             response = _get_services_page(headers, offset)
             if response.status_code != 200:
-                return _unchecked("the PagerDuty REST API answered "
-                                  f"HTTP {response.status_code}")
+                raise _ListingFailed("the PagerDuty REST API answered "
+                                     f"HTTP {response.status_code}")
             body = response.json()
             page = body.get("services") or []
             services.extend(page)
             if not body.get("more") or not page:
-                break
+                return services
             offset += len(page)
     # requests' JSONDecodeError is both a ValueError and a RequestException,
     # so it has to be caught first.
     except ValueError:
-        return _unchecked("the PagerDuty REST API sent an unreadable answer")
+        raise _ListingFailed("the PagerDuty REST API sent an unreadable answer")
     except requests.exceptions.RequestException:
-        return _unchecked("the PagerDuty REST API could not be reached")
+        raise _ListingFailed("the PagerDuty REST API could not be reached")
+
+def _check_routing_keys() -> dict:
+    try:
+        services = _list_services(_rest_headers())
+    except _ListingFailed as e:
+        return _unchecked(str(e))
 
     status_by_key = {}
     for service in services:
@@ -344,3 +359,73 @@ def _check_routing_keys() -> dict:
             results[dest] = (DEAD, "is on a PagerDuty service in a status the "
                                    "agent does not recognize")
     return results
+
+# On 2026-10-10, accepted pages showed in the REST API between 1.1 and 3.2
+# seconds after the 202. The wait leaves a wide margin over that.
+CONFIRM_POLL_SECONDS = 2
+CONFIRM_WAIT_SECONDS = 20
+
+def confirm_page(destination: str, dedup_key: str,
+                 include_resolved: bool = False) -> str:
+    """Whether a page PagerDuty answered 202 reached an open incident.
+
+    A 202 says only that the event was queued. A page whose routing key is dead
+    is answered 202 and dropped, so the agent asks the REST API for an open
+    incident on the destination's PagerDuty service holding an alert with the
+    page's dedup key. PagerDuty can group a page into an incident an earlier
+    page opened, and the search still finds it there, so it is not limited to
+    incidents created after the page.
+
+    include_resolved also counts a resolved incident. A page an earlier start
+    sent may have been answered and resolved since, and the dedup key belongs
+    to one ticket, so a resolved incident holding it is that page's.
+
+    Returns PAGE_CONFIRMED when it finds one, PAGE_NO_INCIDENT when no
+    PagerDuty service holds the routing key or the last lookup answered with
+    none, and PAGE_UNCONFIRMED when the last lookup gave no usable answer.
+    Never raises, so a broken lookup cannot stop the alert that reports the
+    page.
+    """
+    try:
+        return _confirm_page(destination, dedup_key, include_resolved)
+    except Exception:
+        return PAGE_UNCONFIRMED
+
+def _confirm_page(destination, dedup_key, include_resolved) -> str:
+    headers = _rest_headers()
+    try:
+        services = _list_services(headers)
+    except _ListingFailed:
+        return PAGE_UNCONFIRMED
+    routing_key = ROUTING_KEYS[destination]
+    service_id = next((service.get("id") for service in services
+                       if any(integration.get("integration_key") == routing_key
+                              for integration in service.get("integrations") or [])),
+                      None)
+    if service_id is None:
+        return PAGE_NO_INCIDENT
+
+    # WAKE and NOTIFY pages for one ticket share a dedup key, so filtering by
+    # PagerDuty service separates this page's incident from the other one.
+    params = {"incident_key": dedup_key, "service_ids[]": service_id,
+              "statuses[]": ["triggered", "acknowledged"]
+              + (["resolved"] if include_resolved else [])}
+    deadline = time.monotonic() + CONFIRM_WAIT_SECONDS
+    while True:
+        answered = False
+        try:
+            response = requests.get(f"{PAGERDUTY_API_URL.rstrip('/')}/incidents",
+                                    headers=headers, params=params, timeout=10)
+            if response.status_code == 200:
+                if response.json().get("incidents"):
+                    return PAGE_CONFIRMED
+                answered = True
+        # An answer that is not a list of incidents counts as no answer, so
+        # the lookup keeps trying until the deadline.
+        except (requests.exceptions.RequestException, ValueError, AttributeError):
+            pass
+        # Decided on the last answer, so a REST API that failed at the end is
+        # not read as an empty one.
+        if time.monotonic() >= deadline:
+            return PAGE_NO_INCIDENT if answered else PAGE_UNCONFIRMED
+        time.sleep(CONFIRM_POLL_SECONDS)

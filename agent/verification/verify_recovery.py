@@ -57,6 +57,7 @@ main.set_priority = lambda **kw: acted["priorities"].append(kw) or {
     "outcome": "set", "from": "normal", "to": "emergency"}
 main.route_to_security = lambda **kw: {"outcome": "routed", "from": "a", "to": "b"}
 main.send_page = lambda destination, event: "queued"
+main.confirm_page = lambda destination, dedup_key, **_: "confirmed"
 main.enrich_ticket = lambda **kw: []
 # The webhook confirms each ticket with osTicket before claiming it. Offline,
 # osTicket agrees with the number every test ticket here carries.

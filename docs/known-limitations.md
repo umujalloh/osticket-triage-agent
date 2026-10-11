@@ -220,17 +220,6 @@ Nothing in the agent changes on a paid plan. The routing key, the payload and
 the service are identical, and what a person receives is decided by their
 notification rules and their plan.
 
-### A dead routing key is caught only by a periodic check
-
-PagerDuty accepts a page whose routing key is dead with the same `202` it gives
-a live one, and drops it. The agent cannot change that, so it checks each
-routing key every five minutes, and a Splunk search emails an alert within
-about ten minutes of a routing key dying, as described in
-[architecture.md, Section 9](architecture.md#watching-the-agent). A page sent
-before that alert is lost, and the urgent Slack channel post for it still says
-it paged. The REST API key is also account-level, so a stolen one can read the
-whole PagerDuty account, including users' contact details.
-
 ### Routing can hide a ticket, and the agent cannot tell
 
 Moving a ticket to the security department is the one action that changes who
