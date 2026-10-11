@@ -262,6 +262,8 @@ class TriageWriteController {
         // rest of the request. Nothing on this path calls getMessages() today,
         // and a dedup that silently stops deduping the moment one is added is
         // not worth relying on.
+        // Type 'N' is osTicket's internal note, which only staff can see. A
+        // user's message is 'M' and a staff response the user sees is 'R'.
         $res = db_query(
             "SELECT id FROM " . TABLE_PREFIX . "thread_entry "
             . "WHERE thread_id = " . (int) $thread->getId() . " AND type = 'N' "

@@ -325,6 +325,9 @@ class TriagePlugin extends Plugin {
      * its type filter leaks back and narrows the cache to messages for the rest
      * of the request. buildPayload calls getMessages() just before this runs,
      * which made the note invisible and produced a second one.
+     *
+     * Type 'N' is osTicket's internal note, which only staff can see. A user's
+     * message is 'M' and a staff response the user sees is 'R'.
      */
     private function statusNote($ticket) {
         if (!($thread = $ticket->getThread()))
