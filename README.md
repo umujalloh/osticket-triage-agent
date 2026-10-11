@@ -340,8 +340,8 @@ tests/                  Labelled ticket set for the classifier evaluation
 
 ## Deployment preconditions
 
-Ten things the agent cannot enforce and the design depends on, from CAPTCHA on
-the ticket form to a Splunk watched from outside itself. Nothing looks broken
+Eleven things the agent cannot enforce and the design depends on, from CAPTCHA
+on the ticket form to a Splunk watched from outside itself. Nothing looks broken
 when they are missing, which is what makes them worth checking. The full list
 and the reasoning are in
 [architecture.md, Section 10](docs/architecture.md#10-deployment-preconditions).

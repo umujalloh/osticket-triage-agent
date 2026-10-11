@@ -113,6 +113,11 @@ BOTSv3 in place when it starts. From `docker/`.
    sudo chown 33 ost-config.php
    ```
 
+   The sample config leaves `TRUSTED_PROXIES` empty. Keep it that way here,
+   since browsers reach osTicket directly and there is no proxy to list, as
+   precondition 2 in
+   [Section 10](architecture.md#10-deployment-preconditions) explains.
+
 **Checkpoint:** `md5sum -c` printed `OK`, and
 `ls -ln ost-config.php splunk-provisioning/custom_tls/default/certs/server.pem`
 shows `ost-config.php` owned by `33` at `-rw-rw----` and `server.pem` owned by
@@ -186,7 +191,10 @@ Work in the staff panel at `http://localhost:8080/scp`, under Admin Panel.
 6. Under Emails → Settings, set Admin's Email Address, and note which address
    is the Default Alert Email. Under Emails → Emails, open that address and
    fill in its Outgoing (SMTP) tab. osTicket's log and alert mail are the only
-   warning that osTicket cannot reach the triage agent.
+   warning that osTicket cannot reach the triage agent. This lab leaves the
+   Default Email without an SMTP account, since every submitter is fictional,
+   so osTicket's auto-replies and ticket alerts fail with `sendmail: not found`
+   in the container log, which is expected.
 7. To skip alerts on tickets already past their SLA, turn off Overdue Ticket
    Alert under Settings → Tickets → Alerts and Notices. Cron's first run marks
    them overdue.
@@ -472,10 +480,10 @@ Change each secret where it is used, then restart whatever reads it.
 [Section 10](architecture.md#10-deployment-preconditions) lists what a
 deployment must provide. This lab skips three:
 
-- **Item 8, an uptime check on Splunk from outside it:** All five alerts run
+- **Item 9, an uptime check on Splunk from outside it:** All five alerts run
   inside Splunk, so a Splunk outage silences them.
-- **Item 9, an outbound allowlist for the agent:** Nothing stops the agent
+- **Item 10, an outbound allowlist for the agent:** Nothing stops the agent
   connecting anywhere, so stolen credentials can leave the host through it.
-- **Item 10, keeping the agent's console output:** Here the agent runs in a
+- **Item 11, keeping the agent's console output:** Here the agent runs in a
   terminal, and its console output, the only record of some failures, is lost
   when the terminal closes.
