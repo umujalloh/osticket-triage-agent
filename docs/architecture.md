@@ -436,8 +436,8 @@ What happens next depends on which action failed:
 | Page accepted but reached nobody | The channel post says the page reached nobody and asks for manual escalation, and the agent checks the routing keys at once. |
 | Page accepted, but not confirmed | The channel post says the page went out, not confirmed. |
 | Channel post, on a critical that paged NOTIFY | Sends a WAKE page that leads with the delivery failure, so it does not read as a confident critical. |
-| Channel post, anywhere else | Nothing further. The note and the priority hold the ticket's place in the queue, and no one is notified unless the ticket already paged. |
-| Channel post and every page, including a fallback | Nobody is pushed. The note and the priority are on the ticket, and only the audit log holds the failures, a boundary [known-limitations.md](known-limitations.md) covers. |
+| Channel post, anywhere else | Nothing further until the next start retries the ticket. The note and the priority hold the ticket's place in the queue, and no one is notified unless the ticket already paged. |
+| Channel post and every page, including a fallback | Nobody is pushed. The note and the priority are on the ticket if their writes worked, the audit log holds the failures, and the next start retries the ticket within the recovery window. |
 
 ### When the agent is unreachable
 

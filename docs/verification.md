@@ -41,10 +41,13 @@ What each section proves, and how:
 
 A live run submits a ticket on osTicket's own form, so it exercises the
 plugin's HMAC signing and the PHP-to-Python payload, then follows it through
-classification, write-back and alerting. Every ticket in this file was filed as
-`bgist@froth.ly`, a fictional user from the BOTSv3 dataset, so enrichment finds
-its 2018 events, and arrived from `172.21.0.1`, the lab's Docker gateway.
-[known-limitations.md](known-limitations.md) covers both.
+classification, write-back and alerting. Every ticket this file submits through
+the form was filed as `bgist@froth.ly`, a fictional user from the BOTSv3
+dataset, so enrichment finds its 2018 events. Tickets 9 to 36 arrived from
+`172.21.0.1` and tickets 37 and 38 from `172.22.0.1`, the lab's Docker gateway
+before and after its networks were split. known-limitations.md covers the
+[dataset](known-limitations.md#enrichment-searches-a-frozen-fictional-dataset)
+and the [gateway](known-limitations.md#the-submitter-ip-is-the-docker-gateway).
 
 ### The full path, 2026-08-25, ticket 36
 
@@ -120,11 +123,11 @@ exist in osTicket, so the note and priority writes failed.
 | Note and priority | 77 s and 96 s |
 | Urgent Slack alert | 116 s |
 
-**What it shows:** A hanging Splunk never delays the page, but every action
-after it waits behind an audit write, so the urgent Slack alert went out almost
-two minutes late. A Splunk that refuses connections at once, as in the run
-above, costs about ten seconds.
-[known-limitations.md](known-limitations.md#a-hanging-splunk-or-osticket-delays-everything-after-the-page)
+**What it shows:** A hanging Splunk does not delay a new ticket's page, but
+every action after it waits behind an audit write, so the urgent Slack alert
+went out almost two minutes late. A Splunk that refuses connections at once, as
+in the run above, costs about ten seconds.
+[known-limitations.md](known-limitations.md#a-hanging-splunk-delays-everything-after-the-page)
 covers why this is not fixed.
 
 ### Acting through a hanging osTicket
@@ -149,7 +152,7 @@ service and the alert to the test Slack channel.
 **What it shows:** A hanging osTicket never delays the page or its confirmation,
 but the urgent Slack alert waits behind the note and priority writes and went
 out about 75 seconds late.
-[known-limitations.md](known-limitations.md#a-hanging-splunk-or-osticket-delays-everything-after-the-page)
+[known-limitations.md](known-limitations.md#a-hanging-osticket-delays-the-slack-alert)
 covers why this is not changed.
 
 ### What the live runs found that the verifiers did not

@@ -1,330 +1,169 @@
 # Known Limitations
 
-What this build cannot do, in two groups: what the classifier gets wrong and
-what the evaluation cannot tell us, then what the lab environment constrains.
-How the classifier is measured is in [evaluation.md](evaluation.md), and what
-the built system was checked to do is in
-[verification.md](verification.md). Design rationale, including the threat model
-and the residual risk left after each defense, lives in
+What this build cannot do, whether a limit the agent cannot fix or one that was
+weighed and decided against. How the classifier is scored is in
+[evaluation.md](evaluation.md), what the built system was measured doing is in
+[verification.md](verification.md), and the
+[threat model](architecture.md#4-threat-model), the residual risk each defense
+leaves, and the
+[deployment preconditions](architecture.md#10-deployment-preconditions) are in
 [architecture.md](architecture.md).
 
 ## Classifier and evaluation
 
-### Residual non-determinism at temperature 0
+### The classifier sees only the ticket text
 
-Classification runs at `temperature=0`, which selects the highest-probability
-output but does not guarantee bitwise determinism. Where two values are near
-equally probable, the result can shift between runs.
+Claude sees only the ticket's subject and message. It has no logs, endpoint
+data or history for the user, so an incident that reads like a routine issue
+is classified as routine. The rubric in
+[Section 5](architecture.md#5-classification-model) sends behavior the user
+cannot account for to a person at `low_confidence`. That rule asks whether the
+user can explain the cause. A user who describes clearly what happened and
+cannot tell whether it mattered gets `high_confidence`, as one ticket in
+[evaluation.md](evaluation.md) shows. Catching what the text cannot show is
+left to endpoint and network monitoring outside this system.
 
-Two tickets behaved this way under earlier versions of the severity rubric,
-alternating between `low` and `medium` and landing on `low` in four runs of
-six. Severity had been defined only for security incidents, so tickets in the
-other three categories had no rule to sit on. Defining severity separately for
-each category removed the ambiguity, and nine full runs on 2026-08-06 produced
-identical results.
+### Classification is not deterministic
 
-The property has not gone away, only the tickets exposed to it. A future ticket
-sitting between two values can still flip, and the harness scores one run per
-ticket, so a single run cannot distinguish a flip from a regression.
+The same ticket can be classified differently on different calls. On the
+default model, `claude-haiku-4-5`, the agent sends `temperature=0`, which does
+not guarantee identical output. Claude Sonnet 5 and Opus 5 reject sampling
+parameters, so on those the agent sends none and they run at the API's default
+sampling. A ticket between two severities or two confidence levels can land on
+either. A live ticket is classified once, so a borderline ticket's label is a
+single draw and nothing flags it. The eval set returned identical results
+across nine runs on 2026-08-06, as [evaluation.md](evaluation.md) records. A
+new ticket on a boundary can still flip, and one eval run cannot tell a flip
+from a regression.
 
-### Text-only classification
+### The evaluation score is a regression check
 
-The classifier sees only the ticket subject and body. It has no access to logs,
-endpoint telemetry, network data, or the user's history. Some real incidents are
-not distinguishable from routine issues on ticket text alone, and the system
-prompt instructs the classifier to escalate unexplained behavior with
-`low_confidence` rather than dismiss it.
+The eval set is 36 hand-written tickets, none from a real helpdesk, so it does
+not reflect a real mix of tickets. The score shows whether a change made
+classification worse on known cases. It does not estimate accuracy on real
+tickets.
 
-The same constraint limits what confidence can express. The prompt treats a
-ticket as uncertain when the user cannot account for what happened, but a user
-can describe an event clearly and still have no idea whether it mattered. A
-report of clicking a suspicious link and seeing an error page is complete as a
-narrative and empty as evidence. One eval ticket of that shape returns
-`high_confidence` where the label expects `low_confidence`.
+## Runtime
 
-In production, cases that ticket text cannot resolve are expected to be caught
-by endpoint and network monitoring, not by this component.
+### The agent must run as one process
 
-### Evaluation set
+The agent must run as one process. It records each ticket it accepts in a SQLite
+file and tracks the tickets it is working on in memory, and sharing those across
+hosts would mean adding a database server as a dependency. A second agent
+process with its own copy of the file, on another host or in another container,
+treats a retried delivery that reaches it as a new ticket, so Claude is called
+twice and Slack gets two alerts, which can disagree. A second worker on the same
+host shares the file but not the in-memory record, so both can work on a
+retried ticket at once.
+PagerDuty still opens one incident when both pages reach the same PagerDuty
+service and both processes use the same `PAGERDUTY_DEDUP_SECRET`, because the
+deduplication key is an HMAC of the ticket ID under that secret. Nothing in the
+agent detects a second process.
 
-The eval set is 36 tickets written by hand to cover seven shapes: unambiguous
-security incidents, unambiguous routine requests, real incidents worded
-benignly, benign issues worded alarmingly, tickets too vague to categorize,
-tickets naming an entity to extract, and a prompt injection attempt. The set is
-not drawn from production ticket data and does not represent real-world class
-distribution, which would skew heavily toward routine requests. Several expected
-labels have changed as the severity and confidence definitions were tightened,
-most recently on 2026-08-06.
+### A hanging Splunk delays everything after the page
 
-Four of the ten rows in [action-table.md](action-table.md) are not produced by
-any ticket in the set, so those paths are unexercised. They are listed with
-current results in [evaluation.md](evaluation.md).
+For a new ticket, the page goes out before the first audit write, so a hanging
+Splunk cannot delay it. Every action after the page waits instead, because the
+agent runs them in order. Each audit write for a ticket gives Splunk three
+attempts of 5 seconds, 19 seconds with the waits between them. With Splunk
+accepting connections and never answering, the urgent Slack alert went out 116
+seconds after the ticket started, as [verification.md](verification.md)
+records. That run hung only the audit writes. A critical security incident also
+runs an enrichment search, which adds up to 65 seconds more when Splunk's
+searches hang too.
 
-The score is a regression detector, not an estimate of real-world accuracy.
+Shorter waits would drop records that a busy but working Splunk would have
+taken. Sending audit writes from a background queue would keep every record
+without holding up the actions, but the note could no longer say whether the
+classification reached Splunk. It was decided against because the page, the
+alert that matters most in an incident, already goes out ahead of a new
+ticket's audit writes.
 
-## Environment and enrichment
+### A hanging osTicket delays the Slack alert
 
-### Splunk enrichment queries a frozen, fictional dataset
-
-The Splunk instance is loaded with BOTSv3, a static training dataset. Its events
-span 2018-08-20 to 2019-09-19 and every entity in it is invented, so no real
-ticket will match it. Enrichment returns results only for demo tickets written
-to reference known BOTSv3 hosts and accounts.
-
-The pipeline itself is real: validated submitter identifiers, a least-privilege role scoped
-to a single index, and read-only searches over TLS against a live Splunk
-instance. What is not real is any correspondence between a ticket and the log
-data, so this demonstrates the enrichment path rather than live incident
-correlation.
-
-### BOTSv3 carries no CIM field extractions
-
-Measured 2026-08-11 across a 20,000 event sample: `src` and `dest` are populated
-on 0 events, `user` on 18, and `action` on 2,338, nearly all of them
-`osquery:results`. BOTSv3 ships the data without the add-ons that normalize
-fields into the Common Information Model, so a generic CIM field list returns
-empty columns.
-
-The enrichment allowlist therefore names vendor-specific fields,
-`userPrincipalName`, `ipAddress`, `loginStatus`, `signinErrorCode`,
-`appDisplayName`, and `email`, alongside the CIM names. Events from sourcetypes
-outside that list return only time, host, and sourcetype. The list is shaped to
-this dataset and would need revisiting against real log sources.
-
-### Enrichment searches the requester email only for authenticated submitters
-
-The email clause requires osTicket to report an authenticated session for that
-address. Guest submissions, staff-created tickets, API tickets, and email-piped
-tickets fall back to the IP clause alone. That is the intended security
-behavior, and the cost is that enrichment returns less on a helpdesk allowing
-guest submission, which is osTicket's default.
-
-### submitter_ip is the container gateway in this lab
-
-osTicket records the address it observes on the connection, and the browser
-reaches osTicket through the gateway of its Docker network. Tickets filed now
-record `172.22.0.1`, and tickets filed before the networks were split record
-the old network's `172.21.0.1`. Neither address appears in BOTSv3, so the IP
-clause matches nothing here. A deployment reached directly, or through a
-reverse proxy declared in osTicket's trusted proxy setting, would record real
-client addresses.
-
-Together with the limitation above, a guest ticket in this lab produces a query
-that returns zero events. The pipeline runs correctly and has nothing to match.
-
-### The idempotency store assumes one agent process
-
-Processed ticket IDs and completed actions live in a SQLite file next to the
-agent. That is correct for a single process and wrong for two. Run a second
-worker, or a second container, and each has its own store, so the same ticket
-can be claimed twice and produce two notes and two pages. Nothing in the agent
-detects this.
-
-Fixing it means moving the store to something shared, which is a real
-dependency rather than a file, so it is deliberately not done while the agent
-runs as one process.
-
-The same assumption is what lets the agent track in-flight tickets in memory
-rather than in the store. Two processes would each have their own set, and a
-retry reaching the second one would act alongside the first.
-
-### Retries have no jitter and no circuit breaker
-
-Every retry uses the same fixed backoff. If an upstream is down, every ticket
-backs off on the same schedule and retries in lockstep, which is the pattern
-that turns a recovering service back into an overloaded one. There is also no
-breaker: a dead endpoint is retried on every ticket forever, rather than being
-marked down.
-
-Neither matters at the ticket volume this is built for. Both would matter at a
-volume where the retries themselves become load.
-
-### A hanging Splunk or osTicket delays everything after the page
-
-Each audit write waits up to 5 seconds for Splunk and tries three times, so a
-Splunk that accepts connections and never answers costs 19 seconds per write.
-The writes run in order between the actions, so the note, the priority and the
-urgent Slack alert wait behind them. With every write hanging, the urgent Slack
-alert went out about 115 seconds after the ticket was classified. The page is
-not delayed, because it goes out before the first audit write.
-
-Waiting less would lose audit records that a busy but working Splunk would have
-accepted, and the audit trail is what lets a decision be checked afterward.
-Sending audit writes from a background queue would keep every record and stop
-actions waiting, but it changes the agent's core path, including how a lost
-classification record is noticed and how pending records survive a restart.
-That was decided against, because the page, which is the most important alert
-during an incident, is never delayed behind an audit write.
-
-A hanging osTicket delays the alert the same way. Each note or priority write
-waits up to 10 seconds and tries three times, about 37 seconds per write, and
-both run before the urgent Slack alert, so whoever follows its link finds the
-ticket ready. With osTicket hanging, the alert went out about 75 seconds late,
-and the page again went first.
-
-### osTicket's own email is not configured in this lab
-
-osTicket sends staff alerts, auto-replies and overdue notices from the address
-in `default_email_id`. In this deployment that address has no SMTP, so those
-messages fail into `sendmail: not found` in the container log and reach nobody.
-Nothing in the interface reports it.
-
-Two paths are unaffected and both matter more. The plugin's alert when a send to
-the agent fails goes through `alert_email_id`, which is configured, so that
-detector works. Splunk's alerts are a separate system and never touch osTicket's
-mail.
-
-This is left unconfigured because every submitter in this lab is fictional. An
-auto-reply to `bgist@froth.ly` has no inbox to arrive in, and staff alerts are
-moot on a helpdesk with one account. A real deployment must configure it, and
-would notice immediately, because those notifications are what a helpdesk runs
-on.
-
-### Secrets live in environment files
-
-Every credential is read from `agent/.env` and the plugin's stored settings.
-There is no secrets manager, no rotation, and no expiry. The write-back secret
-is the one that matters most, because it grants writing into any ticket, and it
-sits in a file on the host in plain text.
-
-That is acceptable for a single-machine lab and is not how a production
-deployment should hold it.
-
-### Nothing restricts where the agent can connect
-
-The agent is a host process under uvicorn, not a container, and its outbound
-traffic is unrestricted. It reaches five destinations and holds a credential for
-each, so a host compromise is enough to read them and send them anywhere.
-
-The agent cannot fix this. An attacker on the host runs their own code, so what
-the agent does about its own connections is beside the point. The control has to
-be an outbound proxy, which is a deployment precondition rather than code.
+Once the agent has accepted a ticket, the page goes out before any write to
+osTicket, so a hanging osTicket cannot delay it. The Slack alert waits behind
+the agent's writes to the ticket, so that whoever follows its link finds the
+ticket ready, and with osTicket hanging the Slack alert went out 76 seconds
+after the ticket started, as [verification.md](verification.md) records.
 
 ## Alerting
 
-### A failed alert can exhaust every delivery path
-
-When a Slack post fails on a critical incident that has not been paged loudly,
-the agent pages WAKE as a fallback. Nothing catches the case where both fail. At
-that point the agent has no route left, and the only record is an audit event
-nobody is watching at the time. No arrangement inside the agent fixes this. It
-is the boundary of what the system can promise.
-
-### A Slack post can be delivered more than once
-
-The agent retries a post that times out, and a timeout means the reply was lost
-rather than the post failing, so Slack may already have it. On a critical that
-lands up to three identical `@here` messages in the urgent channel, which is the
-alert fatigue the design is otherwise careful about.
-
-The osTicket note has the same shape and is fixed, because the endpoint it
-writes to is this project's own plugin and can check whether the note is already
-there. Slack's incoming webhook is not ours and offers no way to ask, so there
-is nothing to check against and no deduplication to lean on. PagerDuty avoids it
-a third way, with a deduplication key the Events API honours.
-
-Setting a priority twice is harmless, since the second write produces the same
-value as the first.
-
-### This lab cannot demonstrate an interrupting page
-
-PagerDuty is on a developer account, which cannot deliver SMS or voice
-notifications. There is no setting for it and no way to request it, so the only
-route to either is a paid plan.
-
-The design needs WAKE to reach a responder who is not looking. Here the only
-method available for that is a mobile push, so WAKE arrives as a push and an
-email while NOTIFY arrives as an email alone, and the push is the whole of the
-difference. That is enough to show the two destinations behaving differently,
-and it is not what a real deployment would use, where a critical page is
-normally a phone call.
-
-Nothing in the agent changes on a paid plan. The routing key, the payload and
-the service are identical, and what a person receives is decided by their
-notification rules and their plan.
-
-### Routing can hide a ticket, and the agent cannot tell
-
-Moving a ticket to the security department is the one action that changes who
-can see it. osTicket shows an agent only the departments they have access to, so
-a ticket routed into a department nobody is granted disappears from every view.
-The agent gets a 200, the audit log records the move, and nothing anywhere
-reports a problem.
-
-That is why the target lives in the plugin's configuration rather than in a
-request body: a leaked write secret can push tickets into security, which is
-noise, but cannot move a critical incident into a department where nobody would
-find it. What it does not protect against is the deployment granting access to
-nobody in the first place, which is a precondition rather than something code
-can check.
-
-### A quiet page can sit unacknowledged
-
-A critical security incident the classifier could not place pages the NOTIFY
-service, which raises an incident without interrupting anyone. Someone owns it
-and has to acknowledge it, which is more than the channel post alone gave it,
-but nothing forces that to happen quickly. PagerDuty escalation policies can be
-configured to chase an unacknowledged incident and this deployment does not do
-so, because the whole point of the destination is that it does not chase at
-three in the morning. The result is that a real incident the classifier was
-unsure about can wait as long as the person on call takes to look.
-
-### An unclassified ticket has one delivery path and no fallback
-
-When Claude fails, the agent posts to the review channel because that is all it
-can correctly do: there is no classification, so no action table row, no note
-content, and no severity. Severity is what qualifies a ticket for the fallback
-page, so an unclassified ticket cannot have one. If that single post fails, the
-ticket is left untouched in the normal queue and the only record is an audit
-event and a console line, neither of which pushes anyone. The window is small,
-since it needs Claude and Slack failing together, but nothing inside the agent
-closes it.
-
-### The agent does not throttle or batch alerts
-
-A burst of tickets produces a burst of posts. Slack rate-limits, the retries
-back off, and the messages land in a channel too busy to read. That is the flood
-Attack 5 describes: bury a real incident under noise. The agent cannot solve it,
-because throttling only delays the same messages, batching hides the real
-incident inside a digest, and duplicate suppression is defeated by varying the
-tickets. The defence is CAPTCHA and registration on the ticket form, which is a
-deployment precondition rather than code.
-
 ### The alerts that watch the agent have one delivery path
 
-All five Splunk alerts reach a person by email, through one SMTP account. If
-that credential is revoked, if the scheduler is disabled, or if the searches are
-deleted, no alert is sent and nothing records that.
+A broken mail setup silences all five Splunk alerts, and nothing signals that
+they have stopped. On 2026-08-21, six alert emails reported success
+in Splunk and reached nobody, because Splunk sent them without authenticating
+and the mail server refused them, with nothing logged. A second delivery path
+would put a Slack webhook or a PagerDuty routing key in Splunk, one more place
+an alerting credential could leak, so the alerts stay on email alone. The
+uptime check in precondition 9 of
+[Section 10](architecture.md#10-deployment-preconditions) catches Splunk going
+down but not mail failing.
 
-Adding a second path would mean giving Splunk a Slack webhook. That puts an
-alerting credential in another component, and it does not help with the alert
-about Slack failing. The alerts are left on one path.
+### The agent does not learn whether an alert was acted on
 
-The cost is that a broken SMTP credential looks the same as a healthy system. On
-2026-08-21 the SMTP settings were wrong for several hours and no alert was
-delivered. The logs recorded success, and the problem was found by inspecting
-them.
+The agent records that it posted or paged and never learns whether anyone
+worked the ticket. Following up is left to the systems built for it. A
+PagerDuty escalation policy can chase an unacknowledged page, and an osTicket
+SLA plan can flag a ticket nobody worked as overdue. A Slack alert has no
+follow-up of its own, because Slack does not report whether anyone opened its
+link, so a ticket announced only in Slack depends on someone working the
+osTicket queue.
 
-### Nothing knows whether an alert was acted on
+### A Slack alert can arrive more than once
 
-The agent records that it posted or paged. It has no way to learn whether anyone
-opened the ticket or worked it. Slack does not report clicks on a plain link
-without hosting a redirector, and ticket activity would require polling
-osTicket. osTicket's own SLA plans and due dates cover timeliness, and the audit
-index can be joined against ticket history after the fact, but the agent raises
-nothing when an alert is delivered and then ignored.
+The agent retries a Slack alert that times out, but a timeout can mean only the
+reply was lost, so Slack may already have posted it. One alert can therefore
+appear up to three times, and on a high-confidence critical each copy carries
+`@here`. The osTicket note and the page avoid this, because the plugin checks
+for the agent's note before writing and PagerDuty folds repeats by
+deduplication key. Slack's incoming webhooks give no way to ask whether a
+message arrived, so there is nothing to check against.
 
-### Slack messages are a permanent record outside the trust zone
+### Slack holds alerts outside the trust zone
 
-What crosses to Slack is deliberately small, but it is retained under Slack's
-policy rather than yours, reachable by anyone who later gains access to the
-workspace, and subject to legal discovery. Notes written into osTicket stay
-inside the trust zone. Alerts do not.
+A Slack alert stays in Slack after it is posted, for as long as the workspace
+keeps messages. The agent cannot delete it, because an incoming webhook can only
+post, and anyone who later gains access to the workspace can read it. Alerts
+carry no ticket text, requester address, submitter IP or returned log events, as
+[Section 8](architecture.md#what-leaves-the-zone) lists.
 
-### A leaked webhook can post convincing fake alerts
+## This lab
 
-A Slack incoming webhook is a bearer credential: anyone holding one can post to
-that channel under the agent's identity, including a message shaped exactly like
-a real alert. One webhook per channel bounds the damage to that channel, and
-posting the ticket link as a raw URL lets a reader check where it points before
-clicking. Neither prevents a plausible fake.
+### Enrichment searches a frozen, fictional dataset
+
+Splunk holds BOTSv3, a training dataset built around a fictional company, with
+events from 2018-08-20 to 2019-09-19. No real requester appears in it, so
+enrichment finds events only for demo tickets filed by a verified requester
+whose address is in BOTSv3, such as `bgist@froth.ly`. The search itself is
+real, run over TLS as a role that can search one index, so the lab shows the
+enrichment path working but not a match against real activity.
+
+BOTSv3 also ships without the add-ons that map fields to the Common Information
+Model, so the field list in `splunk_enrichment.py` names the vendor fields this
+dataset populates, such as `userPrincipalName` and `ipAddress`, beside
+`src_ip`, `dest_ip`, `user` and `action`. Against real log sources the list has
+to be re-checked, as Attack 3 in [Section 4](architecture.md#4-threat-model)
+notes.
+
+### The submitter IP is the Docker gateway
+
+osTicket records the address it sees on the connection, and browsers reach it
+through its Docker network's gateway, `172.22.0.1`. Tickets filed before the
+networks were split carry `172.21.0.1`. Neither address is in BOTSv3, so
+searching by IP finds nothing, and a guest ticket here runs an enrichment query
+that returns zero events. A real deployment records each client's own address,
+whether reached directly or through a reverse proxy listed in osTicket's
+trusted proxy setting. That setting must list only the proxies themselves,
+because a wildcard lets the submitter choose the IP that gets searched, as
+Attack 3 in [Section 4](architecture.md#4-threat-model) explains.
+
+### This lab cannot show a page that interrupts
+
+This lab's PagerDuty runs on a developer account, which cannot send SMS or voice
+notifications. WAKE, the PagerDuty service meant to interrupt the person on
+call, therefore cannot ring a phone here as it would in a real deployment. How
+it differs from NOTIFY, the service that wakes no one, rests on each PagerDuty
+service's urgency and each responder's notification rules. The agent sends the
+same events on a paid account, so nothing in it changes.

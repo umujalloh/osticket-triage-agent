@@ -619,11 +619,11 @@ def _post_alert(ticket_id, classification, actions, payload, outcome, events,
         # A failed alert means nobody has been told, which is the one failure
         # that cannot be left sitting in a log.
         _flag_human_review(ticket_id, "alert_delivery_failed")
-        # A critical incident the table declined to page on has now had no
-        # delivery at all, so the page becomes the fallback and says so. Where
-        # the table did page, the page already ran ahead of this and a second
-        # one would repeat it. Both failing is the boundary in
-        # known-limitations.md.
+        # A critical incident that paged only NOTIFY was counting on this post
+        # to reach someone awake, so the page is upgraded to WAKE and says why.
+        # One that paged WAKE has already tried to wake someone, and a second
+        # page would repeat it. If the fallback fails too, the ticket stays
+        # unfinished and the next start retries it.
         if needs_fallback_page(classification, actions):
             # Nothing waits on its confirmation, since the post it would have
             # reported in has already failed. It is still recorded.
