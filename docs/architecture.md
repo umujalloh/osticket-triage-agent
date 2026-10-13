@@ -329,7 +329,7 @@ For `security_incident`, severity is the state of the threat right now.
 
 `low`: a hygiene or policy lapse with no attacker involved.
 
-A successful unauthorized login counts as access still held unless the ticket says the session was ended or the credentials were changed. Access gained hours ago and never revoked is still current, and not knowing what an intruder did does not lower the severity.
+A successful unauthorized login counts as access still held unless the ticket says the user or IT ended the session or changed the credentials. A user locked out of their own account has not ended the intruder's access. Access gained hours ago and never revoked is still current, and not knowing what an intruder did does not lower the severity.
 
 For `security_question`, `it_support` and `unclear`, severity is disruption and urgency instead. `critical` is not offered.
 
