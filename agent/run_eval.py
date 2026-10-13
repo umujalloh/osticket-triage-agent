@@ -82,6 +82,7 @@ for run in range(1, args.runs + 1):
             failed_calls += 1
             answers[i - 1].append(f"failed: {e.failure_type}")
             print(f"[{i}] FAIL (classification failed: {e.failure_type}) - {ticket['subject']}")
+            print("    " + str(e).replace("\n", "\n    "))
             continue
 
         answers[i - 1].append(answer(result))
