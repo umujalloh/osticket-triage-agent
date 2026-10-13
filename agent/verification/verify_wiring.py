@@ -196,7 +196,7 @@ for cat, sev, conf in product(Category, Severity, Confidence):
         classification = TicketClassification(category=cat.value, severity=sev.value,
                                               confidence=conf.value)
     except ValidationError:
-        # A pair the rubric forbids never reaches the table.
+        # A critical outside a security incident never reaches the table.
         continue
     if acts.page:
         pages.append(row)

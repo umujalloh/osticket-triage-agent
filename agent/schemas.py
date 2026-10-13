@@ -100,18 +100,18 @@ class TicketClassification(BaseModel):
             return None
         return v
 
-    # The rubric offers critical only to a security incident, and an unclear
-    # ticket is always low confidence. The prompt offers critical only to a
-    # security incident and states the unclear rule, and this checks that
-    # Claude kept to both, so a pair the rubric forbids fails
-    # validation and goes to review. A routine ticket marked critical would
-    # otherwise be raised to emergency priority with no alert saying why.
+    # The rubric offers critical only to a security incident, and the prompt
+    # says so. This checks that Claude kept to it, so a routine ticket marked
+    # critical fails validation and goes to review. It would otherwise be
+    # raised to emergency priority with no alert saying why.
+    #
+    # The rubric also makes every unclear ticket low confidence, which is not
+    # checked here. The action table sends an unclear ticket to review at
+    # either confidence, so refusing the pair would cost the ticket its label
+    # and change no action.
     @model_validator(mode="after")
     def validate_rubric_pairs(self):
         if (self.severity == Severity.critical
                 and self.category != Category.security_incident):
             raise ValueError("critical is only for a security_incident")
-        if (self.category == Category.unclear
-                and self.confidence != Confidence.low_confidence):
-            raise ValueError("an unclear ticket must be low_confidence")
         return self

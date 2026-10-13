@@ -386,7 +386,7 @@ compares all of the resulting actions with its row, so one wrong action fails
 the whole row. It also checks the schema that validates Claude's output before
 the table sees it. No Claude call is made.
 
-**Result:** Measured 2026-10-11, thirty-nine checks, all passing.
+**Result:** Measured 2026-10-13, thirty-nine checks, all passing.
 
 | Property | How it was checked | Result |
 |---|---|---|
@@ -396,16 +396,16 @@ the table sees it. No Claude call is made.
 | Low confidence quiets the page and keeps every other action | a low-confidence critical | NOTIFY instead of WAKE, no `@here`, note, priority, enrichment and urgent Slack channel kept, flagged for human review |
 | Only critical security incidents are enriched | security incidents at high, medium and low, and `it_support` at critical | none enriched |
 | Priority uses osTicket's names | each severity | critical to emergency, high to high, medium to normal, low to low |
-| The schema refuses pairs the rubric forbids | `it_support` at critical, `unclear` at high confidence | both refused, a critical security incident still accepted |
+| The schema refuses critical outside a security incident | `it_support` at critical, `unclear` at high confidence, a critical security incident | the first refused, the other two accepted |
 | Claude cannot add an action to its output | an extra `action` field | refused |
 | Claude cannot name a ticket to act on | a `ticket_id` field, sent as text | refused as an unknown field |
 | A hostname or username Claude extracts must match its pattern in full | each with a trailing newline | value left out, ticket still classified, the same values without the newline kept |
 
 **What it shows:** For every classification Claude can return, the code takes
-exactly the actions action-table.md lists. The schema refuses the pairs the
-rubric forbids before they reach the table. The table still sends `unclear` at
-high confidence to review, so the action layer does not rely on the schema
-alone. Every action goes to the ticket ID from the authenticated webhook,
+exactly the actions action-table.md lists. The schema refuses a critical
+outside a security incident before it reaches the table. An `unclear` ticket at
+high confidence is accepted, and the table sends it to review. Every action
+goes to the ticket ID from the authenticated webhook,
 because a classification cannot carry one, which is the defense [Attack
 2](architecture.md#attack-2-confused-deputy) describes.
 
