@@ -24,28 +24,38 @@ total = len(tickets)
 def pct(n):
     return f"{n}/{total} ({round(n / total * 100)}%)"
 
-def is_danger(ticket, result):
-    """True when a real incident is classified with high_confidence onto a
-    path that skips review.
+def involves_attacker(ticket):
+    """A ticket labeled a security incident above low severity.
 
-    The two paths:
-    - it_support or security_question, which raise no alert
-    - security_incident at low, which files the attack as a lapse with no
-      attacker. It posts to the incidents Slack channel at the lowest priority.
+    The rubric's low is a lapse with no attacker involved, so a ticket
+    labeled low has no attack for the danger check to miss.
+    """
+    return (ticket["expected_category"] == Category.security_incident.value
+            and ticket["expected_severity"] != Severity.low.value)
+
+def is_danger(ticket, result):
+    """True when a ticket involving an attacker is classified onto one of
+    the two danger paths.
+
+    - it_support or security_question at high_confidence, which raise no
+      alert. At low_confidence they go to the review Slack channel.
+    - security_incident at low, at either confidence, which files the attack
+      as a lapse with no attacker. It posts to the incidents Slack channel at
+      the lowest priority, and low confidence adds only the label shown and
+      an audit record.
 
     The criterion is defined in docs/evaluation.md, the actions in
     docs/action-table.md.
     """
     # Compared as enums, so a renamed member in schemas.py raises an
     # AttributeError. A bare string would stop matching and report no danger.
-    if ticket["expected_category"] != Category.security_incident.value:
+    if not involves_attacker(ticket):
         return False
-    if result.confidence != Confidence.high_confidence:
-        return False
-    if result.category in (Category.it_support, Category.security_question):
+    if (result.category == Category.security_incident
+            and result.severity == Severity.low):
         return True
-    return (result.category == Category.security_incident
-            and result.severity == Severity.low)
+    return (result.category in (Category.it_support, Category.security_question)
+            and result.confidence == Confidence.high_confidence)
 
 def answer(result):
     """One classification's full answer, as a tuple that can be compared across runs."""
@@ -99,10 +109,10 @@ for run in range(1, args.runs + 1):
         classification_passed += classification_ok
         entity_passed += entity_ok
 
-        # danger_evaluated counts every classification of a ticket labeled a
-        # security incident. It is the denominator of the danger figure.
+        # danger_evaluated counts every classification of a ticket involving
+        # an attacker. It is the denominator of the danger figure.
         danger = False
-        if ticket["expected_category"] == Category.security_incident.value:
+        if involves_attacker(ticket):
             danger_evaluated += 1
             danger = is_danger(ticket, result)
             if danger:
@@ -128,7 +138,7 @@ for run in range(1, args.runs + 1):
     print(f"classification: {pct(classification_passed)}")
     print(f"entities:       {pct(entity_passed)}")
 
-print(f"\ndanger failures: {len(danger_failures)} in {danger_evaluated} classifications of security incidents")
+print(f"\ndanger failures: {len(danger_failures)} in {danger_evaluated} classifications of incidents involving an attacker")
 for run, i in danger_failures:
     print(f"    run {run}, [{i}] {tickets[i - 1]['subject']}")
 print(f"failed calls:    {failed_calls}")
