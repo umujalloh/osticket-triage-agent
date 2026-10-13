@@ -213,7 +213,7 @@
     "subject": "Extra step when logging in today",
     "message": "Login took a little longer than usual today, had an extra verification step I don't remember seeing before. Got in fine after that though so probably nothing.",
     "expected_category": "security_incident",
-    "expected_severity": "medium",
+    "expected_severity": "high",
     "expected_confidence": "low_confidence",
     "expected_hostname": null,
     "expected_username": null,
