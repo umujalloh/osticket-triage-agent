@@ -19,9 +19,9 @@ is classified as routine. The rubric in
 [Section 5](architecture.md#5-classification-model) sends behavior the user
 cannot account for to a person at `low_confidence`. That rule asks whether the
 user can explain the cause. A user who describes clearly what happened and
-cannot tell whether it mattered gets `high_confidence`, as one ticket in
-[evaluation.md](evaluation.md) shows. Catching what the text cannot show is
-left to endpoint and network monitoring outside this system.
+cannot tell whether it mattered can get `high_confidence`. Catching what the
+text cannot show is left to endpoint and network monitoring outside this
+system.
 
 ### Classification is not deterministic
 
@@ -29,19 +29,23 @@ The same ticket can be classified differently on different calls. On the
 default model, `claude-haiku-4-5`, the agent sends `temperature=0`, which does
 not guarantee identical output. Claude Sonnet 5 and Opus 5 reject sampling
 parameters, so on those the agent sends none and they run at the API's default
-sampling. A ticket between two severities or two confidence levels can land on
-either. A live ticket is classified once, so a borderline ticket's label is a
-single draw and nothing flags it. The eval set returned identical results
-across nine runs on 2026-08-06, as [evaluation.md](evaluation.md) records. A
-new ticket on a boundary can still flip, and one eval run cannot tell a flip
-from a regression.
+sampling. The delimiter around each ticket is also random for every request,
+so each call sends Claude a different input. A ticket between two severities or
+two confidence levels can land on either. A live ticket is classified once, so
+a borderline ticket's label is a single draw and nothing flags it. In four
+nine-run batches on the current prompt, three tickets changed answer at least
+once, as [evaluation.md](evaluation.md#current-results) records. A new ticket
+on a boundary can still flip, and one eval run cannot tell a flip from a
+regression.
 
 ### The evaluation score is a regression check
 
 The eval set is 36 hand-written tickets, none from a real helpdesk, so it does
-not reflect a real mix of tickets. The score shows whether a change made
-classification worse on known cases. It does not estimate accuracy on real
-tickets.
+not reflect a real mix of tickets and the score does not estimate accuracy on
+real tickets. The rubric was written and tuned against these same tickets, so a
+pass shows that the classifier follows the rubric on the cases it was written
+from. The score is meant to catch a change that makes classification worse on
+those cases.
 
 ## Runtime
 

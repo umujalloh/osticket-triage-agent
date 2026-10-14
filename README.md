@@ -184,7 +184,7 @@ categories and what each one retries are in
 [architecture.md, Section 6](docs/architecture.md#6-failure-modes-for-the-claude-dependency).
 
 **The audit write fails.** If the classification never reached Splunk, nothing
-outside the ticket explains how it was labelled, so the agent writes that gap
+outside the ticket explains how it was labeled, so the agent writes that gap
 onto the note. If an action never reached Splunk, the action still happened and
 left its own evidence, a note on the ticket or a message in Slack, so the agent
 prints it to the console instead.
@@ -294,22 +294,23 @@ classifier and compares the result against the expected label. Expected labels
 are never sent to the model, and classification and entity extraction are scored
 separately so a regression in one cannot hide behind the other.
 
-| Metric | Result |
-|---|---|
-| Category | 36 of 36 |
-| Full label | 34 of 36 |
-| Entity extraction | 36 of 36 |
-| Unstable tickets across nine runs | 0 |
-| Danger criterion | **0 failures in 180 classifications** |
+Measured 2026-10-13 at `de3e5da` with `claude-haiku-4-5`, nine runs.
 
-The danger criterion counts only the failures that would leave a real incident
-unseen or marked low severity with no human review, ignoring disagreements that
-would not. Method and current results in
+| Measure | Result |
+|---|---|
+| Classification | 35 of 36 in every run |
+| Entity extraction | 36 of 36 in every run |
+| Danger failures | 0, across 18 attack tickets in nine runs each |
+| Unstable tickets | 0 |
+
+The danger criterion counts the misses that leave an attack without a Slack
+alert or label it `low` severity, a lapse with no attacker. Method and current
+results in
 [docs/evaluation.md](docs/evaluation.md).
 
-The score is a regression detector, not an estimate of real-world accuracy. What
-the evaluation cannot tell you is in
-[docs/known-limitations.md](docs/known-limitations.md).
+The score is meant to catch a change that makes classification worse on these
+tickets, and does not estimate accuracy on real ones. What the evaluation
+cannot tell you is in [docs/known-limitations.md](docs/known-limitations.md).
 
 ---
 
@@ -321,7 +322,7 @@ agent/verification/     14 verifiers, each reproducible from one command
 docker/                 Dockerfile, compose file, Splunk provisioning and saved searches
 docs/                   Architecture, action table, evaluation, verification, limitations, setup
 osticket-plugin/        osTicket plugin: signing, delivery, retry queue, status note
-tests/                  Labelled ticket set for the classifier evaluation
+tests/                  Labeled ticket set for the classifier evaluation
 ```
 
 ---

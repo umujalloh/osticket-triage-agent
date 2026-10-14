@@ -26,12 +26,11 @@ note on the ticket and sets its priority.
 | security_question | any | low | none | no | yes | review | no |
 | it_support | any | high | none | no | no | none | no |
 | it_support | any | low | none | no | no | review | no |
-| unclear | any | low | none | no | no | review | no |
+| unclear | any | any | none | no | no | review | no |
 
 The agent checks everything Claude returns against a strict schema in
 `agent/schemas.py` before acting on it. That schema refuses `critical` on
-anything but a security incident, and `unclear` at high confidence, so neither
-reaches this table.
+anything but a security incident, so that pair never reaches this table.
 
 ## How a row is decided
 

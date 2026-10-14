@@ -179,7 +179,7 @@ The agent reads untrusted ticket text and acts on it. Each attack below follows 
  
 **Low-confidence override:** If the ticket text is too vague to classify confidently, Claude returns low confidence, and the label is not trusted on its own. The ticket reaches a Slack channel regardless of category, so a person sees it even when the label is wrong.
  
-**An eval harness against labeled tickets:** The classifier prompt is tested against a fixed set of tickets with known labels, comparing the current rubric with a rewrite of it, to catch a change that makes the classifier worse. The rewrite is kept only if its improvement holds across at least three runs and no ticket's answer flips between runs. It is rejected if any ticket labeled a security incident comes back with high confidence as `it_support` or `security_question`, or as a low severity incident. The results and the method are in `docs/evaluation.md`.
+**An eval harness against labeled tickets:** The classifier prompt is tested against a fixed set of tickets with known labels, to catch a change that makes the classifier worse. The current prompt and a proposed change each run nine times, back to back, and the change is kept only if it fixes the tickets it targets, produces no danger failure, and costs no other ticket three or more passes on a miss that changes an action. The rule and the current results are in [evaluation.md](evaluation.md#how-prompt-changes-are-validated).
  
 **Residual risk:** The low-confidence override fires only when the ticket reads as vague, so a confidently wrong classification passes it. The eval harness scores a fixed set, so it cannot catch a live ticket. A real incident marked below critical still reaches the incidents channel, where a person can see it. One confidently marked `it_support` notifies no one, and one confidently marked `security_question` only moves to the security department's queue.
  
@@ -195,14 +195,14 @@ The agent reads untrusted ticket text and acts on it. Each attack below follows 
  
 **The double condition:** Waking someone requires both critical severity and high confidence. A critical security incident the classifier was unsure about is sent to the urgent Slack channel and still pages NOTIFY, the low urgency service, which creates an incident someone owns without interrupting them. If its Slack post then fails, the page is upgraded to WAKE, the high urgency service, since that quiet incident is all anyone would see.
  
-**Threshold tuning:** How often the agent pages depends on where the classifier prompt sets the bar for a critical security incident. That definition is tuned when the agent pages too often for tickets not worth interrupting someone for. An eval is run every time it is rewritten, comparing the new definition against the current one on the labeled tickets to see which tickets change severity before it is kept.
+**Threshold tuning:** How often the agent pages depends on where the classifier prompt sets the bar for a critical security incident. That definition is tuned when the agent pages too often for tickets not worth interrupting someone for. Each rewrite is measured against the current definition on the labeled tickets and kept only under the rule in [evaluation.md](evaluation.md#how-prompt-changes-are-validated).
  
 **Testing stays off the live destinations:** `ENABLE_WRITES` is set to false during testing, so the agent touches no ticket, posts to no channel and pages nobody. It still runs classification, enrichment and audit logging. The verifiers that do send post to a test Slack channel and page a test PagerDuty service.
  
 **Residual risk:**
  
 - A benign ticket classified critical with high confidence meets both halves of the double condition, so it wakes someone. Confidence cannot catch the classifier being confidently wrong, which is the mirror of Attack 4.
-- Nothing in the eval rejects a rubric that starts over-calling, because its rule fires only on downgrades, since a missed incident costs more than a noisy one.
+- The acceptance rule catches an over-call only on the labeled tickets, and only when it is frequent enough to stand out from run-to-run noise. An over-call that shows up in one or two of the nine runs passes, and so does any over-call on a kind of ticket the set does not include.
 - An attacker could purposely generate a burst of false positive tickets to distract analysts into chasing them while the real attack is buried in the noise.
  
 ---
