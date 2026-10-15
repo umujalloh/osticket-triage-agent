@@ -269,7 +269,7 @@ From `agent/`.
      step 4, usually `http://172.17.0.1:8000/webhook/ticket`.
      `verify_webhook.py` sends here.
 3. Run the offline verifiers, the same nine CI runs. Each prints a last line
-   starting `All N checks passed`, 226 in total, and anything else is a
+   starting `All N checks passed`, 228 in total, and anything else is a
    failure.
 
    ```bash

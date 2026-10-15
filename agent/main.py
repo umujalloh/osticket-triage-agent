@@ -726,26 +726,28 @@ def _page(ticket_id, destination, event, fallback) -> _PageOutcome:
         print(f"Ticket {ticket_id}: {destination} page skipped (writes disabled)")
         return _PageOutcome(True)
 
+    sent_at = time.time()
+
     # Marked once PagerDuty queued it, before the confirmation, so a page that
     # reached no incident is not sent again on a later start. Sending it again
     # through the same routing key would reach nobody again.
     mark_done(ticket_id, column)
     print(f"Ticket {ticket_id}: {destination} page accepted, confirming")
     return _start_confirmation(ticket_id, destination, event["dedup_key"],
-                               fallback)
+                               fallback, sent_at=sent_at)
 
 def _start_confirmation(ticket_id, destination, dedup_key, fallback,
-                        again=False) -> _PageOutcome:
+                        again=False, sent_at=None) -> _PageOutcome:
     """Confirms a page in the background. The outcome holds the answer alone,
     so the alert waiting on it does not also wait for the audit write and the
     routing key check that follow."""
     answer = Future()
     _confirmations.submit(_confirm_and_record, ticket_id, destination,
-                          dedup_key, fallback, again, answer)
+                          dedup_key, fallback, again, answer, sent_at)
     return _PageOutcome(future=answer)
 
 def _confirm_and_record(ticket_id, destination, dedup_key, fallback, again,
-                        answer):
+                        answer, sent_at=None):
     """Asks PagerDuty whether an accepted page reached an open incident, sets
     answer to what the alert reports, then records the result.
 
@@ -783,7 +785,8 @@ def _confirm_and_record(ticket_id, destination, dedup_key, fallback, again,
                   "incident")
         else:
             confirmed = found == PAGE_CONFIRMED
-            audit_ok = log_paged(ticket_id, destination, fallback, confirmed)
+            audit_ok = log_paged(ticket_id, destination, fallback, confirmed,
+                                 sent_at=sent_at)
             print(f"Ticket {ticket_id}: paged {destination}{how}"
                   f"{'' if confirmed else ', not confirmed'}")
         if not audit_ok:

@@ -573,7 +573,7 @@ The agent records every decision and action in a Splunk index, and five Splunk s
 | Priority | `priority_set`, `priority_skipped`, `priority_failed` | the priority before and after |
 | Routing | `routed`, `routing_skipped`, `routing_failed` | the department before and after, and whether the ticket was already there |
 | Slack post | `slack_posted`, `slack_skipped`, `slack_failed` | the channel, and whether the post mentioned `@here` |
-| Page | `paged`, `page_skipped`, `page_failed` | the destination, whether it was a fallback page, and whether an open incident was confirmed |
+| Page | `paged`, `page_skipped`, `page_failed` | the destination, whether it was a fallback page, and whether an open incident was confirmed. A `paged` entry is timestamped when PagerDuty accepted the page, so it sorts ahead of the writes that followed. |
 | Human review | `human_review` | why the ticket needs a person |
 | Resumed ticket | `triage_resumed` | the actions still outstanding |
 | Crashed run | `triage_crashed` | the type of the error, which no action handled |

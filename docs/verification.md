@@ -914,7 +914,7 @@ including the lookup that confirms a page, is replaced by a stub, so nothing
 leaves the machine. Two cases run on the agent's real thread pool, to check the
 order things happen in.
 
-**Result:** Measured 2026-10-11, thirty-six checks, all passing.
+**Result:** Measured 2026-10-14, thirty-eight checks, all passing.
 
 | What happens | The alert says | Recorded |
 |---|---|---|
@@ -924,6 +924,7 @@ order things happen in.
 | The lookup gets no usable answer, crashes, or takes over a minute | `paged WAKE, not confirmed` | an unconfirmed page |
 | A ticket resumes after its page, with its alert still owed | the result of a second lookup, which also counts a resolved incident | nothing new, and the page is not sent again |
 | A ticket resumes after its alert, or with writes off | (no alert) | no second lookup |
+| PagerDuty accepts the page and the lookup takes a moment to confirm it | `paged WAKE` | the page, timestamped when PagerDuty accepted it, not when the lookup finished |
 | The Slack post fails and the WAKE fallback is sent | (no alert) | both pages looked up and recorded |
 
 **What it shows:** A Slack alert says whether its page reached an incident, not

@@ -14,6 +14,7 @@ replaced.
 import os
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -57,7 +58,9 @@ for name in [n for n in dir(main) if n.startswith("log_")]:
 
 # Kept so a check can read back what the page's outcome recorded.
 audited = []
-main.log_paged = lambda *a, **kw: audited.append(("paged", a)) or True
+stamped = []
+main.log_paged = (lambda *a, **kw: stamped.append(kw.get("sent_at"))
+                  or audited.append(("paged", a)) or True)
 main.log_page_failure = lambda *a, **kw: audited.append(("page_failed", a)) or True
 key_checks = []
 main.check_routing_keys = lambda: key_checks.append(1) or {}
@@ -266,6 +269,43 @@ check("a failed post sends the WAKE fallback, and both pages are confirmed",
 check("  the fallback that reached nobody is recorded as a failed page",
       [(kind, args[1], args[2]) for kind, args in audited],
       [("page_failed", "notify", "no_incident"), ("page_failed", "wake", "no_incident")])
+
+print()
+print("when the page's audit entry says it happened")
+print()
+
+# The entry is written once the confirmation answers, which can be twenty
+# seconds after the send. It carries the send time instead, so the index puts
+# the page ahead of the writes it went out before.
+sent_times = []
+def accept_and_time(destination, event):
+    sent_times.append(time.time())
+    return "queued"
+def slow_confirm(destination, dedup_key, **_):
+    time.sleep(0.05)
+    return "confirmed"
+
+stamped.clear()
+run(15, accept_and_time, slow_confirm)
+check("the page's audit entry is stamped at the send, not the confirmation",
+      bool(stamped) and stamped[0] is not None
+      and sent_times[0] <= stamped[0] < sent_times[0] + 0.05, True)
+
+import splunk_logger
+
+class Accepted:
+    status_code = 200
+    def raise_for_status(self):
+        pass
+
+sent_to_splunk = []
+real_post = splunk_logger.requests.post
+splunk_logger.requests.post = (lambda url, **kw: sent_to_splunk.append(kw["json"])
+                               or Accepted())
+splunk_logger.log_paged(15, "wake", False, True, sent_at=1234.5)
+splunk_logger.requests.post = real_post
+check("  and the event sent to Splunk carries that time",
+      sent_to_splunk[0]["time"] if sent_to_splunk else None, 1234.5)
 
 print()
 print("with the real thread pool")
