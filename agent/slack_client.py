@@ -83,14 +83,17 @@ def build_message(ticket_id, ticket_number, classification, channel, mention=Fal
     """
     category = classification.category.value
 
+    # Every post this module builds gives the ticket number without a "#".
+    # osTicket's six-digit numbers read as hex colors to Slack, which draws a
+    # color swatch beside "#738485".
     if channel == REVIEW:
         # Severity is a guess on a ticket nobody could place, so the reason it
         # is here is shown instead.
-        head = f"{REVIEW_ICON} *{category}*  ·  Ticket #{ticket_number or ticket_id}"
+        head = f"{REVIEW_ICON} *{category}*  ·  Ticket {ticket_number or ticket_id}"
     else:
         icon = SEVERITY_ICON.get(classification.severity, REVIEW_ICON)
         head = (f"{icon} *{classification.severity.value} {category}*"
-                f"  ·  Ticket #{ticket_number or ticket_id}")
+                f"  ·  Ticket {ticket_number or ticket_id}")
 
     head += f"  ·  {classification.confidence.value.replace('_', ' ')}"
     if page:
@@ -128,7 +131,7 @@ def build_abandoned_message(ticket_id, ticket_number) -> str:
     there is no severity or category to state and no basis for a louder icon.
     """
     head = (f"{REVIEW_ICON} *triage did not finish*"
-            f"  ·  Ticket #{ticket_number or ticket_id}"
+            f"  ·  Ticket {ticket_number or ticket_id}"
             f"  ·  interrupted")
     return "\n".join([head, _ticket_url(ticket_id)])
 
@@ -144,7 +147,7 @@ def build_failure_message(ticket_id, ticket_number, failure_type) -> str:
     value the agent chose and never text from a ticket.
     """
     head = (f"{REVIEW_ICON} *classification failed*"
-            f"  ·  Ticket #{ticket_number or ticket_id}"
+            f"  ·  Ticket {ticket_number or ticket_id}"
             f"  ·  {failure_type}")
     return "\n".join([head, _ticket_url(ticket_id)])
 

@@ -759,7 +759,7 @@ the client with settings missing. It also makes posts fail with a marker planted
 in the webhook URL, to see whether any error repeats it. One real post goes to
 the test Slack channel.
 
-**Result:** Measured 2026-10-06, forty-seven checks, all passing.
+**Result:** Measured 2026-10-14, forty-seven checks, all passing.
 
 | What happens | Result |
 |---|---|

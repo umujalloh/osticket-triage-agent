@@ -498,7 +498,7 @@ The agent calls Splunk over TLS, using the `https` URLs in `agent/.env.example`,
 
 ```
 @here
-🔴 critical security_incident  ·  Ticket #465581  ·  high confidence  ·  paged WAKE
+🔴 critical security_incident  ·  Ticket 465581  ·  high confidence  ·  paged WAKE
 20 related events
 http://helpdesk.example.com/scp/tickets.php?id=14
 ```
@@ -506,7 +506,7 @@ http://helpdesk.example.com/scp/tickets.php?id=14
 Two kinds of Slack post carry no classification and go to the review channel, one for a ticket Claude never classified and one for a ticket the agent abandoned after an interruption. Both carry the ticket number, a link, and either the failure type or `interrupted`:
 
 ```
-⚪ classification failed  ·  Ticket #465581  ·  rate_limited
+⚪ classification failed  ·  Ticket 465581  ·  rate_limited
 http://helpdesk.example.com/scp/tickets.php?id=14
 ```
 

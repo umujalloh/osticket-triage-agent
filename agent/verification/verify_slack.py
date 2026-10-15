@@ -76,7 +76,7 @@ msg = slack.build_message(15, "465581", critical, slack.URGENT, mention=True,
                           outcome=EnrichmentOutcome.completed, event_count=20)
 check("  a mention renders as here", "<!here>" in msg, True)
 check("  severity and category appear", "critical security_incident" in msg, True)
-check("  ticket number appears", "#465581" in msg, True)
+check("  ticket number appears", "Ticket 465581" in msg, True)
 check("  enrichment count appears", "20 related events" in msg, True)
 check("  link is a raw url", "/scp/tickets.php?id=15" in msg, True)
 check("  no markdown link syntax", "|Open ticket>" in msg, False)
@@ -157,7 +157,7 @@ print("the notice for a ticket that was never classified")
 fail_msg = slack.build_failure_message(15, "465581", "rate_limited")
 check("  says what happened", "classification failed" in fail_msg, True)
 check("  names the failure type", "rate_limited" in fail_msg, True)
-check("  carries the ticket number", "#465581" in fail_msg, True)
+check("  carries the ticket number", "Ticket 465581" in fail_msg, True)
 check("  links the ticket", "/scp/tickets.php?id=15" in fail_msg, True)
 check("  reuses the review icon", slack.REVIEW_ICON in fail_msg, True)
 # A distinct shape would assert an urgency a ticket with no severity has no
@@ -167,7 +167,7 @@ check("  carries no severity icon",
           if i != slack.REVIEW_ICON), False)
 check("  never mentions the channel", "<!here>" in fail_msg, False)
 check("  falls back to the ticket id when there is no number",
-      "#15" in slack.build_failure_message(15, None, "auth_failure"), True)
+      "Ticket 15 " in slack.build_failure_message(15, None, "auth_failure"), True)
 
 # The README promises that nothing the submitter wrote reaches Slack. A
 # classification carries the hostname, username and IP Claude extracted from
