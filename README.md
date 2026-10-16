@@ -69,7 +69,7 @@ so the run shows as early on 2026-10-15.
 
 ## How it works
 
-![Data flow from the submitter through osTicket and the agent to Splunk, Slack and PagerDuty, with the trust boundary](docs/images/architecture.svg)
+![Data flow from the submitter through osTicket and the agent to Claude, Splunk, Slack, PagerDuty and the alert email, with the trust boundary](docs/images/architecture.svg)
 
 The plugin signs each new ticket and sends it to the agent, which verifies it,
 has Claude classify it, looks up the label's row in

@@ -51,7 +51,7 @@ This document covers the design across all three phases.
  
 **PagerDuty:** On-call paging. The agent pages on a critical security incident and nothing else. A high-confidence critical pages WAKE, and a low-confidence one pages NOTIFY. If a low-confidence critical's Slack post then fails, the agent also pages WAKE.
  
-**Inside vs outside:** osTicket, the agent, and Splunk run inside the deployment's own infrastructure. Claude, PagerDuty, and Slack are external services. That split is the trust boundary, which is covered in [Section 8](#8-trust-boundaries-and-least-privilege).
+**Inside vs outside:** osTicket, the agent, and Splunk run inside the deployment's own infrastructure. Claude, PagerDuty, Slack and the mail account that sends alerts are external services. That split is the trust boundary, which is covered in [Section 8](#8-trust-boundaries-and-least-privilege).
  
 **Deployment:** Everything runs on one machine. osTicket, its MySQL database and Splunk are Docker containers defined in `docker/`. The agent runs beside them as an ordinary process on the host, not a container. [Section 8](#8-trust-boundaries-and-least-privilege) covers what that exposes and why the agent binds differently from the containers.
  
@@ -79,30 +79,9 @@ When a user submits a ticket in osTicket, it goes through the following steps.
 
 The agent writes to its Splunk audit log as it goes, recording each refusal, decision and action as it happens. Steps 6 and 8 are the only ones that act on the ticket or alert anyone, and the kill switch can turn both off without stopping that log.
 
-```mermaid
-flowchart TD
-    user["End user<br/>untrusted input"]
+![Data flow from the submitter through osTicket and the agent to Claude, Splunk, Slack, PagerDuty and the alert email, with the trust boundary](images/architecture.svg)
 
-    subgraph trust["Trust zone"]
-        osticket["osTicket<br/>helpdesk ticketing"]
-        agent["Triage Agent<br/>FastAPI orchestrator"]
-        splunk["Splunk<br/>SIEM + audit log"]
-    end
-
-    claude["Claude API<br/>external, classify only"]
-    alerts["PagerDuty / Slack<br/>alert destinations"]
-
-    user -->|submit| osticket
-    osticket -->|webhook authenticated| agent
-    agent -->|ticket text| claude
-    claude -->|classification only| agent
-    splunk -->|enrichment| agent
-    agent -->|audit events| splunk
-    agent -.->|writes, kill-switched| osticket
-    agent -.->|alerts, kill-switched| alerts
-```
-
-In the diagram, Claude only returns a classification to the agent. Every action, including enrichment, notes and alerts, comes from the fixed action table and is carried out by the agent. The classification label decides which row applies, but Claude never chooses, calls or triggers an action itself.
+In the diagram, Claude only returns a classification. The agent looks up its row in the action table and carries out the actions, and Claude never chooses, calls or triggers one. The dashed arrows are the writes and alerts the kill switch stops.
  
 ---
  
@@ -474,7 +453,7 @@ The webhook is answered before the actions run, so a crash in between leaves osT
 
 ### Trust boundary
 
-The trust zone is osTicket, the agent and Splunk. The end user, Claude, Slack and PagerDuty are outside it.
+The trust zone is osTicket, the agent and Splunk. The end user, Claude, Slack, PagerDuty and the alert mail account are outside it.
 
 Three untrusted inputs reach the agent. The first is the ticket, its text and requester address both written by whoever filed it. The plugin's signature proves the request came from osTicket, and nothing about the ticket text. The second is Claude's answer, which the agent uses only after it passes the Pydantic model in `schemas.py`. [Attack 1](#attack-1-prompt-injection) covers the ticket text and Claude's answer. The third is the log data enrichment returns, which can hold values an attacker typed, such as a username on a failed sign-in. The agent writes those values into the note as plain text, and osTicket escapes them when it displays the note, so they cannot run as code. [Attack 8](#attack-8-log-injection-via-enrichment) covers what they can still do.
 
@@ -519,6 +498,8 @@ Nothing a submitter wrote reaches Slack or PagerDuty. Three kinds of data are le
 - The requester address and the submitter IP. Both are personal data, and the ticket already holds them inside the zone.
 - The events enrichment returned, including their sourcetype names. They would tell a reader what this organization logs and with which tools.
 - The ticket text. The submitter writes it, so sending it would put their words under the agent's name, and any URL they typed would render in Slack as a clickable link in a trusted channel.
+
+**Alert email** goes out through the deployment's SMTP account, from Splunk's five saved searches and, when osTicket's log level and outbound mail allow it, from osTicket's system log. A Splunk alert carries its own facts, such as the failing destination, the failure type or the restart count, and a link back to the search. An osTicket alert carries the plugin's error message, which names the agent's URL when a send fails. Neither carries ticket text, requester data or Splunk events.
 
 ### Data at rest
 
