@@ -10,10 +10,18 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if len(sys.argv) != 2 or not sys.argv[1].isdigit():
     raise SystemExit(
         "usage: python verification/verify_wiring.py <ticket_id>\n\n"
-        "Checks that the note write obeys the kill switch, cannot repeat\n"
-        "itself, and records a failed classification audit write on the note.\n"
-        "One case writes a real note to the ticket you name, so pick one you\n"
-        "don't mind marking.\n\n"
+        "Checks that only the critical rows page, that each write obeys the\n"
+        "kill switch and cannot repeat itself, that a failed classification\n"
+        "audit write is recorded on the note, that a failed classification\n"
+        "reaches review, that the page goes out before Splunk is touched, and\n"
+        "that routing works.\n\n"
+        "Several cases act on the ticket you name for real. They write a note,\n"
+        "set its priority, including emergency, move it to the security\n"
+        "department, post Slack alerts and send PagerDuty pages, then read\n"
+        "PagerDuty's REST API to confirm each page. Alerts and\n"
+        "pages go to SLACK_WEBHOOK_TEST and PAGERDUTY_ROUTING_KEY_TEST when\n"
+        "those are set, and to the real destinations when they are not. Pick a\n"
+        "ticket you don't mind marking.\n\n"
         "Each case runs in its own process, because ENABLE_WRITES is read at\n"
         "import and patching it in place would not test what actually happens\n"
         "at boot."
@@ -111,11 +119,11 @@ if os.environ.get("WIRING_CASE"):
 
     main._write_ticket_note(TICKET_ID, classification, outcome, None, None, audited)
     main._set_ticket_priority(TICKET_ID, classification)
-    # This row does not page, so nothing was owed and nothing failed. paged
-    # only changes the message when the row pages, and it carries no default
-    # so a caller cannot quietly claim a page that never happened.
+    # This row does not page, so nothing was owed and nothing failed. The page
+    # outcome only changes the message when the row pages, and it carries no
+    # default so a caller cannot quietly claim a page that never happened.
     main._post_alert(TICKET_ID, classification, actions, payload, outcome, None,
-                     paged=True)
+                     page=main._PageOutcome(True))
 
     state = completed_actions(TICKET_ID)
     print(f"STORE_NOTE_WRITTEN={state['note_written']}")
@@ -125,13 +133,20 @@ if os.environ.get("WIRING_CASE"):
 
 STORE = os.path.join(tempfile.mkdtemp(prefix="triage-wiring-"), "state.db")
 
+# Every case's output, so the closing line can report what the run actually
+# did to the ticket instead of what it was meant to do.
+outputs = []
+
 def run_case(name, enable_writes, **overrides):
     env = dict(os.environ)
     env.update({"WIRING_CASE": name, "ENABLE_WRITES": enable_writes,
                 "TRIAGE_STATE_DB": STORE})
     # Alerts go to the test channel, so the real ones carry only real alerts.
+    # Urgent included, since the page-before-audit case posts a confident
+    # critical with an @here.
     test_hook = os.getenv("SLACK_WEBHOOK_TEST")
     if test_hook:
+        env["SLACK_WEBHOOK_URGENT"] = test_hook
         env["SLACK_WEBHOOK_INCIDENTS"] = test_hook
         env["SLACK_WEBHOOK_REVIEW"] = test_hook
     # Same for pages, so the real service holds nothing but real pages.
@@ -146,6 +161,7 @@ def run_case(name, enable_writes, **overrides):
         print(result.stdout)
         print(result.stderr)
         raise SystemExit(f"case {name} exited {result.returncode}")
+    outputs.append(result.stdout)
     return result.stdout
 
 failed = []
@@ -165,6 +181,8 @@ from itertools import product
 
 from action_table import actions_for
 from main import needs_fallback_page
+from pydantic import ValidationError
+
 from schemas import Category, Confidence, Severity, TicketClassification
 
 pages, fallbacks = [], []
@@ -174,8 +192,12 @@ for cat, sev, conf in product(Category, Severity, Confidence):
     except Exception:
         continue
     row = f"{cat.value}/{sev.value}/{conf.value}"
-    classification = TicketClassification(category=cat.value, severity=sev.value,
-                                          confidence=conf.value)
+    try:
+        classification = TicketClassification(category=cat.value, severity=sev.value,
+                                              confidence=conf.value)
+    except ValidationError:
+        # A critical outside a security incident never reaches the table.
+        continue
     if acts.page:
         pages.append(row)
     if needs_fallback_page(classification, acts):
@@ -252,7 +274,7 @@ check("kill switch off skips the page", "page skipped (writes disabled)" in out)
 check("kill switch off records no page", "STORE_PAGED=False" in out)
 
 out = run_case("paging_on", "true", TRIAGE_STATE_DB=PAGE_STORE)
-check("kill switch on pages", f"Ticket {TICKET_ID}: paged" in out)
+check("kill switch on pages", f"Ticket {TICKET_ID}: wake page accepted" in out)
 check("the page is recorded", "STORE_PAGED=True" in out)
 
 out = run_case("paging_retry", "true", TRIAGE_STATE_DB=PAGE_STORE)
@@ -292,8 +314,10 @@ ordered = run_case("page_before_audit", "true", TRIAGE_STATE_DB=ORDER_STORE,
 
 # Named events rather than the raw "Splunk logging failed" line, which appears
 # once per audit write and cannot be told apart. The page writes an audit event
-# of its own, and that one is allowed to fail behind the page.
-paged_at = ordered.find(f"Ticket {TICKET_ID}: paged")
+# of its own, and that one is allowed to fail behind the page. The send is
+# timed by the line printed when PagerDuty accepts the page, since the "paged"
+# line comes only once the confirmation has answered.
+paged_at = ordered.find(f"Ticket {TICKET_ID}: wake page accepted")
 classification_audit_at = ordered.find("audit write failed (classification_complete)")
 check("a dead audit endpoint still fails the classification write",
       classification_audit_at != -1)
@@ -304,10 +328,43 @@ check("the page does not wait for enrichment either",
       paged_at < ordered.find("enrichment") if "enrichment" in ordered else True)
 
 print()
+
+# Counted from the agent's own console lines, so this reports what reached the
+# ticket, Slack and PagerDuty, whatever state the ticket started in. Printed
+# before the result, because a failing run has still acted on all three.
+import re
+
+said = "\n".join(outputs)
+prefix = re.escape(f"Ticket {TICKET_ID}: ")
+notes = len(re.findall(prefix + r"note written$", said, re.M))
+notes_present = len(re.findall(prefix + r"note already present$", said, re.M))
+priorities = re.findall(prefix + r"priority (\S+) to (\S+)$", said, re.M)
+moved = len(re.findall(prefix + r"routed to ", said))
+already_in = len(re.findall(prefix + r"already in ", said))
+alerts = re.findall(prefix + r"slack posted to (\S+)$", said, re.M)
+# One line per page this run sent, whatever the confirmation found.
+pages = len(re.findall(prefix + r"\S+ page accepted, confirming", said))
+slack_to = ("the test Slack channel" if os.getenv("SLACK_WEBHOOK_TEST")
+            else "the real Slack channels")
+pages_to = ("the test PagerDuty service" if os.getenv("PAGERDUTY_ROUTING_KEY_TEST")
+            else "the real PagerDuty services")
+if moved:
+    move = "moved to the security department"
+elif already_in:
+    move = "already in the security department"
+else:
+    move = "not moved"
+
+print(f"On ticket {TICKET_ID}: {notes} note(s) written"
+      f"{f' ({notes_present} already present)' if notes_present else ''}, "
+      f"priority set {len(priorities)} time(s)"
+      f"{' (' + ', '.join(f'{a} to {b}' for a, b in priorities) + ')' if priorities else ''}, "
+      f"{move}.")
+print(f"{len(alerts)} Slack alert(s) sent to {slack_to}"
+      f"{' (' + ', '.join(alerts) + ')' if alerts else ''}, "
+      f"and {pages} page(s) to {pages_to}.")
+print()
 if failed:
     print(f"FAILED: {', '.join(failed)}")
     sys.exit(1)
 print(f"All {ran} checks passed.")
-print(f"Ticket {TICKET_ID} gained exactly one note, one priority change and one "
-      f"alert, plus one notice and one page from the cases that use their own "
-      f"stores.")

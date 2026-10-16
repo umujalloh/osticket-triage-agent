@@ -28,5 +28,6 @@ venv/
 # Splunk datasets
 docker/splunk-apps/
 
-# Generated TLS certs
+# Generated TLS certs, and the CA key kept outside the Splunk mount
 docker/splunk-provisioning/custom_tls/default/certs/
+docker/ca/

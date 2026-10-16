@@ -12,6 +12,8 @@ services:
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
     volumes:
       - db_data:/var/lib/mysql
+    networks:
+      - helpdesk
 
   osticket:
     build: 
@@ -26,6 +28,10 @@ services:
       - db
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # osTicket faces the internet in a real deployment and has no use for
+    # Splunk, so it gets no network path to Splunk.
+    networks:
+      - helpdesk
   splunk:
     # Splunk 10.4.1, pinned by digest so a rebuild cannot pull a newer release
     # this stack has not been tested against. Change this line on purpose when
@@ -36,16 +42,33 @@ services:
       SPLUNK_START_ARGS: --accept-license
       SPLUNK_GENERAL_TERMS: --accept-sgt-current-at-splunk-com
       SPLUNK_PASSWORD: ${SPLUNK_PASSWORD}
+      # Splunk's startup otherwise chowns everything under /opt/splunk to its
+      # own user on every boot, including the repo folders mounted below. The
+      # two things it does need, reading server.pem and writing the BOTSv3
+      # app, are handed to it once in docs/setup.md.
+      SPLUNK_HOME_OWNERSHIP_ENFORCEMENT: "false"
     ports:
       - "127.0.0.1:8010:8000"
       - "127.0.0.1:8088:8088"
       - "127.0.0.1:8089:8089"
     volumes:
       - splunk_data:/opt/splunk/var
+      # Holds the audit index, the HEC token and the users. The image declares
+      # this path a volume, so without a name here `docker compose down`
+      # detaches it and the next container starts from the image's defaults.
+      - splunk_etc:/opt/splunk/etc
+      # BOTSv3 keeps its index inside the app, so Splunk writes to it.
       - ./splunk-apps/botsv3_data_set:/opt/splunk/etc/apps/botsv3_data_set
-      - ./splunk-provisioning/triage_agent_role:/opt/splunk/etc/apps/triage_agent_role
-      - ./splunk-provisioning/custom_tls:/opt/splunk/etc/apps/custom_tls
-      - ./splunk-provisioning/triage_alerts:/opt/splunk/etc/apps/triage_alerts
+      # Read-only, so Splunk cannot change tracked files.
+      - ./splunk-provisioning/triage_agent_role:/opt/splunk/etc/apps/triage_agent_role:ro
+      - ./splunk-provisioning/custom_tls:/opt/splunk/etc/apps/custom_tls:ro
+      - ./splunk-provisioning/triage_alerts:/opt/splunk/etc/apps/triage_alerts:ro
+    networks:
+      - siem
+networks:
+  helpdesk:
+  siem:
 volumes:
   db_data:
   splunk_data:
+  splunk_etc:

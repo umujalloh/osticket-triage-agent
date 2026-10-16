@@ -15,7 +15,9 @@ from action_table import (
     HANDLED_CATEGORIES, INCIDENTS, NOTIFY, PRIORITY_FOR_SEVERITY, REVIEW,
     URGENT, WAKE, Actions, actions_for,
 )
-from schemas import Category, Confidence, Severity
+from pydantic import ValidationError
+
+from schemas import Category, Confidence, Severity, TicketClassification
 
 failed = []
 ran = 0
@@ -61,10 +63,13 @@ row("it_support", "low", "high_confidence")
 row("it_support", "low", "low_confidence", channel=REVIEW, human_review=True)
 
 print("unclear: review at either confidence, because the category is the signal")
+# The schema accepts unclear at high confidence, which Claude can return on a
+# vague ticket although the rubric asks for low. Both rows go to review, so the
+# confidence Claude picks for an unclear ticket changes no action.
 row("unclear", "medium", "high_confidence", channel=REVIEW, human_review=True)
 row("unclear", "medium", "low_confidence", channel=REVIEW, human_review=True)
 
-print("the override quietens the escalation and changes nothing else")
+print("low confidence quiets the escalation and changes nothing else")
 low_critical = actions_for(Category.security_incident, Severity.critical,
                            Confidence.low_confidence)
 check("  a low-confidence critical still writes its note", low_critical.write_note, True)
@@ -103,6 +108,64 @@ try:
     check("  raises on a category with no row", "no exception", "ValueError")
 except ValueError:
     check("  raises on a category with no row", "ValueError", "ValueError")
+
+print("the schema refuses critical outside a security incident")
+
+def accepted(category, severity, confidence):
+    try:
+        TicketClassification(category=category, severity=severity,
+                             confidence=confidence)
+        return True
+    except ValidationError:
+        return False
+
+# A critical outside a security incident reaches the table only if Claude broke
+# the rubric. A refusal becomes bad_output, which goes to review and is never
+# acted on. An unclear ticket at high confidence also breaks the rubric but is
+# accepted, because the table sends it to review either way.
+check("  critical outside a security incident is refused",
+      accepted("it_support", "critical", "high_confidence"), False)
+check("  an unclear ticket at high confidence is accepted",
+      accepted("unclear", "medium", "high_confidence"), True)
+check("  a critical security incident is still accepted",
+      accepted("security_incident", "critical", "low_confidence"), True)
+try:
+    TicketClassification(category="it_support", severity="low",
+                         confidence="high_confidence", action="close")
+    extra_refused = False
+except ValidationError:
+    extra_refused = True
+check("  a field the tool does not define is refused", extra_refused, True)
+
+# The ticket an action touches comes only from the authenticated webhook.
+# Claude's output has no field for a ticket ID, so nothing in the ticket text
+# can choose which ticket the agent acts on. architecture.md, Attack 2.
+# Sent as text, and required to fail as an unknown field, so a ticket_id field
+# added later cannot pass this by rejecting the value's type instead.
+try:
+    TicketClassification(category="it_support", severity="low",
+                         confidence="high_confidence", ticket_id="5000")
+    deputy_refused = False
+except ValidationError as e:
+    deputy_refused = [(err["type"], err["loc"]) for err in e.errors()] == \
+        [("extra_forbidden", ("ticket_id",))]
+check("  a classification cannot name a ticket to act on", deputy_refused, True)
+
+print("an extracted value must match its whole pattern")
+# A pattern ending in $ also matches before a trailing newline, so a value with
+# one would pass a partial match and carry the newline into the audit log.
+def extracted(hostname, username):
+    c = TicketClassification(category="it_support", severity="low",
+                             confidence="high_confidence",
+                             hostname=hostname, username=username)
+    return c.hostname, c.username
+
+check("  the same values without a newline are kept",
+      extracted("BGIST-L", "bgist"), ("BGIST-L", "bgist"))
+check("  a hostname with a trailing newline is dropped",
+      extracted("BGIST-L\n", "bgist")[0], None)
+check("  a username with a trailing newline is dropped",
+      extracted("BGIST-L", "bgist\n")[1], None)
 
 print()
 if failed:

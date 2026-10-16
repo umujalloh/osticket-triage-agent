@@ -6,7 +6,10 @@ import requests
 # The channel names come from the action table, which is what selects a channel
 # for a classification. This module posts to the channel it is handed.
 from action_table import INCIDENTS, REVIEW, URGENT
-from schemas import EnrichmentOutcome, Severity, enrichment_line
+from schemas import (
+    EnrichmentOutcome, PAGE_NO_INCIDENT, PAGE_UNCONFIRMED, Severity,
+    enrichment_line,
+)
 from writes import writes_enabled
 
 WEBHOOKS = {
@@ -72,26 +75,39 @@ def build_message(ticket_id, ticket_number, classification, channel, mention=Fal
 
     paged reports what happened to the page. Someone reading that a page was
     sent assumes the on-call is awake and does not escalate, so when PagerDuty
-    refuses the event the alert has to say so.
+    refuses the event, or accepts it and opens no incident, the alert has to say
+    so. It is True for a page that reached an incident, or one writes being off
+    skipped, False for one PagerDuty refused, PAGE_NO_INCIDENT for one it
+    accepted and dropped, and PAGE_UNCONFIRMED when the agent got no usable
+    answer from PagerDuty.
     """
     category = classification.category.value
 
+    # Every post this module builds gives the ticket number without a "#".
+    # osTicket's six-digit numbers read as hex colors to Slack, which draws a
+    # color swatch beside "#738485".
     if channel == REVIEW:
         # Severity is a guess on a ticket nobody could place, so the reason it
         # is here is shown instead.
-        head = f"{REVIEW_ICON} *{category}*  ·  Ticket #{ticket_number or ticket_id}"
+        head = f"{REVIEW_ICON} *{category}*  ·  Ticket {ticket_number or ticket_id}"
     else:
         icon = SEVERITY_ICON.get(classification.severity, REVIEW_ICON)
         head = (f"{icon} *{classification.severity.value} {category}*"
-                f"  ·  Ticket #{ticket_number or ticket_id}")
+                f"  ·  Ticket {ticket_number or ticket_id}")
 
     head += f"  ·  {classification.confidence.value.replace('_', ' ')}"
     if page:
         # The destination rather than the fact of a page, because both rows in
         # the urgent channel page and only the destination separates them. These
         # are the names on the PagerDuty services a responder is paged from.
-        head += (f"  ·  paged {page.upper()}" if paged
-                 else f"  ·  {page.upper()} PAGE FAILED, escalate manually")
+        if paged == PAGE_UNCONFIRMED:
+            head += f"  ·  paged {page.upper()}, not confirmed"
+        elif paged == PAGE_NO_INCIDENT:
+            head += f"  ·  {page.upper()} PAGE REACHED NOBODY, escalate manually"
+        elif paged:
+            head += f"  ·  paged {page.upper()}"
+        else:
+            head += f"  ·  {page.upper()} PAGE FAILED, escalate manually"
 
     lines = ["<!here>", head] if mention else [head]
 
@@ -115,7 +131,7 @@ def build_abandoned_message(ticket_id, ticket_number) -> str:
     there is no severity or category to state and no basis for a louder icon.
     """
     head = (f"{REVIEW_ICON} *triage did not finish*"
-            f"  ·  Ticket #{ticket_number or ticket_id}"
+            f"  ·  Ticket {ticket_number or ticket_id}"
             f"  ·  interrupted")
     return "\n".join([head, _ticket_url(ticket_id)])
 
@@ -131,9 +147,12 @@ def build_failure_message(ticket_id, ticket_number, failure_type) -> str:
     value the agent chose and never text from a ticket.
     """
     head = (f"{REVIEW_ICON} *classification failed*"
-            f"  ·  Ticket #{ticket_number or ticket_id}"
+            f"  ·  Ticket {ticket_number or ticket_id}"
             f"  ·  {failure_type}")
     return "\n".join([head, _ticket_url(ticket_id)])
+
+# No wait after the last attempt, since no call follows it.
+ATTEMPTS = 3
 
 def post_alert(channel: str, text: str) -> str:
     """Posts one alert. Returns DONE, or SKIPPED when writes are off.
@@ -149,13 +168,14 @@ def post_alert(channel: str, text: str) -> str:
 
     url = WEBHOOKS[channel]
     last_error = None
-    for attempt in range(3):
+    for attempt in range(ATTEMPTS):
         try:
             response = requests.post(url, json={"text": text}, timeout=10)
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
             # The exception text embeds the URL, so only its type is reported.
             last_error = ("server_down", f"Could not reach Slack for the {channel} channel")
-            time.sleep([2, 5, 10][attempt])
+            if attempt < ATTEMPTS - 1:
+                time.sleep([2, 5][attempt])
             continue
         except requests.exceptions.RequestException as e:
             raise SlackError("unknown", f"{type(e).__name__} posting to the {channel} channel")
@@ -172,7 +192,14 @@ def post_alert(channel: str, text: str) -> str:
             )
         if response.status_code == 429:
             last_error = ("rate_limited", f"Slack rate limited the {channel} channel")
-            time.sleep([5, 15, 30][attempt])
+            if attempt < ATTEMPTS - 1:
+                time.sleep([5, 15][attempt])
+            continue
+        # A 503 says the service is down for now, so a later attempt can get past it.
+        if response.status_code == 503:
+            last_error = ("server_down", f"Slack is unavailable for the {channel} channel")
+            if attempt < ATTEMPTS - 1:
+                time.sleep([2, 5][attempt])
             continue
         raise SlackError(
             "unknown", f"Unexpected Slack response for {channel}: HTTP {response.status_code}"

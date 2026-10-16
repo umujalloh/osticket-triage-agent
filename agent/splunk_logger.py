@@ -15,9 +15,9 @@ SPLUNK_CACERT_PATH = os.path.join(
     "custom_tls", "default", "certs", "cacert.pem"
 )
 
-def _send_audit_event(event_content, attempts=3):
+def _send_audit_event(event_content, attempts=3, at=None):
     payload = {
-        "time": datetime.now(timezone.utc).timestamp(),
+        "time": at if at is not None else datetime.now(timezone.utc).timestamp(),
         "sourcetype": "osticket:triage:audit",
         "index": "osticket_triage",
         "event": event_content,
@@ -88,6 +88,35 @@ def log_resumed(ticket_id, outstanding):
         "status": "triage_resumed",
         "outstanding": outstanding,
         "outstanding_count": len(outstanding),
+    })
+
+def log_crashed(ticket_id, error_type):
+    """A run that stopped on an error no action handled.
+
+    Every expected failure is caught and logged by the action it belongs to.
+    This is the rest, so a run that ended on an error has a record in the
+    index. Only the error's type is recorded. An unplanned error can carry
+    anything in its message, including a webhook URL or routing key from a
+    failed request, and the message still reaches the console.
+    """
+    return _send_audit_event({
+        "ticket_id": ticket_id,
+        "status": "triage_crashed",
+        "error_type": error_type,
+    })
+
+def log_routing_key_check(destination, result, reason):
+    """Whether one PagerDuty routing key still reaches a live PagerDuty service.
+
+    Written on every check, alive or not, so the search that watches it reads
+    the latest result for each destination, and a routing key found alive
+    again clears the alert on its own.
+    """
+    return _send_audit_event({
+        "status": "routing_key_checked",
+        "destination": destination,
+        "result": result,
+        "reason": reason,
     })
 
 def log_classification(ticket_id, subject, classification, requester_verified):
@@ -227,13 +256,21 @@ def log_slack_failure(ticket_id, channel, failure_type, error):
 # in the events above. Whether the page was a fallback is recorded, because that
 # is the difference between waking someone for a confident critical and waking
 # them because nothing else could reach them.
-def log_paged(ticket_id, destination, fallback):
+# confirmed is False when the agent got no usable answer from PagerDuty on
+# whether the page reached an open incident. A page it asked about and found
+# none for is recorded as page_failed instead, with failure_type no_incident.
+# The event is written once the confirmation answers, which can be twenty
+# seconds or more after the page went out, so sent_at stamps it with the moment
+# PagerDuty accepted the page. The index then shows it ahead of the writes that
+# followed it.
+def log_paged(ticket_id, destination, fallback, confirmed, sent_at=None):
     return _send_audit_event({
         "ticket_id": ticket_id,
         "status": "paged",
         "destination": destination,
         "fallback": fallback,
-    })
+        "confirmed": confirmed,
+    }, at=sent_at)
 
 def log_page_skipped(ticket_id, destination, reason):
     return _send_audit_event({

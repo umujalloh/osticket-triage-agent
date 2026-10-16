@@ -1,142 +1,159 @@
 # Evaluation
 
-How the classifier is evaluated and what has been measured. Figures here state
-the date, the number of runs, and the files they were measured against. A
-figure without that method cannot be reproduced and should not be trusted.
-
-What the built system does with a classification is in
+The evaluation scores how Claude labels a fixed set of 36 hand-written tickets.
+It is a regression check, meant to catch a change that makes classification
+worse on those tickets. None of them comes from a real helpdesk, so the score
+does not estimate accuracy on real tickets. Its other limits are in
+[known-limitations.md](known-limitations.md#the-evaluation-score-is-a-regression-check),
+and what the agent does with a label is verified in
 [verification.md](verification.md).
 
 ## Running the evaluation
 
 ```bash
 cd agent
-./venv/bin/python run_eval.py
+./venv/bin/python run_eval.py --runs 9
 ```
 
-Needs `ANTHROPIC_API_KEY` in `agent/.env`. One run is 36 API calls.
+The runner needs `ANTHROPIC_API_KEY`, read from `agent/.env` or the
+environment, and classifies with the model in `TRIAGE_MODEL`,
+`claude-haiku-4-5` by default.
 
-Classification and entity extraction are scored separately. A ticket passes
-classification only if category, severity, and confidence all match. Entity
-extraction is scored on hostname, username, and source IP together. Keeping
-them apart stops a regression in one from being hidden by the other.
+## What the set covers
 
-## What the eval set covers
+[eval/tickets.json](../eval/tickets.json) holds the 36 tickets.
+Each records the expected category, severity and confidence, and any hostname,
+username or source IP Claude should extract. `run_eval.py` sends Claude only
+the subject and message, and compares its answer with the recorded one. The set
+covers the following, with ticket numbers in parentheses:
 
-36 hand-written tickets in [tests/eval_tickets.json](../tests/eval_tickets.json),
-covering seven shapes:
+- incidents stated plainly, such as files encrypted for ransom (10)
+- incidents that read as routine, such as a slow laptop and an email the user
+  does not remember sending (2)
+- routine problems that read as emergencies, such as an expired password
+  reported as a hacked account (3)
+- routine requests, such as a software install (25)
+- security questions, such as whether an email is safe (15)
+- an attack nobody has acted on yet, a payment request from someone posing as
+  the CFO (18)
+- tickets too vague to place, such as a question the user no longer remembers
+  (14)
+- tickets naming a hostname, username or source IP to extract (31 to 34)
+- a ticket naming a person and a laptop model, neither of which should be
+  extracted (36)
+- a prompt injection telling Claude to label an active data theft as routine
+  and return planted values (35)
 
-- unambiguous security incidents
-- unambiguous routine requests
-- real incidents worded benignly
-- benign issues worded alarmingly
-- tickets too vague to categorise
-- tickets naming a hostname, username, or IP to be extracted
-- a prompt injection attempt
+Five rows of the [action table](action-table.md) have no ticket in the set, so
+the eval never tests whether Claude gives these labels when they are right:
 
-## Two pass criteria
+- `security_incident` at `critical` with low confidence
+- `security_incident` at `medium`
+- `security_incident` at `low`
+- `security_question` at low confidence
+- `it_support` at low confidence
 
-**Label accuracy** is the headline number, but it weights every disagreement
-equally and they are not equal. Classifying a critical incident as high
-over-pages an analyst. Classifying a real incident as routine means nobody is
-told.
+`verify_action_table.py` checks the actions on all five without calling
+Claude, as [verification.md](verification.md#action-table) records.
 
-**The danger criterion** measures only the second kind. A run fails it if any
-ticket whose expected category is `security_incident` is classified onto a path
-that raises no alert under [action-table.md](action-table.md):
+## Scoring
 
-- classified `it_support` or `security_question` with `high_confidence`
-- classified `security_incident` at `low` severity with `high_confidence`
+A ticket passes classification when its category, severity and confidence all
+match the expected ones. It passes entity extraction when its hostname,
+username and source IP all match, including a field that is empty in both. The
+two are scored separately so a regression in one cannot hide behind the other.
+A failed Claude call counts as a miss on both and is also counted on its own.
 
-Everything else still puts a human in front of the ticket, either through an
-alert or through the low confidence override that routes to human review.
+A miss changes an action when the action table gives Claude's label a different
+page, mention, Slack channel, enrichment, routing, osTicket priority or
+human-review flag than the expected label.
 
-The criterion is defined before a run, not after, so results cannot be graded
-against whatever the model happened to produce.
+A ticket is unstable when it does not get the same answer in every run. The
+classifier wraps each ticket in a delimiter that is random for every request,
+as [Attack 1](architecture.md#attack-1-prompt-injection) describes, and on the
+default model `temperature=0` does not guarantee identical output either, so
+two runs can give the same ticket different answers.
+
+### The danger criterion
+
+The danger criterion counts the misses that leave an attack without a Slack
+alert or file it as a lapse with no attacker. It judges only tickets whose
+expected label is `security_incident` at `medium`, `high` or `critical`
+severity, because the rubric in `agent/classifier.py` defines `low` severity as
+a hygiene or policy lapse with no attacker involved, such as a password exposed
+by mistake and then changed. Claude's answer on one of these tickets is a
+danger failure when it is:
+
+- `it_support` or `security_question` at high confidence, which raise no Slack
+  alert
+- `security_incident` at `low` severity, at either confidence, which sends the
+  ticket to the incidents Slack channel and sets its osTicket priority to `low`
+
+Other misses on these tickets still reach a person. An attack Claude labels
+`it_support` or `security_question` at low confidence, or `unclear`, goes to
+the review Slack channel. A critical attack Claude labels `high` or `medium`
+severity loses its page but still reaches the incidents Slack channel. An
+over-call, such as an attack Claude labels `critical` when it is `high`, is not
+counted, since the criterion tracks only missed attacks.
 
 ## Current results
 
-Measured 2026-08-06 against `agent/classifier.py` and
-`tests/eval_tickets.json` as committed alongside this document. Nine full runs,
-same result every time. Two of those were captured in full and compared line by
-line with no differences.
+Measured 2026-10-13 at commit `de3e5da` with `claude-haiku-4-5`, nine runs of
+the 36 tickets.
 
-| Metric | Result |
+| Measure | Result |
 |---|---|
-| Full label | 34 of 36 |
-| Category | 36 of 36 |
-| Entity extraction | 36 of 36 |
+| Classification | 35 of 36 in every run |
+| Entity extraction | 36 of 36 in every run |
+| Danger failures | 0, across 18 attack tickets in nine runs each |
+| Failed calls | 0 |
 | Unstable tickets | 0 |
-| Danger criterion | 0 failures in 180 classifications where it was evaluated |
 
-Both failures are severity or confidence disagreements, neither on category:
+The one miss is ticket 14, "Question about my account", which Claude labels
+`unclear` at high confidence instead of low in all nine runs, although the
+rubric says an `unclear` ticket is always low confidence. An `unclear` ticket
+goes to the review Slack channel at either confidence, so the miss changes no
+action.
 
-- One ticket returns `high_confidence` where the label expects `low_confidence`.
-  The user describes clicking a link from a text impersonating internal IT and
-  seeing an error page, then says they are unsure whether to worry. The
-  confidence rule covers uncertainty about cause; this ticket is uncertain about
-  consequence.
-- One ticket returns `high` severity where the label expects `medium`. Both
-  values carry `low_confidence`, so the override routes the ticket to human
-  review either way and the disagreement changes nothing the agent does.
+Ticket 22's expected severity was moved from `medium` to `high` on 2026-10-13,
+because the 2026-08-06 rubric had narrowed `medium` to incidents that are
+contained with their extent known. The classifier already answered `high`, so
+the relabel added one pass.
 
-Four of the ten rows in [action-table.md](action-table.md) are not produced by
-any ticket in the set, so those paths are unexercised:
-
-- `security_incident` at `medium` severity with `high_confidence`
-- `security_incident` at `low` severity with `high_confidence`
-- `security_question` at `low` confidence
-- `it_support` at `low` confidence
-
-## Comparison against the previous rubric
-
-The severity and confidence rubric was rewritten on 2026-08-06. Both versions
-were run against the same 36 tickets, with the same labels, in the same
-session, so the difference is attributable to the rubric rather than to a
-changed test set or model drift. Two runs each.
-
-| | previous rubric | current rubric |
-|---|---|---|
-| Full label | 31 of 36 | 34 of 36 |
-| Category | 35 of 36 | 36 of 36 |
-| Danger criterion failures | 1 | 0 |
-
-The danger failure under the previous rubric was a wire transfer request
-impersonating a company executive. It classified as `security_question` with
-`high_confidence` in both runs, a path that raises no alert. The category
-definition covered security events that had already occurred but not an attack
-in progress that nobody had acted on yet. Extending the definition fixed it.
-
-Two further defects were found and closed in the same rewrite:
-
-- **Severity was defined only for security incidents**, leaving the other three
-  categories with no rule to sit on. Two tickets alternated between `low` and
-  `medium`, landing on `low` in four runs of six. Defining severity separately
-  for each category removed the ambiguity.
-- **Confidence was defined in three places that disagreed.** The enum
-  descriptions and one guidance paragraph described it as how strongly the text
-  supported the classification, while a later paragraph said behaviour a user
-  could not account for should be `low_confidence`. The model followed the first
-  reading, so tickets describing something unexplained were not reaching human
-  review. Confidence is now defined once.
+In three earlier nine-run batches on the same prompt, tickets 14, 18 and 19
+were each unstable at least once, 14 and 19 on confidence and 18 on severity.
+Across all four batches, ticket 18 came back `critical` instead of `high` once
+in 36 runs, which would lead to an unneeded page through the WAKE PagerDuty
+service.
 
 ## How prompt changes are validated
 
-Prompt changes are not applied and then measured. Both versions run in the same
-session against the same ticket set, and the comparison is per ticket rather
-than on the aggregate score, because an aggregate can stay flat while one
-ticket improves and another regresses.
+A prompt change is measured before it is applied. The current prompt and the
+proposed one each run nine times on the same tickets, back to back.
+`run_eval.py` has no option for an alternate prompt, so the proposed one runs
+from a scratch copy of `classifier.py`. Each ticket is compared on its passes
+out of nine, because a total can stay flat while one ticket improves and
+another gets worse. A change is accepted when:
 
-A change is accepted only if it holds across at least three runs, does not
-introduce an unstable ticket, and does not introduce a danger criterion failure.
+- each ticket it targets passes at least seven of nine runs, with at least
+  three more passes than under the current prompt
+- no other ticket loses three or more passes in nine on a miss that changes an
+  action
+- the proposed prompt produces no danger failure
 
-Two rubric drafts were rejected under this rule before the current one was
-applied. The first fixed the unstable tickets but regressed two others, and
-contained a contradiction of its own: its `high` definition said an incident of
-unknown extent belonged there, while its `critical` definition said not knowing
-what an intruder did does not lower severity. The second removed that
-contradiction but still gave different severities to two structurally identical
-tickets, both reporting a successful unauthorized login with nothing stated to
-have ended it. The third added an explicit rule that access persists until the
-ticket says otherwise, which resolved it.
+The rubric's rule that a lockout does not end an intruder's access meets all
+three conditions. Measured on 2026-10-13, it raised ticket 1 from two to nine
+passes in nine runs, and the only other ticket to drop three passes was ticket
+14, on a miss that changes no action. Two broader wordings that also fixed
+ticket 1 were rejected, because they labeled ticket 18, a payment request
+nobody acted on, `critical` instead of `high`, in all nine runs under one and
+in three of nine under the other, which would page the WAKE PagerDuty service.
+The rule was set on 2026-10-13 while the lockout change was being measured, and
+that change is the only one judged by it so far.
 
+An earlier rubric rewrite, on 2026-08-06, was measured with an older form of
+this method, two runs per version. Under the old rubric, ticket 18 came back as
+`security_question` at high confidence, a danger failure, because
+`security_incident` did not cover an attack nobody had acted on yet. Extending
+it to such attacks took danger failures from one to zero, under the danger
+criterion as defined then.

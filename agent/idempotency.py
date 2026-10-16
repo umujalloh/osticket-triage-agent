@@ -23,8 +23,13 @@ DB_PATH = os.getenv(
 # because a resumed ticket has to know whether the first attempt's audit write
 # landed: re-logging records a decision that was made once as though it were
 # made twice, and skipping it loses the record when the first write failed.
+#
+# handed_to_review marks a ticket Claude could not classify. The review channel
+# has told a person to handle it, so the agent must not pick it up again at the
+# next start or on a repeat delivery and act on it behind that person's back.
 ACTIONS = ("classification_audited", "note_written", "priority_set",
-           "slack_posted", "paged", "paged_fallback", "routed")
+           "slack_posted", "paged", "paged_fallback", "routed",
+           "handed_to_review")
 
 # Every column beyond the two the table is created with. Actions are flags; the
 # classification is the decision itself, held so a resumed ticket finishes on
@@ -58,9 +63,9 @@ def _connect():
     return conn
 
 def ticket_key(ticket_id) -> str:
-    """osTicket sends an integer, but the webhook accepts a string too.
-    Both spellings name the same ticket, so they have to collide here or a
-    resend with the other type would be processed twice.
+    """The store keys tickets as text, so an integer and its string spelling
+    name the same ticket. The webhook accepts only integers, but the store
+    does not rely on that.
 
     Public because anything else keeping per-ticket state has to agree with the
     store on what counts as the same ticket.
@@ -133,6 +138,13 @@ def claim_ticket(ticket_id) -> bool:
         )
         return cur.rowcount == 1
 
+def is_known_ticket(ticket_id) -> bool:
+    """Whether the store has a row for this ticket, without claiming it."""
+    with _connect() as conn:
+        row = conn.execute("SELECT 1 FROM processed_tickets WHERE ticket_id = ?",
+                           (ticket_key(ticket_id),)).fetchone()
+    return row is not None
+
 def _ensure_row(conn, ticket_id) -> bool:
     """Creates the ticket's row if it has none. Returns True if it created one.
 
@@ -187,6 +199,24 @@ def save_payload(ticket_id, payload):
             "UPDATE processed_tickets SET payload = ? WHERE ticket_id = ?",
             (json.dumps(payload), ticket_key(ticket_id)),
         )
+
+def stored_payload(ticket_id):
+    """The body a ticket was first accepted with, or None if none is kept.
+
+    An unreadable body counts as none, the same as in unfinished_payloads.
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT payload FROM processed_tickets WHERE ticket_id = ?",
+            (ticket_key(ticket_id),),
+        ).fetchone()
+    if row is None or row["payload"] is None:
+        return None
+    try:
+        payload = json.loads(row["payload"])
+    except (TypeError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
 
 def clear_payload(ticket_id):
     """Drops the stored body once the ticket needs it no longer.

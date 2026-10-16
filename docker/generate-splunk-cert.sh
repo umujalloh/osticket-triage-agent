@@ -8,22 +8,36 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CERT_DIR="$SCRIPT_DIR/splunk-provisioning/custom_tls/default/certs"
-mkdir -p "$CERT_DIR"
+# The CA key signs certificates the agent trusts as Splunk, and Splunk never
+# needs it. CERT_DIR is mounted into the Splunk container, so the key and its
+# serial file live outside it, where only the host can reach them.
+CA_DIR="$SCRIPT_DIR/ca"
+mkdir -p "$CERT_DIR" "$CA_DIR"
+chmod 700 "$CA_DIR"
+CA_KEY="$CA_DIR/ca-key.pem"
 cd "$CERT_DIR"
 
-openssl genrsa -out ca-key.pem 2048
-openssl req -x509 -new -nodes -key ca-key.pem -sha256 -days 3650 \
+openssl genrsa -out "$CA_KEY" 2048
+chmod 600 "$CA_KEY"
+openssl req -x509 -new -nodes -key "$CA_KEY" -sha256 -days 3650 \
   -out cacert.pem -subj "/CN=osticket-triage-agent-lab-CA" \
   -addext "basicConstraints=critical,CA:TRUE" \
   -addext "keyUsage=critical,keyCertSign,cRLSign"
 
 openssl genrsa -out server-key.pem 2048
 openssl req -new -key server-key.pem -out server.csr -subj "/CN=localhost"
-openssl x509 -req -in server.csr -CA cacert.pem -CAkey ca-key.pem -CAcreateserial \
+openssl x509 -req -in server.csr -CA cacert.pem -CAkey "$CA_KEY" \
+  -CAserial "$CA_DIR/cacert.srl" -CAcreateserial \
   -out server-cert.pem -days 3650 -sha256 \
   -extfile <(printf "subjectAltName=DNS:localhost,IP:127.0.0.1")
 
 cat server-cert.pem server-key.pem cacert.pem > server.pem
+# It holds the private key, so only its owner reads it. cat leaves it at the
+# umask's mode, which on most hosts lets every local account read it.
+chmod 600 server.pem
 rm server.csr server-cert.pem server-key.pem
 
-echo "Generated unique Splunk CA and server cert in $CERT_DIR"
+echo "Generated the Splunk server cert in $CERT_DIR and its CA key in $CA_DIR"
+# Splunk runs as uid 41812 in its container and must read the key. Changing a
+# file's owner needs root, so the script prints the step instead of running it.
+echo "Now give the key to Splunk: sudo chown 41812:41812 $CERT_DIR/server.pem"

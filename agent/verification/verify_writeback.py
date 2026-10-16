@@ -12,16 +12,21 @@ import requests
 
 URL_BASE = os.getenv("OSTICKET_WRITE_URL")
 SECRET = os.getenv("TRIAGE_WRITE_SECRET")
-if not URL_BASE or not SECRET:
-    raise SystemExit("OSTICKET_WRITE_URL and TRIAGE_WRITE_SECRET must both be set")
+# The webhook's own secret, which must not sign a write. architecture.md,
+# Attack 6.
+WEBHOOK_SECRET = os.getenv("TRIAGE_HMAC_SECRET")
+if not URL_BASE or not SECRET or not WEBHOOK_SECRET:
+    raise SystemExit("OSTICKET_WRITE_URL, TRIAGE_WRITE_SECRET and "
+                     "TRIAGE_HMAC_SECRET must all be set")
 
 if len(sys.argv) != 2 or not sys.argv[1].isdigit():
     raise SystemExit(
         "usage: python verification/verify_writeback.py <ticket_id>\n\n"
-        "Exercises the plugin's write endpoints against a running stack. Two\n"
-        "cases change the ticket you name, writing a real note and setting its\n"
-        "priority, and the endpoints have no undo, so pick a ticket you don't\n"
-        "mind marking. Reproduces the table in docs/verification.md."
+        "Exercises the plugin's write endpoints against a running stack. Three\n"
+        "cases change the ticket you name. They write a real note, move it to\n"
+        "the security department and set its priority, and the endpoints have\n"
+        "no undo, so pick a ticket you don't mind marking. Reproduces the table\n"
+        "in docs/verification.md."
     )
 
 TICKET_ID = int(sys.argv[1])
@@ -31,6 +36,10 @@ TICKET_ID = int(sys.argv[1])
 ABSENT_TICKET_ID = 99999
 
 def post(operation, payload, secret=SECRET, signature=None, sign=True):
+    # Each endpoint refuses a body naming a different operation, so the
+    # helper adds the right one unless a case sets its own.
+    payload = dict(payload)
+    payload.setdefault("operation", operation.lstrip("/"))
     body = json.dumps(payload).encode()
     headers = {"Content-Type": "application/json"}
     if signature is not None:
@@ -75,6 +84,8 @@ check("  wrong signature is rejected",
       post("/note", note_payload(), signature="sha256=" + "0" * 64).status_code, 401)
 check("  wrong secret is rejected",
       post("/note", note_payload(), secret="not-the-secret").status_code, 401)
+check("  the webhook's secret is rejected",
+      post("/note", note_payload(), secret=WEBHOOK_SECRET).status_code, 401)
 check("  stale timestamp is rejected",
       post("/note", note_payload(created_at=STALE)).status_code, 401)
 check("  missing note is rejected",
@@ -159,9 +170,17 @@ if response.status_code == 200:
     else:
         print("PASS  the response reports the new priority")
 
+print("operation binding")
+check("  a request signed for one endpoint is refused at another",
+      post("/department", {"ticket_id": TICKET_ID, "operation": "number",
+                           "created_at": now()}).status_code, 400)
+check("  a request naming no operation is refused",
+      post("/priority", {"ticket_id": TICKET_ID, "priority": "normal",
+                         "operation": None, "created_at": now()}).status_code, 400)
+
 print()
 if failed:
     print(f"FAILED: {', '.join(failed)}")
     sys.exit(1)
 print(f"All {ran} checks passed. Ticket {TICKET_ID} carries one agent note, "
-      f"whether or not it already had one, and its priority was changed.")
+      f"whether or not it already had one, and its priority was set.")
