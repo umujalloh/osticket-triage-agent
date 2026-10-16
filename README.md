@@ -193,6 +193,6 @@ agent/verification/   14 verifiers, each run from one command
 osticket-plugin/      The PHP plugin: signing, delivery, retries, write-back
 docker/               The Compose stack, Splunk setup and saved searches
 docs/                 The six documents above, and the README's images
-tests/                The labeled tickets the classifier is scored against
+eval/                 The labeled tickets the classifier is scored against
 .github/workflows/    CI that runs the offline verifiers on every push
 ```

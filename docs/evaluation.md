@@ -21,7 +21,7 @@ environment, and classifies with the model in `TRIAGE_MODEL`,
 
 ## What the set covers
 
-[tests/eval_tickets.json](../tests/eval_tickets.json) holds the 36 tickets.
+[eval/tickets.json](../eval/tickets.json) holds the 36 tickets.
 Each records the expected category, severity and confidence, and any hostname,
 username or source IP Claude should extract. `run_eval.py` sends Claude only
 the subject and message, and compares its answer with the recorded one. The set

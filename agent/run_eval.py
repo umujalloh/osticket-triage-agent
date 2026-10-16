@@ -7,7 +7,7 @@ from classifier import ClassificationError, classify_ticket
 from schemas import Category, Confidence, Severity
 
 parser = argparse.ArgumentParser(
-    description="Score the classifier against tests/eval_tickets.json."
+    description="Score the classifier against eval/tickets.json."
 )
 parser.add_argument(
     "--runs", type=int, default=1,
@@ -17,7 +17,7 @@ args = parser.parse_args()
 if args.runs < 1:
     parser.error("--runs must be at least 1")
 
-with open("../tests/eval_tickets.json") as f:
+with open("../eval/tickets.json") as f:
     tickets = json.load(f)
 
 total = len(tickets)
