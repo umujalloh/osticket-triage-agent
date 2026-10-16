@@ -9,8 +9,8 @@ This file holds two kinds of evidence:
   the stack, recorded once with its date.
 - **Verifiers:** scripts in `agent/verification/` that anyone can re-run. The
   nine offline verifiers need nothing running, and CI runs them on every push.
-  The five marked live verifier need the running stack, and some post to Slack
-  and page PagerDuty, so they are run by hand.
+  The five live verifiers are run by hand, because they need the running stack,
+  post to Slack, or page PagerDuty.
 
 What each section proves, and how:
 

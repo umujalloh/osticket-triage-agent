@@ -637,9 +637,9 @@ def _post_alert(ticket_id, classification, actions, payload, outcome, events,
 def needs_fallback_page(classification, actions) -> bool:
     """Whether an undelivered alert justifies waking someone.
 
-    Only a critical security incident does. Severity alone is not enough,
-    because the classifier can rate an it_support ticket critical and a major
-    outage is not what the security on-call is there for.
+    Only a critical security incident does. The schema already refuses critical
+    outside a security incident, and this check tests the category as well, so
+    an IT outage cannot wake the security on-call even if that rule changes.
 
     A row that already paged WAKE is excluded, since that page ran before the
     alert and a second would repeat it. That leaves the critical at low
