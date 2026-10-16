@@ -44,45 +44,44 @@ plugin's HMAC signing and the PHP-to-Python payload, then follows it through
 classification, write-back and alerting. Every ticket this file submits through
 the form was filed as `bgist@froth.ly`, a fictional user from the BOTSv3
 dataset, so enrichment finds its 2018 events. Tickets 9 to 36 arrived from
-`172.21.0.1` and tickets 37 and 38 from `172.22.0.1`, the lab's Docker gateway
+`172.21.0.1` and tickets 37 to 42 from `172.22.0.1`, the lab's Docker gateway
 before and after its networks were split. known-limitations.md covers the
 [dataset](known-limitations.md#enrichment-searches-a-frozen-fictional-dataset)
 and the [gateway](known-limitations.md#the-submitter-ip-is-the-docker-gateway).
 
-### The full path, 2026-08-25, ticket 36
+### The full path, 2026-10-14, ticket 42
 
-**Method:** Submitted as a verified user, reporting an account the submitter
-could not lock an intruder out of. A high-confidence critical writes a note,
-sets priority, posts to the urgent Slack channel with `@here`, and pages WAKE.
+**Method:** Submitted as a verified user, reporting an intruder still in their
+account. A high-confidence critical writes a note, sets priority, posts to the
+urgent Slack channel with `@here`, and pages WAKE.
 
-**Result:** In Splunk's audit index:
+**Result:** In Splunk's audit index, in UTC:
 
 | Time | Event | Value |
 |---|---|---|
-| 23:58:35.791 | paged | WAKE |
-| 23:58:35.802 | classification_complete | security_incident / critical / high_confidence, `requester_verified` true |
-| 23:58:37.430 | enrichment_complete | 20 events |
-| 23:58:37.486 | note_written | |
-| 23:58:37.530 | priority_set | normal to emergency |
-| 23:58:37.786 | slack_posted | urgent, mentioned true |
+| 03:35:01.872 | paged | WAKE, confirmed |
+| 03:35:01.889 | classification_complete | security_incident / critical / high_confidence, `requester_verified` true |
+| 03:35:06.923 | enrichment_complete | 20 events |
+| 03:35:07.133 | note_written | |
+| 03:35:07.311 | priority_set | normal to emergency |
+| 03:35:07.499 | slack_posted | urgent, mentioned true |
 
 In osTicket:
 
 | On the ticket | Value |
 |---|---|
-| Number | 114404 |
+| Number | 283973 |
 | Priority | Emergency |
 | Note | one internal note, type N, posted as `Triage Agent` |
-| Note's events | 20, from 2018-08-20 13:10:25 to 15:07:39 |
-| Note's search line | `index=botsv3 ("bgist@froth.ly" OR "172.21.0.1") earliest=0` |
+| Note's events | 20, from 2018-08-20 13:05:10 to 15:07:39 |
+| Note's search line | `index=botsv3 ("bgist@froth.ly" OR "172.22.0.1") earliest=0` |
 
 Type N is osTicket's code for an internal note, which only staff can see.
 
-**What it shows:** The page goes out first, 11 milliseconds ahead of the
-classification audit write and 1.6 seconds ahead of enrichment.
-
-The three screenshots in [the README](../README.md#a-triaged-ticket) are this
-run.
+**What it shows:** The page goes out first, 17 milliseconds ahead of the
+classification audit write and 5 seconds ahead of enrichment. Its audit entry
+is timestamped when PagerDuty accepted it. The three screenshots in
+[the README](../README.md#a-triaged-ticket) are this run.
 
 ### Acting through a Splunk outage, 2026-08-18, ticket 18
 
@@ -188,7 +187,7 @@ contained `BGIST-L`, which on its own matches 10,327 events.
 
 **Ticket 20, 2026-08-19:** Every action reached its destination on a
 high-confidence critical, but the page ran after enrichment and two audit
-writes. Ticket 36 records the order that replaced it.
+writes. Ticket 42 records the order that replaced it.
 
 **Ticket 23, 2026-08-20:** The ticket's Slack alert was cleared in the store to
 stand in for a run that died before it. A signed repeat delivery picked the
@@ -203,7 +202,7 @@ duplicate. [Recovery](#recovery) covers the current behavior.
 osTicket calls, each refused for exactly one reason. The gate runs its checks in
 a fixed order, so each case reaches only the check it tests.
 
-**Result:** Measured 2026-10-03 on ticket 21, twenty-four checks, all passing.
+**Result:** Measured 2026-10-15 on ticket 42, twenty-four checks, all passing.
 The first duplicate request counts twice, once for its `200` and once for its
 `duplicate` reason, which is why twenty-three requests give twenty-four checks.
 
@@ -570,7 +569,7 @@ set priority and move a ticket to the security department.
 `verify_writeback.py` sends each endpoint valid and invalid requests against the
 running stack.
 
-**Result:** Measured 2026-10-03 on ticket 21, twenty-eight checks, all passing.
+**Result:** Measured 2026-10-15 on ticket 40, twenty-eight checks, all passing.
 
 | Request | Result |
 |---|---|
@@ -592,7 +591,7 @@ refused, so a leak of it does not grant writes. This is the defense against
 [Attack 6](architecture.md#attack-6-credential-compromise). If a reply is lost
 and the agent sends the same write again, the endpoint answers that it is
 already done instead of writing a second time. This run wrote no new note,
-because ticket 21 already carried the agent's. Ticket 36 in
+because ticket 40 already carried the agent's. Ticket 42 in
 [End-to-end runs](#end-to-end-runs) shows one being written.
 
 **Reproduce:** From `agent/`, with osTicket running and `OSTICKET_WRITE_URL`,
@@ -695,7 +694,7 @@ PagerDuty. `verify_wiring.py` drives the agent's real action code against all
 three with the switch off and on. Each case runs in its own process, because the
 switch is read once at startup.
 
-**Result:** Measured 2026-10-11 on ticket 33, thirty-nine checks, all passing.
+**Result:** Measured 2026-10-15 on ticket 40, thirty-nine checks, all passing.
 Alerts went to the test Slack channel and pages to the test PagerDuty service.
 
 | What happens | Result |
@@ -790,7 +789,7 @@ shows that the error text, which the console and the audit log both record,
 never carries the webhook. The real post is a short test message, so it proves
 delivery only. The Slack screenshot in [the
 README](../README.md#a-triaged-ticket) shows a full alert as Slack displays it,
-from ticket 36.
+from ticket 42.
 
 **Reproduce:** `./venv/bin/python verification/verify_slack.py` from `agent/`.
 With `SLACK_WEBHOOK_TEST` set, it posts one message to the test Slack channel.
@@ -807,7 +806,7 @@ starts the client with settings missing, and sends a page with a marker as the
 routing key to see whether any error repeats it. Two real pages go to the test
 PagerDuty service.
 
-**Result:** Measured 2026-10-11, thirty-two checks, all passing.
+**Result:** Measured 2026-10-15, thirty-two checks, all passing.
 
 | What happens | Result |
 |---|---|
