@@ -1,13 +1,14 @@
 # Runs the offline verifiers on every push and pull request.
 #
 # Only the nine that never open a socket run here. verify_slack.py and
-# verify_pagerduty.py can post to a real channel and open a real incident, and
-# verify_webhook.py, verify_writeback.py and verify_wiring.py need a running
-# stack. Those five stay hand-run, and docs/verification.md records them.
+# verify_pagerduty.py can post to a real Slack channel and open a real PagerDuty
+# incident, and verify_webhook.py, verify_writeback.py and verify_wiring.py need
+# a running stack. Those five stay hand-run, and docs/verification.md records
+# them.
 #
 # Every value in `env` below is a placeholder. The agent asserts its secrets at
 # import time and refuses to boot without them, so they have to be present for
-# the modules to load at all. Nothing here reaches a network: the URLs point at
+# the modules to load at all. Nothing here reaches a network. The URLs point at
 # port 9, the discard port, so a regression that tries to send fails at once
 # instead of hanging.
 #

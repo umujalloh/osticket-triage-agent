@@ -6,9 +6,10 @@ instructions. A fixed tag could be closed by a body containing it, which would
 leave the rest of the submitter's text reading as though it came from outside
 the block. The tag is random per request, so there is nothing to close.
 
-The defence is the boundary, not filtering. The last check here exists to prove
-that, since a fix that quietly started stripping words from tickets would pass
-the other three and break the audit trail's claim to hold what was classified.
+The tag is the defense, and the ticket text is never filtered. The last check
+here exists to prove that, since a fix that quietly started stripping words
+from tickets would pass the other three and break the audit trail's claim to
+hold what was classified.
 
 Nothing leaves the machine. No Claude call is made. This reads the string the
 classifier would have sent.
@@ -56,7 +57,7 @@ check("the block is closed once, by the tag it opened with",
       text.count(f"</{tag}>"), 1)
 check("  and that close is the end of the message",
       text.endswith(f"</{tag}>"), True)
-# The hostile text is still in there. It just is not a delimiter any more.
+# The hostile text is still in there. It no longer closes the block.
 check("  the tag the ticket tried to close is not the tag in use",
       tag == "ticket", False)
 check("  so the body's own </ticket> closes nothing",

@@ -1058,8 +1058,9 @@ key PagerDuty rejects.
 **What it shows:** When a Slack channel or PagerDuty service keeps rejecting the
 agent, Splunk emails an alert that names it and the failure type. A single
 failure after an outage has been fixed sends nothing, and the alert stops once a
-page or post to it succeeds again. Two pages through a dead routing key fire it
-too, and the routing key alert below catches one between pages.
+page or post to it succeeds again. The paging search counts every
+`page_failed`, so two pages through a dead routing key would fire it too, and
+the routing key alert below catches one between pages.
 
 ### Routing key alert
 

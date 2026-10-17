@@ -290,8 +290,8 @@ class TriagePlugin extends Plugin {
      * Reasoning in architecture.md, Section 7.
      *
      * alert stays true so osTicket's own note settings decide whether anyone is
-     * pushed. Do not set it false to quiet this: it reaches nobody by default
-     * already, and hardcoding it takes the choice off the deployment.
+     * pushed. Do not set it false to quiet this, because it reaches nobody by
+     * default already, and hardcoding it takes the choice off the deployment.
      */
     private function setStatusNote($ticket_id, $body) {
         if (!($ticket = Ticket::lookup($ticket_id))) {

@@ -69,7 +69,9 @@ analyst working the queue instead of interrupting someone.
 is not a security incident. In both, nothing in the ticket settles what it is,
 because it is vague, could fit more than one category, or describes something
 the user cannot account for. Tickets Claude never classified, and tickets
-abandoned past the recovery window, also post there, which Section 6 covers.
+abandoned past the recovery window, also post there, which
+[Section 6](architecture.md#6-failure-modes-for-the-claude-dependency) and
+[Idempotency](architecture.md#idempotency) cover.
 They are sent to one channel so a person can triage them. That channel needs an
 analyst actively working it, because an unread review channel is where an
 unreported breach sits unseen.

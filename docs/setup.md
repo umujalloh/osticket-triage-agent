@@ -302,7 +302,7 @@ From `agent/`.
 **Checkpoint:** The console prints `Effectful writes are DISABLED`. In Splunk,
 `index=osticket_triage status=heartbeat` returns an event within a minute of
 the start, and `index=osticket_triage status=classification_complete` returns
-the test ticket, which also proves the Claude key works.
+the test ticket, which also proves the Claude API key works.
 
 ## Stage 7: Connect Slack and PagerDuty
 
@@ -400,9 +400,10 @@ From `agent/`.
    note unless the agent already has, sets the priority and moves the ticket to
    the security department. `verify_wiring.py` does the same, then posts to the
    test Slack channel and pages the test PagerDuty service. `verify_webhook.py`
-   checks the webhook's refusals. It waits until osTicket has been installed
-   for 65 minutes, the Retry Window plus five. It also needs a ticket the agent
-   has finished. One still unfinished would be resumed, with real writes.
+   checks the webhook's refusals. It refuses to run until osTicket has been
+   installed for 65 minutes, the Retry Window plus five. It also needs a ticket
+   the agent has finished. One still unfinished would be resumed, with real
+   writes.
 
    ```bash
    ./venv/bin/python verification/verify_writeback.py <ticket_id>

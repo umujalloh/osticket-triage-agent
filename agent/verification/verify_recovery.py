@@ -190,8 +190,8 @@ print()
 print("a ticket Claude could not classify is not picked up again")
 print()
 
-# The review channel has told a person to handle it by hand, so neither the
-# next start nor a repeat delivery may classify it again and act on it.
+# The review Slack channel has told a person to handle it by hand, so neither
+# the next start nor a repeat delivery may classify it again and act on it.
 unclassified = new_ticket()
 store.claim_ticket(unclassified)
 store.save_payload(unclassified, payload_for(unclassified))

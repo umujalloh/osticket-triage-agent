@@ -47,11 +47,13 @@ priority to emergency, and alerted the urgent Slack channel with `@here`.
 
 **The note on the ticket:** It gives the responder the Splunk enrichment, which
 groups related events by field and shows the search that found them. The search
-uses only the verified requester and the submitter IP. In this lab, Splunk
-holds BOTSv3, a public training dataset built around a fictional company, so the
-events date from 2018. Values copied from the logs are defanged so they cannot
-become links. The linked address on the Search line is the verified requester's
-own. Only staff can see the note.
+uses only the verified requester and the submitter IP. In this lab the submitter
+IP is the Docker gateway, `172.22.0.1`, as
+[known-limitations.md](docs/known-limitations.md#the-submitter-ip-is-the-docker-gateway)
+explains, and Splunk holds BOTSv3, a public training dataset built around a
+fictional company, so the events date from 2018. Values copied from the logs
+are defanged so they cannot become links. The linked address on the Search line
+is the verified requester's own. Only staff can see the note.
 
 ![The agent's note on the ticket](docs/images/ticket-note.png)
 
@@ -121,10 +123,10 @@ design, each with its defense and the risk that remains.
   read-only PagerDuty REST API key, which reaches the whole PagerDuty account.
   [Architecture, section 8](docs/architecture.md#credentials)
 - **A kill switch stops every ticket change, alert and page the agent makes.**
-  `ENABLE_WRITES` has no default and accepts only `true` or `false`, so a typo
-  stops the agent at boot. With it off, the agent still classifies, enriches
-  and writes its audit log, so it can run against real tickets with nothing
-  delivered.
+  `ENABLE_WRITES` has no default and accepts only `true` or `false`, in any
+  letter case, so a typo stops the agent at boot. With it off, the agent
+  still classifies, enriches and writes its audit log, so it can run against
+  real tickets with nothing delivered.
   [Architecture, section 7](docs/architecture.md#kill-switch)
 
 ## Failure handling

@@ -108,7 +108,8 @@ def actions_for(category, severity, confidence) -> Actions:
         raise ValueError(f"No action table row for category {category!r}")
 
     # Records that a person should look at this ticket. It changes no other
-    # field, and the channel the row already selects is what reaches someone.
+    # field, and the Slack channel the row already selects is what reaches
+    # someone.
     human_review = (category == Category.unclear
                     or confidence == Confidence.low_confidence)
 

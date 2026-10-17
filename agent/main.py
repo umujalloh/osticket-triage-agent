@@ -523,7 +523,7 @@ def _handle_classification_failure(ticket_id, payload, failure_type, error):
 def _audit_failed(ticket_id, event):
     """A Splunk write that failed, recorded on the console only.
 
-    A completed action still shows in the note, priority or channel post. For a
+    A completed action still shows in the note, priority or Slack post. For a
     failed note, priority or routing write, this line is the only record.
     Nothing alerts per ticket. A Splunk that refuses every write also stops the
     heartbeat, which the deployment alerts on. architecture.md, Section 9.

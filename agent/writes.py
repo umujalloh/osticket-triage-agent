@@ -7,7 +7,7 @@ _RAW = os.getenv("ENABLE_WRITES")
 if _RAW is None:
     raise RuntimeError("ENABLE_WRITES is not set. Set it to true or false.")
 if _RAW.strip().lower() not in ("true", "false"):
-    raise RuntimeError(f"ENABLE_WRITES must be exactly true or false, got {_RAW!r}")
+    raise RuntimeError(f"ENABLE_WRITES must be true or false, got {_RAW!r}")
 
 WRITES_ENABLED = _RAW.strip().lower() == "true"
 

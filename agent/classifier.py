@@ -108,8 +108,8 @@ def build_ticket_text(subject: str, message: str) -> str:
     A fixed tag is closable by a body that contains it, which leaves whatever
     follows looking like it came from outside the block rather than from the
     person who filed the ticket. The tag is random per request, so there is
-    nothing to guess. The ticket passes through unchanged, because the defence
-    is the boundary and not filtering the text. architecture.md, Section 4.
+    nothing to guess. The ticket text passes through unfiltered, because the
+    tag is the defense. architecture.md, Section 4.
     """
     tag = f"ticket-{secrets.token_hex(4)}"
     return f"<{tag}>\nSubject: {subject}\nMessage: {message}\n</{tag}>"

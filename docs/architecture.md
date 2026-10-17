@@ -103,7 +103,7 @@ The agent reads untrusted ticket text and acts on it. Each attack below follows 
  
 **Output schema validation:** Claude must return valid JSON matching a strict schema: category, severity, confidence, and optionally a hostname, username, or source IP if the ticket text names one. Any response that does not fit, including an extra field or `critical` on anything but a security incident, is rejected, so an injection can produce only a label from the fixed sets. A well-formed label that is wrong still passes, which the backstop below covers. The entity fields carry a different risk from the closed enums, since they are free text rather than a choice from a fixed set. Each gets its own format validation, and a value that fails is dropped without blocking the rest of the classification.
  
-**The backstop:** Even if an attacker slips past the role separation and fools the classifier, the damage stops at the label. Claude only returns a classification and up to three optional entity values. It never picks an action and never writes anything. The agent takes the label, looks up the matching row in a fixed table written in code, and acts only within what its scoped credentials permit. No label, however manipulated, can trigger an action the table does not already allow. Nothing Claude returns reaches a Splunk query either, since the template is fixed and filled from identifiers the webhook supplied. Entity values come from ticket text the submitter writes, so letting them into a query would put the submitter in charge of what the agent searches for. The worst case is a wrong but allowed action, like posting to the wrong channel or failing to page when it should, not a dangerous new one. The table and the reasoning behind each row are in [action-table.md](action-table.md), and credential scoping is covered in [Section 8](#8-trust-boundaries-and-least-privilege).
+**The backstop:** Even if an attacker slips past the role separation and fools the classifier, the damage stops at the label. Claude only returns a classification and up to three optional entity values. It never picks an action and never writes anything. The agent takes the label, looks up the matching row in a fixed table written in code, and acts only within what its scoped credentials permit. No label, however manipulated, can trigger an action the table does not already allow. Nothing Claude returns reaches a Splunk query either, since the template is fixed and filled from identifiers the webhook supplied. Entity values come from ticket text the submitter writes, so letting them into a query would put the submitter in charge of what the agent searches for. The worst case is a wrong but allowed action, like posting to the wrong Slack channel or failing to page when it should, not a dangerous new one. The table and the reasoning behind each row are in [action-table.md](action-table.md), and credential scoping is covered in [Section 8](#8-trust-boundaries-and-least-privilege).
  
 **Residual risk:** None of these layers stops a ticket that is worded to mislead. Someone could write a real incident to sound harmless, or a harmless ticket to sound alarming, and Claude would classify the text honestly but wrongly. Those cases are covered as their own attacks, [4](#attack-4-false-negative-on-severity) and [5](#attack-5-false-positive-on-severity).
  
@@ -133,7 +133,7 @@ The agent reads untrusted ticket text and acts on it. Each attack below follows 
 
 **The session gate:** Validation stops a crafted value from changing the query, but a valid email still decides whose activity it looks up. On an open ticket form the email is whatever the submitter typed, so a convincing critical incident filed under someone else's address would search that person. The email is therefore searched only when osTicket reports an authenticated session belonging to the ticket's owner, on a confirmed account. A confirmed account alone is not enough, because osTicket attaches a guest submission to whoever already owns the typed address, so an impersonated ticket would inherit that status. An unverified email address is left out of the query entirely. The submitter IP is always searchable, since the server observes it rather than taking it as input.
 
-**Queries return a fixed field list, not raw events:** `_raw` is excluded because a raw event carries whatever its source logged, which is where credentials appear: tokens in URLs, passwords on command lines, session IDs in request paths. The current list is in `ENRICHMENT_FIELDS` in `agent/splunk_enrichment.py` and holds timestamps, host, sourcetype, network addresses, account names, sign-in outcomes and error codes, application names, and actions. The query returns at most twenty events, and the note builder separately caps each line of the note at twenty values. Whatever the query does not return cannot reach a note.
+**Queries return a fixed field list, not raw events:** `_raw` is excluded because a raw event carries whatever its source logged, which is where credentials appear, such as tokens in URLs, passwords on command lines and session IDs in request paths. The current list is in `ENRICHMENT_FIELDS` in `agent/splunk_enrichment.py` and holds timestamps, host, sourcetype, network addresses, account names, sign-in outcomes and error codes, application names, and actions. The query returns at most twenty events, and the note builder separately caps each line of the note at twenty values. Whatever the query does not return cannot reach a note.
  
 **Notes are structured summaries, not raw query dumps:** The agent builds the summary in code from specific named fields. Claude does not write the summary, which keeps the model completely out of the write path.
  
@@ -176,7 +176,7 @@ The agent reads untrusted ticket text and acts on it. Each attack below follows 
  
 **Threshold tuning:** How often the agent pages depends on where the classifier prompt sets the bar for a critical security incident. That definition is tuned when the agent pages too often for tickets not worth interrupting someone for. Each rewrite is measured against the current definition on the labeled tickets and kept only under the rule in [evaluation.md](evaluation.md#how-prompt-changes-are-validated).
  
-**Testing stays off the live destinations:** `ENABLE_WRITES` is set to false during testing, so the agent touches no ticket, posts to no channel and pages nobody. It still runs classification, enrichment and audit logging. The verifiers that do send post to a test Slack channel and page a test PagerDuty service.
+**Testing stays off the live destinations:** `ENABLE_WRITES` is set to false during testing, so the agent touches no ticket, posts to no Slack channel and pages nobody. It still runs classification, enrichment and audit logging. The verifiers that do send post to a test Slack channel and page a test PagerDuty service when `SLACK_WEBHOOK_TEST` and `PAGERDUTY_ROUTING_KEY_TEST` are set.
  
 **Residual risk:**
  
@@ -190,7 +190,7 @@ The agent reads untrusted ticket text and acts on it. Each attack below follows 
  
 **Attack:** An attacker obtains one of the agent's credentials and uses it directly. The agent holds credentials for Claude, Splunk, osTicket, Slack and PagerDuty.
  
-**Vector:** A leaked key. The agent's credentials sit in plain text in the environment files on the host. A credential can also reach a log by accident.
+**Vector:** A leaked credential. The agent's credentials sit in plain text in the environment files on the host. A credential can also reach a log by accident.
  
 **Defense**
  
@@ -369,7 +369,7 @@ The agent runs a row's actions in a fixed order:
 4. Write the note, carrying the enrichment result.
 5. Set the priority from severity.
 6. Route a security question to the security department.
-7. Post to the channel the row selected.
+7. Post to the Slack channel the row selected.
 
 The pager goes first because nothing that can stall is allowed in front of it. Enrichment and the audit write both go to Splunk, which may be slow during the very incident the ticket reports, and behind them a page would sit through 19 seconds of audit retries and over a minute of enrichment before it was sent. Ahead of them it depends on PagerDuty alone.
 
@@ -381,7 +381,7 @@ The page carries the severity, category, ticket number and a link. That is enoug
 
 `ENABLE_WRITES` decides whether the agent carries out its actions. Every note, priority change, department move, Slack post and page checks it first, and when it is off the action is skipped and recorded as skipped.
 
-The variable has no default and accepts only true or false. A missing value stops the agent at startup, and so does any other value, so `ENABLE_WRITES=yes` never passes as off. A default would have to choose between writing to real tickets by accident and doing nothing while looking healthy.
+The variable has no default and accepts only true or false, in any letter case. A missing value stops the agent at startup, and so does any other value, so `ENABLE_WRITES=yes` never passes as off. A default would have to choose between writing to real tickets by accident and doing nothing while looking healthy.
 
 With the switch off the agent still classifies, still enriches and still writes its full audit trail, so a run against real tickets can be watched end to end with nothing delivered. The agent prints its mode at boot and repeats it on every heartbeat, so the switch's position can be read from Splunk at any time.
 
@@ -411,12 +411,12 @@ What happens next depends on which action failed:
 | Enrichment | The note and the alert say `enrichment unavailable`. Everything else runs unchanged. |
 | Note, priority or routing write | Records the failure and moves on. The ticket can end up with an alert and no note. |
 | Classification audit write | The note ends with `No audit record.`, so the ticket carries what Splunk is missing. |
-| Page | The channel post reports the failure and asks for manual escalation. |
-| Page accepted but reached nobody | The channel post says the page reached nobody and asks for manual escalation, and the agent checks the routing keys at once. |
-| Page accepted, but not confirmed | The channel post says the page went out, not confirmed. |
-| Channel post, on a critical that paged NOTIFY | Sends a WAKE page that leads with the delivery failure, so it does not read as a confident critical. |
-| Channel post, anywhere else | Nothing further until the next start retries the ticket. The note and the priority hold the ticket's place in the queue, and no one is notified unless the ticket already paged. |
-| Channel post and every page, including a fallback | Nobody is pushed. The note and the priority are on the ticket if their writes worked, the audit log holds the failures, and the next start retries the ticket within the recovery window. |
+| Page | The Slack post reports the failure and asks for manual escalation. |
+| Page accepted but reached nobody | The Slack post says the page reached nobody and asks for manual escalation, and the agent checks the routing keys at once. |
+| Page accepted, but not confirmed | The Slack post says the page went out, not confirmed. |
+| Slack post, on a critical that paged NOTIFY | Sends a WAKE page that leads with the delivery failure, so it does not read as a confident critical. |
+| Slack post, anywhere else | Nothing further until the next start retries the ticket. The note and the priority hold the ticket's place in the queue, and no one is notified unless the ticket already paged. |
+| Slack post and every page, including a fallback | Nobody is pushed. The note and the priority are on the ticket if their writes worked, the audit log holds the failures, and the next start retries the ticket within the recovery window. |
 
 ### When the agent is unreachable
 
@@ -473,7 +473,7 @@ The agent calls Splunk over TLS, using the `https` URLs in `agent/.env.example`,
 
 **Claude** receives only the system prompt, the tool definition, and the ticket's subject and message wrapped in a delimiter generated for that request. The requester address, the submitter IP and Splunk data never reach it. Anthropic holds the subject and message under its API retention terms, which this repo neither sets nor checks.
 
-**Slack alerts** carry at most an `@here` mention, the severity, category and confidence, the ticket number, which service it paged and whether that worked, what enrichment found, and a link. When the ticket number holds anything but letters, digits and hyphens, or runs past 32 characters, the ticket ID takes its place, so the ticket number cannot carry Slack markup. An alert on a high-confidence critical security incident renders in Slack as:
+**Slack alerts** carry at most an `@here` mention, the severity, category and confidence, the ticket number, which PagerDuty service it paged and whether that worked, what enrichment found, and a link. When the ticket number holds anything but letters, digits and hyphens, or runs past 32 characters, the ticket ID takes its place, so the ticket number cannot carry Slack markup. An alert on a high-confidence critical security incident renders in Slack as:
 
 ```
 @here
@@ -524,8 +524,8 @@ The agent reads twelve secrets from `agent/.env` at import. Two optional test ke
 | `SPLUNK_AGENT_PASSWORD` | Enrichment, as `triage_agent` by default | Role `triage_enrichment` searches `botsv3` only, with three concurrent jobs, 100 MB of search disk, no real-time searches and no writes to any index. |
 | `SPLUNK_HEC_TOKEN` | Audit events | Scoped at token creation to `osticket_triage`, which the agent never checks. |
 | `ANTHROPIC_API_KEY` | Classification | Unscoped in code, bounded by the organization's spend limit. |
-| `SLACK_WEBHOOK_URGENT`, `_INCIDENTS`, `_REVIEW` | Alerts | One channel each, bound by Slack. |
-| `PAGERDUTY_ROUTING_KEY_WAKE`, `_NOTIFY` | Pages | One service each. |
+| `SLACK_WEBHOOK_URGENT`, `_INCIDENTS`, `_REVIEW` | Alerts | One Slack channel each, bound by Slack. |
+| `PAGERDUTY_ROUTING_KEY_WAKE`, `_NOTIFY` | Pages | One PagerDuty service each. |
 | `PAGERDUTY_API_KEY` | Confirming pages and checking the routing keys | The whole PagerDuty account, read-only. |
 | `PAGERDUTY_DEDUP_SECRET` | Deriving deduplication keys | Grants no access on its own. It keeps deduplication keys unguessable, so a stolen routing key alone cannot close incidents. |
 
