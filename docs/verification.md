@@ -105,27 +105,29 @@ waits one and then three seconds between its three attempts, which accounts for
 eight of the nine seconds. The run predates the page moving ahead of the audit
 writes, and its row did not page.
 
-### Acting through a hanging Splunk, 2026-10-08
+### Acting through a hanging Splunk, 2026-10-17
 
 **Method:** The audit log was pointed at a local port that accepts connections
 and never answers, so every write to Splunk waited out its timeouts. A critical
 ticket then ran through the agent's full path, with Claude's answer stubbed to a
 confident critical, since the test is about timing. The page went to the test
 PagerDuty service and the alert to the test Slack channel. The ticket ID did not
-exist in osTicket, so the note and priority writes failed.
+exist in osTicket, so the note and priority writes failed. Each step after the
+classification is timed when its call to PagerDuty, osTicket or Slack answered.
 
 | Step | Time after the ticket started |
 |---|---|
-| Classification | 0.5 s |
-| Page | sent before its own audit write began, at 0.5 s |
+| Classification | 0.0 s |
+| Page | accepted at 0.5 s, confirmed at 3.8 s |
 | Each audit write | 19 s, three timed-out attempts |
-| Note and priority | 77 s and 96 s |
-| Urgent Slack alert | 116 s |
+| Note and priority | failed at 38.8 s and 58.0 s |
+| Urgent Slack alert | 77.2 s |
 
-**What it shows:** A hanging Splunk does not delay a new ticket's page, but
-every action after it waits behind an audit write, so the urgent Slack alert
-went out almost two minutes late. A Splunk that refuses connections at once, as
-in the run above, costs about ten seconds.
+**What it shows:** A hanging Splunk does not delay a new ticket's page, and the
+page's own audit write runs beside the rest of the work. Every action after the
+page waits behind an audit write, so the urgent Slack alert went out about 77
+seconds late. A Splunk that refuses connections at once, as in the run above,
+costs about ten seconds.
 [known-limitations.md](known-limitations.md#a-hanging-splunk-delays-everything-after-the-page)
 covers why this is not fixed.
 
@@ -176,7 +178,7 @@ calls:
 
 ### Superseded runs
 
-Three earlier runs no longer describe the agent.
+Four earlier runs no longer describe the agent.
 
 **Ticket 9, 2026-08-09:** A guest submission that enriched on the requester
 email and stored whole raw events. The authentication gate now leaves a guest's
@@ -195,6 +197,12 @@ ticket up and posted only the alert, and the audit index held one
 classification for it. The agent now resumes only on the request it first
 stored, which a finished run deletes, so the same staging is now refused as a
 duplicate. [Recovery](#recovery) covers the current behavior.
+
+**Hanging Splunk, 2026-10-08:** The page's audit write still ran ahead of the
+note. Its note, priority and Slack times match the console lines printed after
+each step's own audit write, and it put the urgent Slack alert at 116 s.
+[Acting through a hanging Splunk](#acting-through-a-hanging-splunk-2026-10-17)
+records the current timing.
 
 ## Webhook gate
 

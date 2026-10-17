@@ -70,7 +70,7 @@ For a new ticket, the page goes out before the first audit write, so a hanging
 Splunk cannot delay it. Every action after the page waits instead, because the
 agent runs them in order. Each audit write for a ticket gives Splunk three
 attempts of 5 seconds, 19 seconds with the waits between them. With Splunk
-accepting connections and never answering, the urgent Slack alert went out 116
+accepting connections and never answering, the urgent Slack alert went out 77
 seconds after the ticket started, as [verification.md](verification.md)
 records. That run hung only the audit writes. A critical security incident also
 runs an enrichment search, which adds up to 65 seconds more when Splunk's
