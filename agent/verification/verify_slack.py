@@ -45,6 +45,8 @@ if CASE == "live":
     print(f"OUTCOME={slack.post_alert(slack.URGENT, text)}")
     sys.exit(0)
 
+import inspect
+
 from schemas import EnrichmentOutcome, TicketClassification
 import slack_client as slack
 
@@ -74,7 +76,7 @@ msg = slack.build_message(15, "465581", critical, slack.URGENT, mention=True,
                           outcome=EnrichmentOutcome.completed, event_count=20)
 check("  a mention renders as here", "<!here>" in msg, True)
 check("  severity and category appear", "critical security_incident" in msg, True)
-check("  ticket number appears", "#465581" in msg, True)
+check("  ticket number appears", "Ticket 465581" in msg, True)
 check("  enrichment count appears", "20 related events" in msg, True)
 check("  link is a raw url", "/scp/tickets.php?id=15" in msg, True)
 check("  no markdown link syntax", "|Open ticket>" in msg, False)
@@ -84,7 +86,7 @@ check("  no mention renders none",
       "<!here>" in slack.build_message(15, "465581", high, slack.INCIDENTS), False)
 
 print("review channel shows the reason, not the severity")
-unclear = classification("unclear", "high", "high_confidence")
+unclear = classification("unclear", "high", "low_confidence")
 unclear_msg = slack.build_message(15, "465581", unclear, slack.REVIEW)
 check("  unclear names the category", "*unclear*" in unclear_msg, True)
 # Severity is a guess on a ticket nobody could place. Matched as the bolded
@@ -155,7 +157,7 @@ print("the notice for a ticket that was never classified")
 fail_msg = slack.build_failure_message(15, "465581", "rate_limited")
 check("  says what happened", "classification failed" in fail_msg, True)
 check("  names the failure type", "rate_limited" in fail_msg, True)
-check("  carries the ticket number", "#465581" in fail_msg, True)
+check("  carries the ticket number", "Ticket 465581" in fail_msg, True)
 check("  links the ticket", "/scp/tickets.php?id=15" in fail_msg, True)
 check("  reuses the review icon", slack.REVIEW_ICON in fail_msg, True)
 # A distinct shape would assert an urgency a ticket with no severity has no
@@ -165,7 +167,34 @@ check("  carries no severity icon",
           if i != slack.REVIEW_ICON), False)
 check("  never mentions the channel", "<!here>" in fail_msg, False)
 check("  falls back to the ticket id when there is no number",
-      "#15" in slack.build_failure_message(15, None, "auth_failure"), True)
+      "Ticket 15 " in slack.build_failure_message(15, None, "auth_failure"), True)
+
+# The README promises that nothing the submitter wrote reaches Slack. A
+# classification carries the hostname, username and IP Claude extracted from
+# the ticket text, so alerts are built from one carrying marker values on every
+# Slack channel, and the builders are held to the inputs they take today.
+print("nothing the submitter wrote reaches an alert")
+extracted = TicketClassification(
+    category="security_incident", severity="critical", confidence="high_confidence",
+    hostname="MARKER-HOST", username="marker.user", source_ip="203.0.113.77")
+if (extracted.hostname, extracted.username, extracted.source_ip) != \
+        ("MARKER-HOST", "marker.user", "203.0.113.77"):
+    sys.exit("validation dropped a marker, so the check below would test nothing")
+built = [slack.build_message(15, "465581", extracted, chan, mention=True,
+                             outcome=EnrichmentOutcome.completed, event_count=20,
+                             page="wake")
+         for chan in (slack.URGENT, slack.INCIDENTS, slack.REVIEW)]
+check("  extracted values never appear in an alert",
+      any(m in text for text in built
+          for m in ("MARKER-HOST", "marker.user", "203.0.113.77")), False)
+check("  the builders take no other input",
+      (list(inspect.signature(slack.build_message).parameters),
+       list(inspect.signature(slack.build_failure_message).parameters),
+       list(inspect.signature(slack.build_abandoned_message).parameters)),
+      (["ticket_id", "ticket_number", "classification", "channel", "mention",
+        "outcome", "event_count", "page", "paged"],
+       ["ticket_id", "ticket_number", "failure_type"],
+       ["ticket_id", "ticket_number"]))
 
 def run_case(name, **env_overrides):
     env = dict(os.environ)
@@ -202,7 +231,7 @@ out = run_case("url_leak", ENABLE_WRITES="true",
 check("  a malformed url is not echoed", CANARY in out, False)
 check("  and it still raises", "OUTCOME=raised" in out, True)
 
-print("  (the next case retries three times, so it takes about 17 seconds)")
+print("  (the next case makes three attempts, so it takes about 7 seconds)")
 out = run_case("url_leak", ENABLE_WRITES="true",
                SLACK_WEBHOOK_URGENT=f"http://127.0.0.1:1/{CANARY}")
 check("  an unreachable host is not echoed", CANARY in out, False)
@@ -210,6 +239,7 @@ check("  and it still raises", "OUTCOME=raised" in out, True)
 
 print("live delivery, to the test channel only")
 test_hook = os.getenv("SLACK_WEBHOOK_TEST")
+delivered = bool(test_hook)
 if not test_hook:
     print("SKIP  SLACK_WEBHOOK_TEST is not set, delivery not checked")
 else:
@@ -220,4 +250,5 @@ print()
 if failed:
     print(f"FAILED: {', '.join(failed)}")
     sys.exit(1)
-print(f"All {ran} checks passed. One message was posted to the test channel.")
+print(f"All {ran} checks passed. " + ("One message was posted to the test channel."
+      if delivered else "Delivery was skipped, so nothing was posted."))

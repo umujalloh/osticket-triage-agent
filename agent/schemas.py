@@ -2,7 +2,7 @@ import ipaddress
 import re
 from enum import Enum
 from typing import Optional
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 class Category(str, Enum):
     security_incident = "security_incident"
@@ -32,6 +32,13 @@ class EnrichmentOutcome(str, Enum):
     completed = "completed"
     unavailable = "unavailable"
 
+# What confirming an accepted page found, which the alert reports. Here so the
+# Slack client can name them without importing the PagerDuty client and its
+# secrets.
+PAGE_CONFIRMED = "confirmed"
+PAGE_NO_INCIDENT = "no_incident"
+PAGE_UNCONFIRMED = "unconfirmed"
+
 # The wording the design specifies, kept here so the note and the alert cannot
 # drift apart. `completed` has no fixed text: it renders with its result count.
 ENRICHMENT_TEXT = {
@@ -53,6 +60,10 @@ HOSTNAME_PATTERN = re.compile(r"^[a-zA-Z0-9]([a-zA-Z0-9._-]{0,253}[a-zA-Z0-9])?$
 USERNAME_PATTERN = re.compile(r"^[a-zA-Z0-9._-]{1,64}\$?$")
 
 class TicketClassification(BaseModel):
+    # A field the tool definition does not name fails validation. Dropping it
+    # quietly would accept an answer shaped differently from the one asked for.
+    model_config = ConfigDict(extra="forbid")
+
     category: Category
     severity: Severity
     confidence: Confidence
@@ -65,7 +76,7 @@ class TicketClassification(BaseModel):
     def validate_hostname(cls, v):
         if v is None:
             return v
-        if not HOSTNAME_PATTERN.match(v):
+        if not HOSTNAME_PATTERN.fullmatch(v):
             return None
         return v
 
@@ -74,7 +85,7 @@ class TicketClassification(BaseModel):
     def validate_username(cls, v):
         if v is None:
             return v
-        if not USERNAME_PATTERN.match(v):
+        if not USERNAME_PATTERN.fullmatch(v):
             return None
         return v
 
@@ -88,3 +99,19 @@ class TicketClassification(BaseModel):
         except ValueError:
             return None
         return v
+
+    # The rubric offers critical only to a security incident, and the prompt
+    # says so. This checks that Claude kept to it, so a routine ticket marked
+    # critical fails validation and goes to review. It would otherwise be
+    # raised to emergency priority with no alert saying why.
+    #
+    # The rubric also makes every unclear ticket low confidence, which is not
+    # checked here. The action table sends an unclear ticket to review at
+    # either confidence, so refusing the pair would cost the ticket its label
+    # and change no action.
+    @model_validator(mode="after")
+    def validate_rubric_pairs(self):
+        if (self.severity == Severity.critical
+                and self.category != Category.security_incident):
+            raise ValueError("critical is only for a security_incident")
+        return self

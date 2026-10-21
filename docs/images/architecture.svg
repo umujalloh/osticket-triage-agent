@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 980 568" width="980" height="568" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="15" text-anchor="middle">
+  <title>osTicket triage agent data flow and trust boundary</title>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#4b5563"/>
+    </marker>
+    <style>
+      .in    { fill: #eaf1fb; stroke: #3b5b8c; stroke-width: 1.2 }
+      .step  { fill: #ffffff; stroke: #3b5b8c; stroke-width: 1.2 }
+      .agent { fill: #dfe9f7; stroke: #3b5b8c; stroke-width: 2 }
+      .out   { fill: #fff4e8; stroke: #b4531a; stroke-width: 1.2 }
+      .grp   { fill: #ffffff; stroke: #94a3b8; stroke-width: 1 }
+      .t     { fill: #14243a }
+      .to    { fill: #3a1c08 }
+      .b     { font-weight: 600 }
+      .s     { font-size: 13.5px; fill: #475569 }
+      .edge  { fill: none; stroke: #4b5563; stroke-width: 1.4; marker-end: url(#arrow) }
+      .gated { stroke-dasharray: 6 4 }
+      .lbl   { font-size: 13px; fill: #334155; paint-order: stroke; stroke: #f7f9fc; stroke-width: 5px; stroke-linejoin: round }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="980" height="568" rx="8" fill="#ffffff"/>
+
+  <!-- Trust zone and external services -->
+  <rect x="120" y="16" width="630" height="514" rx="6" fill="#f7f9fc" stroke="#3b5b8c" stroke-width="1.5"/>
+  <text x="134" y="37" text-anchor="start" class="b" fill="#3b5b8c">Trust zone</text>
+  <rect x="768" y="16" width="204" height="514" rx="6" fill="#fffaf4" stroke="#b4531a" stroke-width="1.5"/>
+  <text x="782" y="37" text-anchor="start" class="b" fill="#b4531a">External services</text>
+
+  <!-- Submitter -->
+  <rect x="4" y="86" width="100" height="54" rx="18" fill="#fdeceb" stroke="#b42318" stroke-width="1.2"/>
+  <text x="54" y="110" fill="#3d0c08" class="b">Submitter</text>
+  <text x="54" y="128" class="s">untrusted</text>
+
+  <!-- osTicket and the plugin's three roles -->
+  <rect x="130" y="50" width="160" height="356" rx="4" class="grp"/>
+  <text x="210" y="70" class="t b">osTicket</text>
+  <rect x="140" y="80" width="140" height="68" rx="3" class="in"/>
+  <text x="210" y="101" class="t b">Triage plugin</text>
+  <text x="210" y="119" class="s">signs with</text>
+  <text x="210" y="136" class="s">HMAC-SHA256</text>
+  <rect x="140" y="188" width="140" height="84" rx="3" class="in"/>
+  <text x="210" y="209" class="t b">Retry queue</text>
+  <text x="210" y="227" class="s">resends on cron,</text>
+  <text x="210" y="244" class="s">gives up after</text>
+  <text x="210" y="261" class="s">60 min by default</text>
+  <path d="M210,152 V184" class="edge" marker-start="url(#arrow)"/>
+  <rect x="140" y="306" width="140" height="88" rx="3" class="in"/>
+  <text x="210" y="327" class="t b">Write endpoints</text>
+  <text x="210" y="345" class="s">note, priority,</text>
+  <text x="210" y="362" class="s">department</text>
+  <text x="210" y="382" class="s">own HMAC secret</text>
+
+  <!-- Agent -->
+  <rect x="360" y="50" width="250" height="350" rx="4" class="agent"/>
+  <text x="485" y="70" class="t b">Triage agent</text>
+  <rect x="372" y="80" width="226" height="68" rx="3" class="step"/>
+  <text x="485" y="101" class="t b">Verify</text>
+  <text x="485" y="119" class="s">signature, freshness, fields,</text>
+  <text x="485" y="136" class="s">ticket number, duplicates</text>
+  <rect x="430" y="176" width="110" height="42" rx="3" class="step"/>
+  <text x="485" y="202" class="t b">Classify</text>
+  <rect x="410" y="246" width="150" height="56" rx="3" class="step"/>
+  <text x="485" y="268" class="t b">Action table</text>
+  <text x="485" y="287" class="s">fixed in code</text>
+  <rect x="400" y="330" width="170" height="56" rx="3" class="step"/>
+  <text x="485" y="352" class="t b">Orchestrate</text>
+  <text x="485" y="371" class="s">fixed order, page first</text>
+
+  <!-- SQLite store -->
+  <path d="M142,454 a68,10 0 0 1 136,0 v50 a68,10 0 0 1 -136,0 z" class="in"/>
+  <path d="M142,454 a68,10 0 0 0 136,0" fill="none" stroke="#3b5b8c" stroke-width="1.2"/>
+  <text x="210" y="485" class="t b">SQLite</text>
+  <text x="210" y="503" class="s">idempotency store</text>
+
+  <!-- Splunk -->
+  <path d="M400,454 a85,10 0 0 1 170,0 v50 a85,10 0 0 1 -170,0 z" class="in"/>
+  <path d="M400,454 a85,10 0 0 0 170,0" fill="none" stroke="#3b5b8c" stroke-width="1.2"/>
+  <text x="485" y="485" class="t b">Splunk</text>
+  <text x="485" y="503" class="s">enrichment, audit index</text>
+
+  <!-- External services -->
+  <rect x="785" y="170" width="175" height="54" rx="3" class="out"/>
+  <text x="872" y="192" class="to b">Claude API</text>
+  <text x="872" y="211" class="s">classifies only</text>
+  <rect x="785" y="318" width="175" height="54" rx="3" class="out"/>
+  <text x="872" y="340" class="to b">PagerDuty</text>
+  <text x="872" y="359" class="s">critical incidents only</text>
+  <rect x="785" y="386" width="175" height="54" rx="3" class="out"/>
+  <text x="872" y="408" class="to b">Slack</text>
+  <text x="872" y="427" class="s">urgent, incidents, review</text>
+  <rect x="785" y="464" width="175" height="54" rx="3" class="out"/>
+  <text x="872" y="486" class="to b">Email</text>
+  <text x="872" y="505" class="s">agent and delivery alerts</text>
+
+  <!-- Edges -->
+  <path d="M104,113 H138" class="edge"/>
+  <path d="M280,114 H370" class="edge"/>
+  <text x="325" y="89" class="lbl">signed</text>
+  <text x="325" y="105" class="lbl">webhook</text>
+  <path d="M485,148 V174" class="edge"/>
+  <path d="M485,218 V244" class="edge"/>
+  <path d="M485,302 V328" class="edge"/>
+  <path d="M540,190 H783" class="edge"/>
+  <text x="688" y="182" class="lbl">subject and message</text>
+  <path d="M785,205 H542" class="edge"/>
+  <text x="688" y="224" class="lbl">category, severity,</text>
+  <text x="688" y="240" class="lbl">confidence, entities</text>
+  <path d="M570,345 H783" class="edge gated"/>
+  <text x="632" y="337" class="lbl">page</text>
+  <path d="M570,371 H690 V413 H783" class="edge gated"/>
+  <text x="632" y="365" class="lbl">alert</text>
+  <path d="M400,358 H282" class="edge gated"/>
+  <text x="319" y="334" class="lbl">signed</text>
+  <text x="319" y="350" class="lbl">write-back</text>
+  <path d="M362,394 L276,448" class="edge"/>
+  <text x="340" y="438" class="lbl">ticket state</text>
+  <path d="M485,386 V442" class="edge"/>
+  <text x="485" y="420" class="lbl">enrichment, audit</text>
+  <path d="M570,491 H783" class="edge"/>
+  <text x="676" y="483" class="lbl">five saved searches</text>
+
+  <!-- Legend -->
+  <path d="M124,551 H164" fill="none" stroke="#4b5563" stroke-width="1.4" stroke-dasharray="6 4"/>
+  <text x="172" y="555" text-anchor="start" font-size="13" fill="#334155">Dashed arrows stop when ENABLE_WRITES=false. Classification, enrichment and audit keep running.</text>
+</svg>

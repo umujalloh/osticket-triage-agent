@@ -113,6 +113,13 @@ class TriagePlugin extends Plugin {
                 return $controller->postDepartment();
             })
         );
+        $dispatcher->append(
+            url_post('^/triage/number$', function () use ($plugin, $instance) {
+                require_once(__DIR__ . '/class.TriageWriteController.php');
+                $controller = new TriageWriteController($plugin, $instance);
+                return $controller->postNumber();
+            })
+        );
     }
 
     /**
@@ -142,8 +149,7 @@ class TriagePlugin extends Plugin {
                 $this->enqueue($ticket->getId(), $verified);
                 // On the first failure, not after a delay. An undelivered
                 // ticket has to be readable as a possible critical incident,
-                // because classifying it is what just failed. architecture.md,
-                // Section 7.
+                // because it was never classified. architecture.md, Section 7.
                 $this->setStatusNote($ticket->getId(),
                                      $this->pendingNote($this->retryWindowMinutes()));
             }
@@ -284,8 +290,8 @@ class TriagePlugin extends Plugin {
      * Reasoning in architecture.md, Section 7.
      *
      * alert stays true so osTicket's own note settings decide whether anyone is
-     * pushed. Do not set it false to quieten this: it reaches nobody by default
-     * already, and hardcoding it takes the choice off the deployment.
+     * pushed. Do not set it false to quiet this, because it reaches nobody by
+     * default already, and hardcoding it takes the choice off the deployment.
      */
     private function setStatusNote($ticket_id, $body) {
         if (!($ticket = Ticket::lookup($ticket_id))) {
@@ -319,6 +325,9 @@ class TriagePlugin extends Plugin {
      * its type filter leaks back and narrows the cache to messages for the rest
      * of the request. buildPayload calls getMessages() just before this runs,
      * which made the note invisible and produced a second one.
+     *
+     * Type 'N' is osTicket's internal note, which only staff can see. A user's
+     * message is 'M' and a staff response the user sees is 'R'.
      */
     private function statusNote($ticket) {
         if (!($thread = $ticket->getThread()))
